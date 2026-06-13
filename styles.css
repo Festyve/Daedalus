@@ -1,0 +1,119 @@
+:root {
+    --panel: rgba(18, 20, 26, 0.72);
+    --line: rgba(255, 255, 255, 0.10);
+    --txt: #e8ecf3;
+    --muted: #9aa3b2;
+    --accent: #ffd35f;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+
+body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--txt);
+    overflow: hidden;
+    /* soft studio backdrop; the WebGL canvas is transparent on top of it */
+    background: radial-gradient(circle at 50% 32%, #2b313d 0%, #14161b 72%);
+}
+
+#webgl { position: fixed; inset: 0; z-index: 0; }
+
+#preview {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 3;
+    width: 260px;
+    height: auto;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+    background: #000;
+}
+
+#status {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 3;
+    min-width: 212px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+
+#status h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0.04em; }
+
+#status .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    font-size: 13px;
+    padding: 3px 0;
+    color: var(--muted);
+}
+
+#status .row b { color: var(--txt); font-variant-numeric: tabular-nums; }
+#status .row b.on { color: var(--accent); }
+
+#instructions {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 4;
+    max-width: 340px;
+    padding: 18px 20px;
+    border-radius: 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+
+#instructions.hidden { display: none; }
+#instructions h3 { margin: 0 18px 10px 0; font-size: 15px; }
+#instructions ol { margin: 0; padding-left: 18px; }
+#instructions li { font-size: 13px; line-height: 1.5; margin-bottom: 6px; color: #d4dae4; }
+#instructions .muted { color: var(--muted); font-size: 11px; margin: 12px 0 0; line-height: 1.7; }
+
+#dismiss {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    background: none;
+    border: 0;
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+kbd {
+    background: #2a2f3a;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 11px;
+}
+
+#banner {
+    position: fixed;
+    left: 50%;
+    top: 24px;
+    transform: translateX(-50%);
+    z-index: 5;
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 14px;
+    background: rgba(180, 40, 40, 0.92);
+    color: #fff;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    max-width: 80vw;
+    text-align: center;
+}
+
+#banner.hidden { display: none; }
