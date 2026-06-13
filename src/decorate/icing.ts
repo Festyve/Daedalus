@@ -213,23 +213,21 @@ function heightGate(x: number, y: number, z: number, dripBias: number): number {
 // DISPLAY_COLOR (module scratch). Stays strictly below white so the mask seed
 // round-trip (color→deviation→mask) in stateFor() is preserved.
 function computeDisplayColor(design: IcingDesign): void {
-    let r = DESIGN_COLOR.r, g = DESIGN_COLOR.g, b = DESIGN_COLOR.b;
-    // Saturate around the channel mean.
-    const mean = (r + g + b) / 3;
-    r = mean + (r - mean) * (1 + SATURATE);
-    g = mean + (g - mean) * (1 + SATURATE);
-    b = mean + (b - mean) * (1 + SATURATE);
-    // Screen-style lift: 1 - (1 - c)(1 - k) raises darks toward the hue, not toward grey.
-    r = 1 - (1 - r) * (1 - SCREEN_LIFT);
-    g = 1 - (1 - g) * (1 - SCREEN_LIFT);
-    b = 1 - (1 - b) * (1 - SCREEN_LIFT);
-    // Gloss-scaled specular sheen toward white (wet, glassy jam).
-    const spec = GLOSS_SPEC * design.gloss;
-    r += (1 - r) * spec;
-    g += (1 - g) * spec;
-    b += (1 - b) * spec;
-    // Keep strictly below pure white so painted verts always read as deviation > 0.
-    DISPLAY_COLOR.setRGB(Math.min(r, 0.97), Math.min(g, 0.97), Math.min(b, 0.97));
+    const r = DESIGN_COLOR.r, g = DESIGN_COLOR.g, b = DESIGN_COLOR.b;
+    // Rescale so the DOMINANT channel reaches JAM_VALUE — this preserves the hue and
+    // maximizes saturation (no wash toward grey/white). The minor channels keep only
+    // a small JAM_FLOOR so the jam reads rich, not dead-black, where the matcap is
+    // dark — but they stay far below the dominant channel, so the jam stays vivid.
+    const maxc = Math.max(r, g, b) || 1;
+    const f = JAM_VALUE / maxc;
+    const floor = JAM_FLOOR * JAM_VALUE;
+    // Keep strictly below pure white so painted verts always read as deviation > 0
+    // (the stateFor() mask seed round-trips color → deviation).
+    DISPLAY_COLOR.setRGB(
+        Math.min(0.97, Math.max(r * f, floor)),
+        Math.min(0.97, Math.max(g * f, floor)),
+        Math.min(0.97, Math.max(b * f, floor)),
+    );
 }
 
 // Resolve vertex color from the mask: lerp white base → DISPLAY color by mask.

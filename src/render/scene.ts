@@ -26,8 +26,8 @@ const CAM_FAR = 100;
 // Base camera position. The object sits at the origin; the camera reads it from a
 // slight 3/4 elevation so the matcap stays consistent.
 const CAM_BASE_X = 0;
-const CAM_BASE_Y = 0.35;
-const CAM_BASE_Z = 5.0;
+const CAM_BASE_Y = 2.4;
+const CAM_BASE_Z = 4.4;
 // Idle parallax: a tiny Lissajous drift around the base position so the frame
 // feels alive without the matcap shifting noticeably (§9.6).
 const PARALLAX_X = 0.12;
@@ -43,6 +43,15 @@ const MATCAP_FALLBACK_SIZE = 256;
 // edge above the UnrealBloom threshold (§9.4) so it reads as a luminous JARVIS rim.
 const RIM_POWER = 3.0;
 const RIM_INTENSITY = 1.35;
+// Glassy-jam sheen (aspect #59). Where the surface is iced (vertex color strongly
+// red), the blue-steel matcap is dark over most of the surface, so a plain multiply
+// reads as dark maroon. We (a) lift the iced regions with a partial EMISSIVE jam
+// glow so the red is luminous regardless of matcap darkness, and (b) add a white
+// specular highlight from the matcap's key light so the jam reads WET / glassy.
+// Bare steel (vColor ~white) is untouched.
+const GLOSS_STRENGTH = 1.1;
+const GLOSS_POWER = 3.0;
+const JAM_EMISSIVE = 0.55;
 
 // Patch three.js prototypes exactly once so geometry.computeBoundsTree() and
 // accelerated raycasting are available. Idempotent and shared with SculptEngine /
@@ -143,20 +152,37 @@ function injectRim(material: THREE.MeshMatcapMaterial): void {
         shader.uniforms.uRimPower = { value: RIM_POWER };
         shader.uniforms.uRimColor = { value: rim_color };
         shader.uniforms.uRimIntensity = { value: RIM_INTENSITY };
+        shader.uniforms.uGlossStrength = { value: GLOSS_STRENGTH };
+        shader.uniforms.uGlossPower = { value: GLOSS_POWER };
+        shader.uniforms.uJamEmissive = { value: JAM_EMISSIVE };
         shader.fragmentShader = shader.fragmentShader
             .replace(
                 "#include <common>",
                 `#include <common>
                 uniform float uRimPower;
                 uniform vec3 uRimColor;
-                uniform float uRimIntensity;`,
+                uniform float uRimIntensity;
+                uniform float uGlossStrength;
+                uniform float uGlossPower;
+                uniform float uJamEmissive;`,
             )
             .replace(
                 "#include <aomap_fragment>",
                 `#include <aomap_fragment>
                 vec3 rimViewDir = normalize( vViewPosition );
                 float rimFresnel = pow( 1.0 - clamp( dot( normal, rimViewDir ), 0.0, 1.0 ), uRimPower );
-                outgoingLight += uRimColor * ( rimFresnel * uRimIntensity );`,
+                outgoingLight += uRimColor * ( rimFresnel * uRimIntensity );
+                // Glassy jam: iced surfaces (vertex color strongly red, r dominating
+                // g/b) get a tight white specular sheen from the matcap's own key
+                // highlight so the jam reads wet. Bare steel (vColor ~white) → ~0.
+                float icedAmt = clamp( ( vColor.r - max( vColor.g, vColor.b ) ) * 2.0, 0.0, 1.0 );
+                // Emissive jam lift: make the iced red self-luminous so it pops over the
+                // dark steel (multiply alone reads as dark maroon).
+                outgoingLight += vColor * ( icedAmt * uJamEmissive );
+                // Wet glassy highlight from the matcap key light, on iced regions only.
+                float matcapLuma = dot( matcapColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+                float wetSpec = pow( matcapLuma, uGlossPower ) * icedAmt * uGlossStrength;
+                outgoingLight += vec3( wetSpec );`,
             );
     };
 }
