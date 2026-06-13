@@ -11,10 +11,13 @@ describe("SwipeDetector", () => {
         expect(d2.update(-0.6, DT)).toBe(-1); // leftward
     });
 
-    it("does not fire below threshold", () => {
+    it("does not fire below threshold on single low-velocity frame", () => {
         const d = new SwipeDetector();
-        expect(d.update(0.3, DT)).toBe(0);  // < 0.5, no step
-        expect(d.update(0.3, DT)).toBe(0);  // still < 0.5
+        expect(d.update(0.2, DT)).toBe(0);  // single frame below distance threshold
+        // Accumulator decays away without firing
+        for (let i = 0; i < 10; i++) {
+            expect(d.update(0, DT)).toBe(0);
+        }
     });
 
     it("cooldown blocks subsequent high-velocity frames", () => {
@@ -49,5 +52,24 @@ describe("SwipeDetector", () => {
         const d2 = new SwipeDetector();
         const r2 = d2.update(-0.8, DT);
         expect(r2).toBe(-1);
+    });
+
+    it("handles zero or negative dtMs gracefully", () => {
+        const d = new SwipeDetector();
+        expect(d.update(0.6, 0)).toBe(1);      // zero dt, should still fire
+        expect(d.update(0.6, -5)).toBe(0);     // negative dt, cooldown already set
+    });
+
+    it("cooldown decays on each frame", () => {
+        const d = new SwipeDetector();
+        expect(d.update(0.6, DT)).toBe(1);  // fires, cooldown = 260ms, armed = false
+        expect(d.update(0.1, 50)).toBe(0);  // 50ms passes, cooldown now ~210ms
+        expect(d.update(0.1, 50)).toBe(0);  // 50ms more, ~160ms left
+        expect(d.update(0.1, 50)).toBe(0);  // 50ms more, ~110ms left
+        expect(d.update(0.1, 60)).toBe(0);  // 60ms more, ~50ms left
+        // Cooldown expires after 260ms total, but net hasn't settled below settle (0.12)
+        expect(d.update(0, 50)).toBe(0);    // net decays but still > 0.12, armed still false
+        expect(d.update(0, 60)).toBe(0);    // enough decay: net should now be < 0.12, armed re-arms
+        expect(d.update(0.6, DT)).toBe(1);   // fires again (armed + cooldown expired + threshold met)
     });
 });
