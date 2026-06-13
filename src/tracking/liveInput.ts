@@ -34,8 +34,8 @@ const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/w
 // One Euro params. Image-space landmarks are normalized [0..1]; world landmarks
 // are metric (~10x larger units) so they take a proportionally larger min-cutoff
 // to suppress jitter without lag (§3.3).
-const IMAGE_MIN_CUTOFF = 1.5;
-const IMAGE_BETA = 0.02;
+const IMAGE_MIN_CUTOFF = 1.0;
+const IMAGE_BETA = 0.05;
 const WORLD_MIN_CUTOFF = 15.0;
 const WORLD_BETA = 0.2;
 
@@ -62,6 +62,14 @@ export class LiveInputSource implements InputSource {
 
     // detectForVideo demands strictly increasing timestamps; guard duplicates.
     private last_ts = -1;
+
+    // Offscreen canvas used to mirror the camera frame before detection. The rest
+    // of the app (overlay, gestures, coords) assumes mirrored "selfie" landmarks;
+    // detecting on the raw feed produced un-mirrored landmarks AND inverted
+    // handedness (MediaPipe assumes a mirrored selfie image), so the skeleton and
+    // the Left/Right roles were both flipped.
+    private mirror: HTMLCanvasElement | null = null;
+    private mirrorCtx: CanvasRenderingContext2D | null = null;
 
     // Last good frame, returned (held) when detection is unavailable.
     private latest: PoseFrame = emptyFrame(performance.now());
@@ -99,7 +107,7 @@ export class LiveInputSource implements InputSource {
         if (ts <= this.last_ts) ts = this.last_ts + 1;
         this.last_ts = ts;
 
-        const res: HandLandmarkerResult = this.landmarker.detectForVideo(this.video, ts);
+        const res: HandLandmarkerResult = this.landmarker.detectForVideo(this.mirroredFrame(), ts);
 
         const frame: PoseFrame = {
             Left: null,
@@ -136,6 +144,29 @@ export class LiveInputSource implements InputSource {
 
         this.latest = frame;
         return frame;
+    }
+
+    // Draw the current frame horizontally mirrored into an offscreen canvas and
+    // return it as the detection source, so MediaPipe reports landmarks (and
+    // handedness) in the mirrored selfie space the rest of the app expects. Falls
+    // back to the raw video until its dimensions are known.
+    private mirroredFrame(): HTMLCanvasElement | HTMLVideoElement {
+        const vw = this.video.videoWidth;
+        const vh = this.video.videoHeight;
+        if (!vw || !vh) return this.video;
+        if (!this.mirror) {
+            this.mirror = document.createElement("canvas");
+            this.mirrorCtx = this.mirror.getContext("2d");
+        }
+        if (!this.mirrorCtx) return this.video;
+        if (this.mirror.width !== vw || this.mirror.height !== vh) {
+            this.mirror.width = vw;
+            this.mirror.height = vh;
+        }
+        this.mirrorCtx.setTransform(-1, 0, 0, 1, vw, 0);
+        this.mirrorCtx.drawImage(this.video, 0, 0, vw, vh);
+        this.mirrorCtx.setTransform(1, 0, 0, 1, 0, 0);
+        return this.mirror;
     }
 
     dispose(): void {
