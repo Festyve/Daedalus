@@ -62,7 +62,9 @@ export function makeComposer(
     composer.addPass(new RenderPass(scene, camera));
 
     const gtao_pass = new GTAOPass(scene, camera, width, height);
-    gtao_pass.output = GTAOPass.OUTPUT.Denoise;
+    // OUTPUT.Default composites AO into the rendered scene; OUTPUT.Denoise (etc.) emit
+    // the raw AO buffer as a debug visualization, which floods the screen flat gray.
+    gtao_pass.output = GTAOPass.OUTPUT.Default;
     gtao_pass.updateGtaoMaterial({ radius: GTAO_RADIUS });
     composer.addPass(gtao_pass);
 

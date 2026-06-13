@@ -105,6 +105,13 @@ function applyProfile(): void {
     }
 }
 
+// dev/demo affordance: "?nocal" skips the calibration ritual straight to the scene.
+if (new URLSearchParams(location.search).has("nocal")) {
+    calibration.skip();
+    applyProfile();
+    calUI.close();
+}
+
 // Build a coarse RitualFrame from the nav hand so the ritual can advance when a
 // hand is held up. Per-step pose discrimination is intentionally light — the Skip
 // button (DEFAULT_CALIBRATION) is the primary path; this is the "real hand" path.

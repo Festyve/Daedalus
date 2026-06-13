@@ -10,9 +10,62 @@ import { DEFAULT_CALIBRATION } from "../types";
 import { TOKENS } from "./tokens";
 import { buildDonutMorphGeometry } from "./geometry";
 
-// Cold fallback matcap (nidorx/matcaps) used if the local steel asset is missing.
-const FALLBACK_MATCAP =
-    "https://cdn.jsdelivr.net/gh/nidorx/matcaps@master/1024/3E2335_D36A1B_8E4A2E_2B1810.png";
+// Procedural cold-steel matcap, generated on a canvas so the sphere always has a
+// convincing brushed-steel look with zero network dependency (CDN matcaps are
+// unreliable / CORS-blocked). A vendored /matcaps/steel-obsidian.png, if present and
+// valid, is swapped in over it (see loadMatcap).
+function generateSteelMatcap(size = 256): THREE.CanvasTexture {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const g = canvas.getContext("2d");
+    if (!g) throw new Error("matcap: 2D context unavailable");
+    const r = size / 2;
+
+    // Dark obsidian base (corners of the square, outside the lit disc).
+    g.fillStyle = "#04060a";
+    g.fillRect(0, 0, size, size);
+
+    // Body shading: bright cold steel at the camera-facing centre falling to a near
+    // black silhouette at the rim (centre of a matcap = normal toward camera).
+    const body = g.createRadialGradient(r, r * 0.92, size * 0.04, r, r, r);
+    body.addColorStop(0.0, "#5b7184");
+    body.addColorStop(0.45, "#33424f");
+    body.addColorStop(0.78, "#151d25");
+    body.addColorStop(1.0, "#04060a");
+    g.fillStyle = body;
+    g.beginPath();
+    g.arc(r, r, r, 0, Math.PI * 2);
+    g.fill();
+
+    // Cold key highlight offset to the upper-left — the steel "sheen".
+    const hi = g.createRadialGradient(size * 0.34, size * 0.30, 0, size * 0.34, size * 0.30, size * 0.42);
+    hi.addColorStop(0.0, "rgba(234,244,255,0.95)");
+    hi.addColorStop(0.35, "rgba(159,194,224,0.45)");
+    hi.addColorStop(1.0, "rgba(159,194,224,0)");
+    g.globalCompositeOperation = "lighter";
+    g.fillStyle = hi;
+    g.beginPath();
+    g.arc(r, r, r, 0, Math.PI * 2);
+    g.fill();
+
+    // Cool fresnel-ish rim brightening just inside the silhouette (metallic edge).
+    const rim = g.createRadialGradient(r, r, size * 0.40, r, r, r);
+    rim.addColorStop(0.0, "rgba(174,232,255,0)");
+    rim.addColorStop(0.86, "rgba(174,232,255,0.10)");
+    rim.addColorStop(0.97, "rgba(174,232,255,0.30)");
+    rim.addColorStop(1.0, "rgba(174,232,255,0)");
+    g.fillStyle = rim;
+    g.beginPath();
+    g.arc(r, r, r, 0, Math.PI * 2);
+    g.fill();
+    g.globalCompositeOperation = "source-over";
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+}
 
 // §11.3 rim strength: how sharply the cold Fresnel edge ramps.
 const RIM_POWER = 2.4;
@@ -27,23 +80,24 @@ export interface SceneLayers {
     spin: THREE.Group;
 }
 
-// Load the steel matcap; on error swap in the CDN cold matcap so the mesh still
-// renders even before /matcaps/steel-obsidian.png is vendored.
+// Start from the procedural cold-steel matcap (always valid), then try to upgrade to
+// a vendored /matcaps/steel-obsidian.png if it is actually present and decodes to a
+// real image. Any network/asset failure simply keeps the procedural matcap.
 function loadMatcap(): THREE.Texture {
+    const tex = generateSteelMatcap();
     const loader = new THREE.TextureLoader();
-    const tex = loader.load(
+    loader.load(
         TOKENS.steel,
-        undefined,
-        undefined,
-        () => {
-            loader.load(FALLBACK_MATCAP, (fallback) => {
-                fallback.colorSpace = THREE.SRGBColorSpace;
-                tex.image = fallback.image;
+        (real) => {
+            if (real.image && real.image.width > 1) {
+                real.colorSpace = THREE.SRGBColorSpace;
+                tex.image = real.image;
                 tex.needsUpdate = true;
-            });
+            }
         },
+        undefined,
+        () => { /* keep the procedural matcap */ },
     );
-    tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
 }
 
