@@ -119,6 +119,19 @@ function hideBanner(): void {
     banner?.classList.add("hidden");
 }
 
+// Size the corner preview's backing buffer to the camera's aspect ratio. The
+// default 300x150 canvas squished the 16:9/4:3 feed (faces looked wide); a modest
+// buffer at the true aspect keeps the feed + skeleton undistorted, and CSS
+// (height:auto) drives the on-screen size.
+function sizePreviewToVideo(v: HTMLVideoElement): void {
+    if (!previewCanvas) return;
+    const vw = v.videoWidth || 640;
+    const vh = v.videoHeight || 480;
+    const backingW = 480;
+    previewCanvas.width = backingW;
+    previewCanvas.height = Math.round((backingW * vh) / vw);
+}
+
 // ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
 const viewMode = new ViewModeController(ctx.scene, () => video);
 
@@ -138,6 +151,7 @@ async function initInput(): Promise<void> {
             return;
         }
         video = await startWebcam();
+        sizePreviewToVideo(video);
         source = new LiveInputSource(video);
         await source.init();
         hideBanner();

@@ -21,17 +21,17 @@ html, body {
 /* the WebGL canvas is appended by the renderer with id="webgl" */
 canvas#webgl { position: fixed; inset: 0; z-index: 0; display: block; }
 
-/* desaturated webcam, bottom-right (§15.3) */
+/* colour webcam, bottom-right (§15.3). The backing canvas is sized to the camera
+   aspect ratio in main.ts, so height:auto keeps the feed undistorted (no squish). */
 #preview {
     position: fixed;
     right: 16px;
     bottom: 16px;
     z-index: 3;
-    width: 260px;
+    width: 340px;
     height: auto;
     border: 1px solid var(--line);
     background: #000;
-    filter: saturate(0.35) brightness(0.92);
 }
 
 /* HUD overlay layer (chrome.ts paints into this) */
