@@ -1,16 +1,16 @@
 // §5.5 + §7.2 — MORPH tool: the play-doh gesture (sphere → donut).
 //
-// Both hands curl into a grab pose around the object. The user orbits their hands
-// around the object center in a circular path (viewed from above, on the XZ plane).
-// We track the heading of the (wristL → wristR) vector on XZ and accumulate its
-// signed, unwrapped angular change frame to frame:
+// Both hands curl into a grab pose around the object and jiggle. Direction does not
+// matter — any random motion advances the morph. Each grabbed frame we measure the
+// total world-space travel of the two wrists and accumulate it into a progress scalar:
 //
-//     angle_traveled = Σ Δθ   where θ = atan2(dz, dx) of (wristR − wristL) on XZ
-//     t              = clamp(angle_traveled / 2π, 0, 1)
+//     travel = Σ ( |Δ wristL| + |Δ wristR| )   frame to frame, while both hands grab
+//     t      = clamp(travel / FULL_MOTION, 0, 1)
 //     morphTargetInfluences[0] = smoothstep(t)
 //
-// The motion is proportional and REVERSIBLE — unwinding the orbit drives the angle
-// (and therefore t) back down. The object never moves: only its blend shape changes.
+// The morph is monotonic: motion only adds, so once jiggled to a donut it stays there
+// (releasing the grab just parks progress until the next grab resumes). The object
+// never moves: only its blend shape changes.
 //
 // When t > 0.95 is sustained for > 500 ms, a one-shot ding fires and the panel label
 // snaps to `// DONUT`. Dropping back below the threshold re-arms both.
@@ -30,7 +30,7 @@ import { SculptEngine } from "../sculpt/engine";
 import { Panel } from "./panel";
 import { sfx } from "../audio/sfx";
 
-// MediaPipe wrist landmark index (§3). The orbit is driven by the two wrists.
+// MediaPipe wrist landmark index (§3). The morph is driven by the two wrists.
 const WRIST = 0;
 
 // Donut-complete threshold + the dwell it must be sustained for before the milestone
@@ -38,12 +38,14 @@ const WRIST = 0;
 const DONUT_T = 0.95;
 const DONUT_DWELL_MS = 500;
 
-// A full 2π orbit of the hands maps to a full sphere→donut morph (SPEC §5.5).
-const FULL_TURN = Math.PI * 2;
+// Total wrist travel (world units, summed across both hands) that maps to a full
+// sphere→donut morph. The icosphere is ~unit radius, so this is a few hand-scales of
+// jiggling — a modest random shake reaches t=1 quickly.
+const FULL_MOTION = 3.0;
 
-// Both hands must read as a grab (fist) for the orbit / brush to engage. Below this
+// Both hands must read as a grab (fist) for the motion / brush to engage. Below this
 // pinch-amount floor on either hand we still allow grab via the fist pose, but a loose
-// open hand parks the morph so the user can rest without unwinding.
+// open hand parks the morph so the user can rest without advancing it.
 const GRAB_PINCH = 0.4;
 
 // Additive brush sizing in mesh object space (the icosphere is ~unit radius).
@@ -61,15 +63,6 @@ function smoothstep(x: number): number {
     return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
-// Shortest signed angular difference a − b, wrapped to (−π, π]. Lets the cumulative
-// orbit integrate small per-frame deltas without jumping at the ±π seam.
-function angleDelta(a: number, b: number): number {
-    let d = a - b;
-    while (d > Math.PI) d -= FULL_TURN;
-    while (d < -Math.PI) d += FULL_TURN;
-    return d;
-}
-
 class MorphMenu implements MenuModule {
     readonly id = MenuId.MORPH;
 
@@ -77,11 +70,16 @@ class MorphMenu implements MenuModule {
     private readonly card: Panel;
     private engine: SculptEngine | null = null;
 
-    // Cumulative orbit, in radians (signed; can go negative when unwinding past start).
-    private angleTraveled = 0;
-    // Previous frame's (wristL → wristR) heading on XZ, or null when we have no orbit
-    // sample yet (first grabbed frame, or grab released).
-    private prevHeading: number | null = null;
+    // Cumulative wrist travel in world units (summed across both hands; monotonic).
+    private travel = 0;
+    // Previous frame's wrist world positions on the interaction plane (XZ), kept as
+    // scalars for zero per-frame allocation. haveSample is false until the first grabbed
+    // frame, or after the grab is released, so we never count the released gap as motion.
+    private prevLx = 0;
+    private prevLz = 0;
+    private prevRx = 0;
+    private prevRz = 0;
+    private haveSample = false;
     private grabbing = false;
 
     // Donut milestone dwell tracking + one-shot latch.
@@ -95,9 +93,9 @@ class MorphMenu implements MenuModule {
     }
 
     enter(ctx: SceneContext): void {
-        // Re-seed the orbit from the current morph so re-entering the tool does not jump.
-        this.angleTraveled = ctx.morphT * FULL_TURN;
-        this.prevHeading = null;
+        // Re-seed travel from the current morph so re-entering the tool does not jump.
+        this.travel = ctx.morphT * FULL_MOTION;
+        this.haveSample = false;
         this.grabbing = false;
         this.dwellMs = 0;
         // Don't re-ding if we re-enter already past the gate.
@@ -108,10 +106,10 @@ class MorphMenu implements MenuModule {
     }
 
     update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
-        // World starts empty — no mesh means nothing to morph. Park all orbit state so
+        // World starts empty — no mesh means nothing to morph. Park all motion state so
         // we resume cleanly once a shape exists (SPEC §5.1 / hard rule 7).
         if (!ctx.mesh) {
-            this.prevHeading = null;
+            this.haveSample = false;
             this.grabbing = false;
             this.paint(ctx);
             return;
@@ -121,12 +119,12 @@ class MorphMenu implements MenuModule {
         const { left, right } = this.resolveHands(exec, nav);
 
         if (left && right && this.bothGrab(left, right)) {
-            this.driveOrbit(ctx, left, right, dt);
+            this.driveMotion(ctx, left, right, dt);
             this.driveBrush(ctx, left, right);
         } else {
-            // Lost the grab: drop the orbit anchor so the next grab resumes from the
-            // current t rather than snapping by the gap accrued while released.
-            this.prevHeading = null;
+            // Lost the grab: drop the motion anchor so the next grab resumes from the
+            // current t rather than counting the gap accrued while released as travel.
+            this.haveSample = false;
             this.grabbing = false;
             this.dwellMs = 0;
         }
@@ -141,48 +139,49 @@ class MorphMenu implements MenuModule {
             this.engine = null;
             ctx.bvh = null;
         }
-        this.prevHeading = null;
+        this.haveSample = false;
         this.grabbing = false;
     }
 
-    // ---- orbit → t -------------------------------------------------------------
+    // ---- motion → t ------------------------------------------------------------
 
-    // Track the heading of the (wristL → wristR) vector on the XZ plane and integrate
-    // its signed change into the cumulative orbit, then map orbit → t → morph.
-    private driveOrbit(ctx: SceneContext, left: HandPose, right: HandPose, dt: number): void {
+    // Measure how far the two wrists travelled since last frame (any direction) and add
+    // that distance to the cumulative travel, then map travel → t → morph.
+    private driveMotion(ctx: SceneContext, left: HandPose, right: HandPose, dt: number): void {
         // Both wrists → world on the shared interaction plane (same frame as the object
         // center). Reuse ctx.scratch — zero per-frame allocation (hard rule 4).
         const wl = fingertipToWorld(
             left.landmarks[WRIST], ctx.camera, ctx.interactionPlaneZ,
             ctx.scratch.ray, ctx.scratch.plane, ctx.scratch.v1,
         );
-        const wlx = wl.x, wlz = wl.z;
+        const lx = wl.x, lz = wl.z;
         const wr = fingertipToWorld(
             right.landmarks[WRIST], ctx.camera, ctx.interactionPlaneZ,
             ctx.scratch.ray, ctx.scratch.plane, ctx.scratch.v2,
         );
+        const rx = wr.x, rz = wr.z;
 
-        // Heading of (wristR − wristL) on XZ. atan2(dz, dx) so a CCW orbit (from above)
-        // increases the angle monotonically.
-        const dx = wr.x - wlx;
-        const dz = wr.z - wlz;
-        const heading = Math.atan2(dz, dx);
-
-        if (this.prevHeading !== null) {
-            this.angleTraveled += angleDelta(heading, this.prevHeading);
+        if (this.haveSample) {
+            // |Δ wristL| + |Δ wristR| on XZ — magnitude only, so direction never matters
+            // and any random jiggle advances the morph.
+            const ldx = lx - this.prevLx, ldz = lz - this.prevLz;
+            const rdx = rx - this.prevRx, rdz = rz - this.prevRz;
+            this.travel += Math.hypot(ldx, ldz) + Math.hypot(rdx, rdz);
         }
-        this.prevHeading = heading;
+        this.prevLx = lx; this.prevLz = lz;
+        this.prevRx = rx; this.prevRz = rz;
+        this.haveSample = true;
         this.grabbing = true;
 
-        // Map the unwrapped orbit → t. clamp keeps t in [0,1] but the underlying angle
-        // is preserved past the ends, so unwinding immediately tracks back down.
-        const t = Math.min(1, Math.max(0, this.angleTraveled / FULL_TURN));
+        // Map cumulative travel → t. Monotonic: travel only grows, so the donut is
+        // reached fast and stays put.
+        const t = Math.min(1, Math.max(0, this.travel / FULL_MOTION));
         this.applyMorph(ctx, t, dt);
     }
 
     // Write t into the context and the blend shape, and fire the donut milestone once
-    // t > 0.95 has been sustained for > 500 ms. smoothstep shapes the influence; the
-    // raw t (and its angle) stay linear so the gesture remains reversible (SPEC §5.5).
+    // t > 0.95 has been sustained for > 500 ms. smoothstep shapes the influence; the raw
+    // t (and its travel) stay linear (SPEC §5.5).
     private applyMorph(ctx: SceneContext, t: number, dt: number): void {
         ctx.morphT = t;
 
@@ -273,10 +272,9 @@ class MorphMenu implements MenuModule {
         const isDonut = this.dingFired;
         const pct = Math.round(t * 100);
         const label = isDonut ? "// DONUT" : "// SPHERE";
-        const turns = (this.angleTraveled / FULL_TURN).toFixed(2);
         const labelColor = isDonut ? accent : "rgba(255,255,255,0.45)";
         const stateColor = this.grabbing ? accent : "rgba(255,255,255,0.4)";
-        const stateText = this.grabbing ? "ORBITING" : "GRAB BOTH HANDS";
+        const stateText = this.grabbing ? "MORPHING" : "IDLE";
 
         this.card.setBody(
             `<div style="display:flex;flex-direction:column;gap:14px">` +
@@ -285,13 +283,10 @@ class MorphMenu implements MenuModule {
                 `<div style="height:14px;border:0.5px solid rgba(255,255,255,0.35);border-radius:7px;overflow:hidden">` +
                     `<div style="height:100%;width:${pct}%;background:${accent};box-shadow:0 0 10px ${accent}"></div>` +
                 `</div>` +
-                `<div style="font-size:11px;color:rgba(255,255,255,0.5)">orbit ${turns} turns</div>` +
                 `<div style="font-size:24px;font-weight:700;color:${labelColor};text-shadow:0 0 10px ${labelColor}">${label}</div>` +
             `</div>`,
         );
-        this.card.setInstructions(
-            "GRAB BOTH HANDS · ORBIT XZ → MORPH · UNWIND TO REVERSE",
-        );
+        this.card.setInstructions("");
     }
 }
 

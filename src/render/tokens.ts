@@ -14,31 +14,40 @@ export const T = {
     matcap:        "/matcaps/blue-steel.png",
     // per-tool accents (§14.1)
     toolAdd:       "#00FFD1",            // ADD SHAPES
+    toolSelect:    "#9EE6FF",            // SELECT (light cyan)
     toolTranslate: "#4488FF",            // TRANSLATE
     toolDilate:    "#AA44FF",            // DILATE
     toolRotate:    "#FFB830",            // ROTATE
     toolMorph:     "#FF3E9A",            // MORPH
     toolDecorate:  "#FFD700",            // DECORATE
+    toolInteract:  "#7CFFB2",            // INTERACT (boolean ops, mint green)
+    toolDestroy:   "#FF4D4D",            // DESTROY (red)
 } as const;
 
 /** Accent color for a tool (carousel highlight, panel border tint). */
 export const TOOL_ACCENT: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: T.toolAdd,
+    [MenuId.SELECT]: T.toolSelect,
     [MenuId.TRANSLATE]: T.toolTranslate,
     [MenuId.DILATE]: T.toolDilate,
     [MenuId.ROTATE]: T.toolRotate,
     [MenuId.MORPH]: T.toolMorph,
     [MenuId.DECORATE]: T.toolDecorate,
+    [MenuId.INTERACT]: T.toolInteract,
+    [MenuId.DESTROY]: T.toolDestroy,
 };
 
 /** Per-tool icon + accent + label for the carousel (§4.1). */
 export const MENU_META: Record<MenuId, { icon: string; accent: string; label: string }> = {
     [MenuId.ADD_SHAPES]: { icon: "+",  accent: T.toolAdd,       label: "ADD SHAPES" },
+    [MenuId.SELECT]:     { icon: "◉",  accent: T.toolSelect,    label: "SELECT" },
     [MenuId.TRANSLATE]:  { icon: "✥",  accent: T.toolTranslate, label: "TRANSLATE" },
     [MenuId.DILATE]:     { icon: "⊕",  accent: T.toolDilate,    label: "DILATE" },
     [MenuId.ROTATE]:     { icon: "↻",  accent: T.toolRotate,    label: "ROTATE" },
     [MenuId.MORPH]:      { icon: "∿",  accent: T.toolMorph,     label: "MORPH" },
     [MenuId.DECORATE]:   { icon: "✦",  accent: T.toolDecorate,  label: "DECORATE" },
+    [MenuId.INTERACT]:   { icon: "⧉",  accent: T.toolInteract,  label: "INTERACT" },
+    [MenuId.DESTROY]:    { icon: "✕",  accent: T.toolDestroy,   label: "DESTROY" },
 };
 
 export const FONT = "'JetBrains Mono', monospace";

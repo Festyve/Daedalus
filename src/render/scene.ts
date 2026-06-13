@@ -55,9 +55,12 @@ function patchPrototypes(): void {
  * (§8.3) tints the wires.
  */
 export function makeMatcapMaterial(): THREE.MeshBasicMaterial {
+    // Brighten the base wire toward a near-white cyan so the thin edges read
+    // clearly over the busy colour camera feed (and bloom harder via §9.4). Still
+    // cyan-ish, still unlit/toneMapped:false; vertexColors keeps the icing tints.
     return new THREE.MeshBasicMaterial({
         wireframe: true,
-        color: new THREE.Color(T.cyan),
+        color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.35),
         vertexColors: true,
         toneMapped: false,
     });

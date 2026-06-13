@@ -1,8 +1,8 @@
 // Hand-skeleton overlay (SPEC §9.5, §14.3): green hand skeletons (drawConnectors style)
 // drawn over the MAIN view, where the full-colour webcam already backs the scene. Fed by
-// the tracking layer's filtered HandPose — landmarks are in the camera's NATIVE
-// (un-mirrored) normalized image space, matching the un-mirrored feed, so the skeleton
-// maps 1:1 onto the feed with no extra flip.
+// the tracking layer's filtered HandPose — landmarks are mirrored into SELFIE normalized
+// image space (liveInput.ts), matching the mirrored webcam feed (viewMode.ts AR plane), so
+// the skeleton maps 1:1 onto the feed with no extra flip here.
 import type { HandPose } from "../types";
 
 // Skeleton edges: pairs of MediaPipe hand-landmark indices forming the hand graph.
@@ -70,8 +70,9 @@ function drawSkeleton(ctx: CanvasRenderingContext2D, pose: HandPose | null): voi
 }
 
 // Clear the transparent overlay canvas and draw both hands' green skeletons over the
-// MAIN view. The webcam already backs the scene (un-mirrored), so the landmarks map
-// directly onto the feed with no flip. Called every frame; no-op for missing hands.
+// MAIN view. The webcam backs the scene mirrored (selfie) and the landmarks are mirrored
+// to match, so they map directly onto the feed with no flip. Called every frame; no-op
+// for missing hands.
 export function drawSkeletons(
     ctx2d: CanvasRenderingContext2D,
     left: HandPose | null,

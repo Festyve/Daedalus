@@ -13,9 +13,9 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
 // Bloom tuning: high threshold so the matte steel body stays dark and only bright
 // rim / affordance pixels (luminance > BLOOM_THRESHOLD) glow.
-const BLOOM_STRENGTH = 0.55;
+const BLOOM_STRENGTH = 0.9;
 const BLOOM_RADIUS = 0.4;
-const BLOOM_THRESHOLD = 0.85;
+const BLOOM_THRESHOLD = 0.7;
 
 // Subtle ground-truth ambient occlusion: small radius so creases darken without
 // washing the silhouette.

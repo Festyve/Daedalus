@@ -37,11 +37,14 @@ import { ViewModeController } from "./render/viewMode";
 import { Carousel } from "./menu/carousel";
 import { MenuRouter } from "./menu/menuRouter";
 import { createAddShapesMenu } from "./menu/addShapes";
+import { createSelectMenu } from "./menu/select";
 import { createTranslateMenu } from "./menu/translate";
 import { createDilateMenu } from "./menu/dilate";
 import { createRotateMenu } from "./menu/rotate";
 import { createMorphMenu } from "./menu/morph";
 import { createDecorateMenu } from "./decorate/chatPanel";
+import { createInteractMenu } from "./menu/interaction";
+import { createDestroyMenu } from "./menu/destroy";
 
 import { classify, GestureDebouncer } from "./gesture/detect";
 import { handScale } from "./gesture/predicates";
@@ -79,11 +82,14 @@ const router = new MenuRouter();
 // imports the modules itself, so the module-boundary rule (talk only through
 // SceneContext) is preserved.
 router.register(createAddShapesMenu());
+router.register(createSelectMenu());
 router.register(createTranslateMenu());
 router.register(createDilateMenu());
 router.register(createRotateMenu());
 router.register(createMorphMenu());
 router.register(createDecorateMenu());
+router.register(createInteractMenu());
+router.register(createDestroyMenu());
 
 // Tool carousel (§4.1). Parented to the camera so it stays pinned at top-center; the
 // nav fingertip is transformed world -> camera-local before being handed to update().

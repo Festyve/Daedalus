@@ -13,11 +13,14 @@ import { T, TOOL_ACCENT, FONT } from "../render/tokens";
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
 const MENU_INSTRUCTION: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: "point to aim · pinch to spawn",
+    [MenuId.SELECT]: "swipe to switch the selected shape",
     [MenuId.TRANSLATE]: "pinch an arrow · drag along its axis",
     [MenuId.DILATE]: "pinch both hands · apart / together to scale",
     [MenuId.ROTATE]: "pinch the ball · twist to rotate",
-    [MenuId.MORPH]: "squeeze to morph · open to relax",
+    [MenuId.MORPH]: "both hands closed · jiggle to morph",
     [MenuId.DECORATE]: "open palm for icing · pinch for sprinkles",
+    [MenuId.INTERACT]: "swipe to pick union / subtract / intersect · pinch to apply",
+    [MenuId.DESTROY]: "pinch to destroy the selected shape",
 };
 
 // Instruction shown when no menu is active (world idle / carousel closed).

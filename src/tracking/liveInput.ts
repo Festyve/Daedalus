@@ -157,15 +157,17 @@ export class LiveInputSource implements InputSource {
         // HandFilterBank.filter derives its own dt from the absolute timestamp;
         // dtMs is accepted for API parity but the bank smooths on tMs.
         void dtMs;
-        // Landmarks are kept in the camera's NATIVE (un-mirrored) image space, and the
-        // feed is displayed un-mirrored to match (viewMode.ts AR plane + overlay.ts) —
-        // so a hand at a screen spot controls things at that spot. The feed display and
-        // the landmarks MUST share the same orientation; to switch to a mirrored/selfie
-        // view you would flip x in BOTH places (here and viewMode.ts). World landmarks
-        // are metric and only feed distance-based predicates (§12), so they are left
-        // untouched. Pass the raw normalized landmarks straight through the filter.
+        // Landmarks are mirrored into SELFIE image space (x -> 1 - x) to match the
+        // mirrored feed (viewMode.ts AR plane + overlay.ts) — so the user's right hand
+        // appears on screen-right and a hand at a screen spot controls things at that
+        // spot. The feed display and the landmarks MUST share the same orientation
+        // (currently MIRRORED/selfie); to switch to a native/un-mirrored view you would
+        // drop the x-flip in BOTH places (here and viewMode.ts). World landmarks are
+        // metric and only feed distance-based predicates (§12), so they are left
+        // untouched. Mirror x BEFORE filtering so the smoothed stream is in selfie space.
+        const mirrored = lm.map((p) => ({ x: 1 - p.x, y: p.y, z: p.z })) as Vec3[];
         const { landmarks, world } = this.banks[label].filter(
-            lm as Vec3[],
+            mirrored,
             world_lm as Vec3[],
             tMs,
         );
@@ -183,9 +185,10 @@ export class LiveInputSource implements InputSource {
 
 // Map MediaPipe's per-hand handedness category to our Left/Right label. MediaPipe
 // determines handedness ASSUMING the input image is mirrored (selfie); we feed it the
-// RAW, non-mirrored camera frame (landmarks stay native — see buildPose), so its
-// reported label is inverted relative to the user's actual hands — swap it so Left =
-// the user's left hand (nav) and Right = the user's right hand (exec), per §3.2. When
+// RAW, non-mirrored camera frame (we mirror the landmarks for display ourselves in
+// buildPose, but MediaPipe still sees the raw stream), so its reported label is inverted
+// relative to the user's actual hands — swap it so Left = the user's left hand (nav) and
+// Right = the user's right hand (exec), per §3.2. When
 // the label is missing, fall back so the first detection is Right (execution hand) and
 // the second is Left.
 function labelFor(handedness: Category[][] | undefined, i: number): Handedness {

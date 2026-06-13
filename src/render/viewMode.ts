@@ -140,16 +140,16 @@ export class ViewModeController {
         }
 
         // Image-space horizontal velocity per hand, normalized by image-space S so the
-        // threshold reads in S/frame. The feed is now UN-MIRRORED (native camera space):
-        // the user's right hand (our "Right" pose) appears on the image's LEFT, so sweeping
-        // it outward (to the user's right) DECREASES x; the user's left hand (our "Left"
-        // pose) appears on the image's RIGHT, so sweeping it outward INCREASES x. Parting
-        // therefore means rVx < 0 and lVx > 0 (the opposite of the old selfie space).
+        // threshold reads in S/frame. The feed is MIRRORED (selfie space): the user's left
+        // hand (our "Left" pose) appears on the image's LEFT, so sweeping it outward (toward
+        // screen-left) DECREASES x; the user's right hand (our "Right" pose) appears on the
+        // image's RIGHT, so sweeping it outward (toward screen-right) INCREASES x. Parting
+        // therefore means lVx < 0 and rVx > 0.
         const lScale = imageHandScale(left!.landmarks);
         const rScale = imageHandScale(right!.landmarks);
         const lVx = this.prevLeft.valid ? (left!.landmarks[INDEX_TIP].x - this.prevLeft.x) / lScale : 0;
         const rVx = this.prevRight.valid ? (right!.landmarks[INDEX_TIP].x - this.prevRight.x) / rScale : 0;
-        const movingApart = lVx > VX_THRESHOLD && rVx < -VX_THRESHOLD;
+        const movingApart = lVx < -VX_THRESHOLD && rVx > VX_THRESHOLD;
 
         this.sampleHands(left, right);
 
@@ -252,11 +252,12 @@ export class ViewModeController {
         texture.magFilter = THREE.LinearFilter;
 
         // Full-colour webcam backdrop (§9.5). The feed display and the tracked landmarks
-        // MUST share the same orientation: landmarks are kept in the camera's NATIVE
-        // (un-mirrored) space (liveInput.ts), so the plane samples vUv directly with no U
-        // flip. To switch to a mirrored/selfie view you would flip x in BOTH places (here
-        // and liveInput.ts). A very mild contrast bump keeps it from washing into the UI
-        // while still reading as a normal colour webcam.
+        // MUST share the same orientation (currently MIRRORED/selfie): landmarks are
+        // mirrored to selfie space (liveInput.ts), so the plane samples a U-flipped vUv
+        // (1 - vUv.x) so the webcam shows mirrored — the user's right hand on screen-right.
+        // To switch to a native/un-mirrored view you would drop the x-flip in BOTH places
+        // (here and liveInput.ts). A very mild contrast bump keeps it from washing into the
+        // UI while still reading as a normal colour webcam.
         const material = new THREE.ShaderMaterial({
             uniforms: { uMap: { value: texture } },
             depthTest: false,
@@ -272,7 +273,7 @@ export class ViewModeController {
                 uniform sampler2D uMap;
                 varying vec2 vUv;
                 void main() {
-                    vec3 c = texture2D(uMap, vUv).rgb;
+                    vec3 c = texture2D(uMap, vec2(1.0 - vUv.x, vUv.y)).rgb;
                     vec3 contrast = (c - 0.5) * 1.04 + 0.5;      // very mild contrast
                     gl_FragColor = vec4(clamp(contrast, 0.0, 1.0), 1.0);
                 }

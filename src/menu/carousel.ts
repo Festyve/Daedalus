@@ -39,7 +39,7 @@ const VISIBLE_RADIUS = 2;      // how many neighbors each side are rendered (2 =
 // ---- Depth fade (§4.1) — opacity + scale by wheel-distance from the active tile, indexed
 //      0 / 1 / 2. Tiles read as a depth-faded strip: smaller and dimmer the further out;
 //      anything past VISIBLE_RADIUS is hidden. Opacity here is multiplied by the open fade.
-const DIST_OPACITY = [1.0, 0.5, 0.22];   // centered / one out / two out
+const DIST_OPACITY = [1.0, 0.62, 0.32];  // centered / one out / two out — neighbours read clearer
 const DIST_SCALE = [1.15, 0.85, 0.62];   // centered / one out / two out
 
 // ---- Motion (§14.4) ----
@@ -50,10 +50,12 @@ const PULSE_DEPTH = 0.18;      // peak-to-trough amplitude of the idle pulse
 const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow ramps in
 
 // ---- Index swipe (§4.1) — swiping the index fingertip horizontally steps the wheel one
-//      tool per swipe. Commits once |g.vx| crosses FLICK_VX; won't fire again until the
-//      finger slows below FLICK_REARM_VX, so one swipe = one step and jitter can't repeat.
+//      tool per swipe. Commits once |g.vx| crosses FLICK_VX; won't fire again until BOTH a
+//      post-step cooldown lapses AND the finger slows below FLICK_REARM_VX, so one swipe =
+//      exactly one step even when the velocity wobbles below re-arm mid-swipe and back up.
 const FLICK_VX = 0.3;          // |g.vx| (units of S/frame) that commits a swipe — forgiving
 const FLICK_REARM_VX = 0.12;   // |g.vx| must drop below this before another swipe arms
+const FLICK_COOLDOWN_MS = 220; // hard lockout after a step (~14 frames @60fps): no step fires
 
 // ---- Texture resolution for the per-tool icon tiles + the label strip ----
 const TILE_PX = 128;
@@ -63,7 +65,7 @@ const RING_PX = 256;
 
 // ---- Centered-tool glow ring (§4.1 emphasis; §14.4 eased, never bouncy) ----
 const RING_SIZE = ITEM_SIZE * 1.9;   // ring plane edge length (larger than the active tile)
-const RING_BASE = 0.55;              // resting ring opacity at full fade, glow=0
+const RING_BASE = 0.62;              // resting ring opacity at full fade, glow=0 — slightly brighter
 const RING_GLOW = 0.45;              // extra opacity added as proximity glow ramps to 1
 
 // One rendered tool tile: a textured plane (icon glyph baked once) plus its own material
@@ -197,6 +199,7 @@ export class Carousel {
     private slideTo = 0;                         // target strip x-offset
     private slideMs = SNAP_MS;                   // elapsed → done when ≥ SNAP_MS
     private flickArmed = true;                   // re-arm gate so one fast swipe = one step
+    private flickCooldownMs = 0;                 // post-step lockout (counts down); blocks repeats
 
     private fade = 0;                            // 0 hidden .. 1 fully shown
     private fadeDir: 0 | 1 | -1 = 0;             // 0 idle, +1 opening, -1 closing
@@ -328,6 +331,7 @@ export class Carousel {
         this.pendingSelect = false;
         this.pinchLatched = false;
         this.flickArmed = true;
+        this.flickCooldownMs = 0;
         this.glow = 0;
         this.tmpLocal.copy(atTip); // touch atTip so callers can rely on it being read
         // Snap instantly to the current active tile on open (no slide from a stale offset).
@@ -390,10 +394,15 @@ export class Carousel {
                 // Index swipe → one tool per swipe (re-armed once the finger slows). Feed is
                 // un-mirrored: g.vx > 0 is rightward. Swiping LEFT (vx < 0) drags the strip
                 // left so the tool on the right slides to center → step +1; rightward → -1.
+                // A step also opens a hard cooldown: even if the velocity dips below re-arm and
+                // spikes again within the same physical swipe, no second step fires until the
+                // window lapses — so one swipe is exactly one step.
+                if (this.flickCooldownMs > 0) this.flickCooldownMs -= dtMs;
                 const speed = Math.abs(g.vx);
-                if (this.flickArmed && speed >= FLICK_VX) {
+                if (this.flickArmed && this.flickCooldownMs <= 0 && speed >= FLICK_VX) {
                     this.step(g.vx > 0 ? -1 : 1);
                     this.flickArmed = false;
+                    this.flickCooldownMs = FLICK_COOLDOWN_MS;
                 } else if (speed < FLICK_REARM_VX) {
                     this.flickArmed = true;
                 }

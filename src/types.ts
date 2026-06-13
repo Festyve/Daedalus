@@ -45,26 +45,32 @@ export interface GestureState {
     vx: number;         // index-tip horizontal velocity, units of S per frame
 }
 
-// ---------- Menus (§5) — six tools ----------
+// ---------- Menus (§5) — tools ----------
 export enum MenuId {
     ADD_SHAPES = "ADD_SHAPES",
+    SELECT = "SELECT",
     TRANSLATE = "TRANSLATE",
     DILATE = "DILATE",
     ROTATE = "ROTATE",
     MORPH = "MORPH",
     DECORATE = "DECORATE",
+    INTERACT = "INTERACT",
+    DESTROY = "DESTROY",
 }
 export const MENU_ORDER: MenuId[] = [
-    MenuId.ADD_SHAPES, MenuId.TRANSLATE, MenuId.DILATE,
-    MenuId.ROTATE, MenuId.MORPH, MenuId.DECORATE,
+    MenuId.ADD_SHAPES, MenuId.SELECT, MenuId.TRANSLATE, MenuId.DILATE,
+    MenuId.ROTATE, MenuId.MORPH, MenuId.DECORATE, MenuId.INTERACT, MenuId.DESTROY,
 ];
 export const MENU_LABEL: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: "ADD SHAPES",
+    [MenuId.SELECT]: "SELECT",
     [MenuId.TRANSLATE]: "TRANSLATE",
     [MenuId.DILATE]: "DILATE",
     [MenuId.ROTATE]: "ROTATE",
     [MenuId.MORPH]: "MORPH",
     [MenuId.DECORATE]: "DECORATE",
+    [MenuId.INTERACT]: "INTERACT",
+    [MenuId.DESTROY]: "DESTROY",
 };
 
 // ---------- Sculpt (§6.3) ----------

@@ -36,7 +36,12 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.ADD_SHAPES]: [
         "flick to cycle cube · sphere · tetrahedron",
         "pinch to pick · right pinch spawns at your hand",
-        "the new shape becomes the active sculpt target",
+        "each spawn adds a new shape (the others stay)",
+    ],
+    [MenuId.SELECT]: [
+        "swipe left/right to cycle which shape is selected",
+        "the selected shape glows; the others dim",
+        "every edit tool then acts on the selected shape",
     ],
     [MenuId.TRANSLATE]: [
         "right open palm — object follows your hand",
@@ -58,6 +63,15 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.DECORATE]: [
         "speak to DAEDALUS to decorate (voice + AI chat)",
         "fires icing + sprinkles, streams a spoken reply",
+    ],
+    [MenuId.INTERACT]: [
+        "combine the selected shape with the next one",
+        "swipe to pick union · subtract · intersect (live preview)",
+        "pinch to apply — the two become one shape",
+    ],
+    [MenuId.DESTROY]: [
+        "pinch to delete the currently selected shape",
+        "the next shape (if any) becomes selected",
     ],
 };
 

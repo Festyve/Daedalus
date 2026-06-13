@@ -126,11 +126,14 @@ interface DaedalusGlobal {
 // strings so this file never depends on menu internals).
 const TOOL_KEYS: readonly string[] = [
     "ADD_SHAPES",
+    "SELECT",
     "TRANSLATE",
     "DILATE",
     "ROTATE",
     "MORPH",
     "DECORATE",
+    "INTERACT",
+    "DESTROY",
 ];
 
 /**
@@ -141,7 +144,7 @@ export class MockInputSource implements InputSource {
     ready = false;
 
     // ---- live input state (mutated by DOM listeners) ----
-    private mouse_x = 0.5;          // normalized [0,1], native (un-mirrored) image space
+    private mouse_x = 0.5;          // normalized [0,1], selfie (mirrored) image space
     private mouse_y = 0.5;
     private depth_z = 0;            // accumulated scroll depth, clamped
     private left_x = 0.35;         // left-hand normalized center, moved by WASD
@@ -156,11 +159,11 @@ export class MockInputSource implements InputSource {
 
     // ---- bound listeners, retained so dispose() can remove them ----
     private readonly onMouseMove = (e: MouseEvent): void => {
-        // The live feed + landmarks are now UN-mirrored (native camera space), so the mock
-        // maps the cursor straight through with no X flip. innerWidth/Height guard against 0.
+        // The live feed + landmarks are MIRRORED (selfie space), so mirror X to match the
+        // selfie-flipped feed. innerWidth/Height guard against 0.
         const w = window.innerWidth || 1;
         const h = window.innerHeight || 1;
-        this.mouse_x = clamp01(e.clientX / w);
+        this.mouse_x = 1 - clamp01(e.clientX / w);
         this.mouse_y = clamp01(e.clientY / h);
     };
 

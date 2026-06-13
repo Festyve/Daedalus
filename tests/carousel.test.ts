@@ -216,8 +216,9 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 5);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
-            // Drop below the re-arm threshold, then swipe again → a second step lands.
-            drive(c, gesture({ name: "point", vx: REARM_VX * 0.5 }), 1);
+            // Drop below the re-arm threshold AND wait out the post-step cooldown (~220ms),
+            // then swipe again → a second step lands. (16 frames × 16ms = 256ms > cooldown.)
+            drive(c, gesture({ name: "point", vx: REARM_VX * 0.5 }), 16);
             drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[2]);
         } finally {
@@ -248,7 +249,8 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
 
             // Swipe (leftward = forward) to the third tool so the selection target is non-trivial.
             drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
-            drive(c, gesture({ name: "point", vx: 0 }), 1); // re-arm + let snap settle
+            // Re-arm + wait out the ~220ms post-step cooldown before the next swipe.
+            drive(c, gesture({ name: "point", vx: 0 }), 16);
             drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
             const target = centeredId(c);
             expect(target).toBe(MENU_ORDER[2]);

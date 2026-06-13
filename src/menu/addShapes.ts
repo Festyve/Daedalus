@@ -19,6 +19,7 @@ import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
 import { makeShape } from "../render/geometry";
 import { attachMesh } from "../render/scene";
+import { refreshHighlight } from "../core/shapes";
 import { fingertipToWorld } from "../math/coords";
 import { handScale, pinchAmount } from "../gesture/predicates";
 import { classify } from "../gesture/detect";
@@ -164,21 +165,16 @@ export function createAddShapesMenu(): MenuModule {
         has_prev = true;
     }
 
-    // Replace the active sculpt target with a freshly spawned primitive (§5.1). The old
-    // mesh (if any) is removed from the scene and disposed first so it does not linger;
-    // attachMesh then builds the new mesh + BVH and points ctx.mesh / ctx.bvh at it.
+    // Spawn a fresh primitive and ADD it to the scene as a new shape (§5.1, multi-shape).
+    // Shapes now coexist: the previously-selected mesh is demoted to a background shape
+    // (kept in ctx.extraMeshes, NOT disposed) and the new mesh becomes the selected one.
+    // attachMesh builds the new mesh + BVH and points ctx.mesh / ctx.bvh at it; the SELECT
+    // tool cycles which shape is selected, and refreshHighlight dims the rest.
     function spawnShape(kind: ShapeKind, ctx: SceneContext, at: THREE.Vector3): void {
         const old = ctx.mesh;
-        if (old) {
-            ctx.scene.remove(old);
-            old.geometry.dispose();
-            const mat = old.material;
-            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-            else mat.dispose();
-            ctx.bvh = null;
-        }
-
         const mesh = attachMesh(ctx, makeShape(kind));
+        if (old) ctx.extraMeshes.push(old);
+        refreshHighlight(ctx);
         clampSpawnToView(at, ctx.camera, mesh.geometry.boundingSphere?.radius ?? 1.5);
         mesh.position.copy(at);
 

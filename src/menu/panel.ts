@@ -41,9 +41,12 @@ export class Panel {
             "display:flex",
             "flex-direction:column",
             "padding:16px 18px 0 18px",
-            "background:" + T.bgPanel,
-            // 0.5px cyan border + subtle inner glow (§4.2).
-            "border:0.5px solid " + this.accent,
+            // Slightly more opaque than T.bgPanel so menus read clearly over the
+            // colour camera feed (same near-black blue tint, just less see-through).
+            "background:rgba(0,8,20,0.92)",
+            // 1px cyan border + subtle inner glow (§4.2) — a touch stronger so the
+            // panel edge stays legible against the busy background.
+            "border:1px solid " + this.accent,
             "border-radius:10px",
             "box-shadow:inset 0 0 24px " + T.cyanDim + ",0 0 18px rgba(0,0,0,0.55)",
             "color:" + T.text,
