@@ -31,7 +31,7 @@ canvas#webgl { position: fixed; inset: 0; z-index: 1; display: block; mix-blend-
     width: 100%;
     height: 100%;
     background: #000;
-    filter: saturate(0.35) brightness(0.92);
+    filter: brightness(0.92);
 }
 
 /* clean model-on-black mirror, bottom-right corner — the old big-screen view (§15.3) */

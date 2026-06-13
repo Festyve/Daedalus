@@ -31,8 +31,9 @@ const CONNECTOR_WIDTH = 2;
 const JOINT_RADIUS = 3;
 const HALO_RADIUS = 5;
 
-// Desaturate + raise contrast so the green skeleton pops against the feed (§9.5).
-const FEED_FILTER = "grayscale(1) brightness(0.72) contrast(1.18)";
+// Full-colour feed, slightly dimmed + contrast-raised so the green skeleton still
+// pops against it (§9.5).
+const FEED_FILTER = "brightness(0.82) contrast(1.1)";
 
 // Draw one hand's green skeleton onto ctx. Landmarks are normalized [0,1] image-space
 // coordinates, so they scale by the canvas dimensions. No-op when the pose is null
