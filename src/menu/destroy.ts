@@ -1,18 +1,13 @@
-// §6.8 + §10 — DESTROY ("eat it"): the right hand forms a fist and brings the
-// donut toward the webcam; when the right INDEX_TIP crosses a near-camera depth
-// threshold the finale fires — an optional CSG bite, a crunch, then the dissolve
-// shader consumes whatever geometry the user actually sculpted, bursting sparks
-// from the edge. On completion the stage advances to CONSUMED.
+// §6.8 + §10 — DESTROY ("eat it"): the right hand makes a sustained PINCH; holding
+// it briefly fills an arming meter and fires the finale at the pinch point — an
+// optional CSG bite, a crunch, then the dissolve shader consumes whatever geometry
+// the user actually sculpted, bursting sparks from the edge. On completion the
+// stage advances to CONSUMED.
 //
-// Paradigm (§6.8): "fist + bring-to-mouth". The right hand drives everything; the
-// left hand only picked DESTROY from the radial menu (handled upstream by main.ts).
-//
-// Depth signal: §6.8 triggers on "INDEX_TIP z-depth ... close to camera". The
-// calibration profile's depthNear/depthFar are derived from MediaPipe WORLD-z
-// samples (calibration.ts: depthSweep = "world-z samples", depthNear = min, i.e.
-// nearest the camera). So we read right.world[8].z and arm the finale once it
-// reaches calibration.depthNear — the same signal, in the same space, the user
-// calibrated their comfortable forward reach with.
+// Paradigm (revised §6.8): "pinch & hold to eat" — chosen over the original
+// "fist + bring-to-camera" because a depth lunge reads poorly on webcam and is easy
+// to trigger by accident. The right hand drives everything; the left hand only
+// picked DESTROY from the radial menu (handled upstream by main.ts).
 //
 // This module owns its own Sfx + Dissolve instances: the frozen MenuModule.update
 // signature carries no Sfx, and Dissolve.startDissolve / the §10.4 crunch both
@@ -23,7 +18,7 @@ import * as THREE from "three";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
-import { classify } from "../gesture/predicates";
+import { pinchAmount } from "../gesture/predicates";
 import { fingertipToWorld } from "../math/coords";
 import { SpatialPanel } from "./spatialPanel";
 import { Dissolve } from "../finale/dissolve";
@@ -37,6 +32,12 @@ const INDEX_TIP = 8;
 // sphere"). A little under half the body so the chomp reads as a distinct bite.
 const BITE_RADIUS_FRAC = 0.42;
 
+// §6.8 (revised): the eat is armed by a sustained right-hand PINCH (not a punch
+// toward the camera). Pinch closure at/above this fraction counts as "pinching",
+// and holding it HOLD_SECONDS fills the arming meter and fires the finale.
+const PINCH_ARM = 0.55;
+const HOLD_SECONDS = 0.7;
+
 export function createDestroyMenu(): MenuModule {
     // Per-instance state captured in the closure so enter/update/exit share it
     // without a class.
@@ -49,6 +50,8 @@ export function createDestroyMenu(): MenuModule {
     const bite_origin = new THREE.Vector3();
     let triggered = false;
     let consumed = false;
+    // Seconds the pinch has been held this attempt; fills the arming meter.
+    let hold = 0;
 
     // Repaint the panel to reflect the current phase: idle prompt + arming meter,
     // consuming, or the terminal CONSUMED label. `armed` is 0..1 (how close the fist
@@ -69,9 +72,8 @@ export function createDestroyMenu(): MenuModule {
             } else if (triggered) {
                 g.fillText("EATING...", 28, 86);
             } else {
-                g.fillText("MAKE A FIST", 28, 86);
-                g.fillText("BRING IT TO", 28, 116);
-                g.fillText("THE CAMERA", 28, 146);
+                g.fillText("PINCH & HOLD", 28, 86);
+                g.fillText("TO EAT IT", 28, 116);
             }
 
             // Arming meter: how close the fist is to the near threshold (0..1).
@@ -138,6 +140,7 @@ export function createDestroyMenu(): MenuModule {
         enter(ctx: SceneContext): void {
             triggered = false;
             consumed = false;
+            hold = 0;
             // A fresh DESTROY pass may bite again after a director restart (§10.3).
             resetBites();
 
@@ -167,18 +170,18 @@ export function createDestroyMenu(): MenuModule {
                 return;
             }
 
-            // §6.8 arm condition: a fist, brought toward the camera. world[8].z is the
-            // index fingertip's depth in the same space depthNear was calibrated in;
-            // smaller (more negative) is nearer the camera.
-            const gesture = classify(right.landmarks);
-            const tip_z = right.world[INDEX_TIP].z;
-            const near = ctx.calibration.depthNear;
-            const far = ctx.calibration.depthFar;
-            // 0 at the far end of comfortable reach, 1 once at/under the near
-            // threshold — drives the panel's arming meter only.
-            const armed = (far - tip_z) / (far - near || 1e-3);
+            // §6.8 (revised) arm condition: a sustained right-hand pinch. While the
+            // pinch is held the meter fills over HOLD_SECONDS; releasing resets it.
+            // When the meter is full the finale fires at the pinch point.
+            const pinch = pinchAmount(right.landmarks);
+            if (pinch >= PINCH_ARM) {
+                hold += dt;
+            } else {
+                hold = 0;
+            }
+            const armed = Math.min(1, hold / HOLD_SECONDS);
 
-            if (gesture.name === "fist" && tip_z <= near) {
+            if (armed >= 1) {
                 triggerFinale(ctx, right);
             } else {
                 paintPanel(armed);

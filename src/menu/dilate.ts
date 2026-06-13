@@ -13,7 +13,8 @@ import * as THREE from "three";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
-import { SpatialPanel } from "./spatialPanel";
+import { SpatialPanel, drawPanelHints } from "./spatialPanel";
+import { MENU_HINTS } from "../ui/gestureGuide";
 import { pinchAmount, palmCenter } from "../gesture/predicates";
 
 // A "loose pinch" engages the gesture: thumb-index closure past this fraction (§6.3).
@@ -114,7 +115,7 @@ export function createDilateMenu(): MenuModule {
         if (!panel) return;
         const factor = last_factor;
         const s = current_scale_readout;
-        panel.draw((g) => {
+        panel.draw((g, w, h) => {
             g.fillStyle = accent;
             g.font = 'bold 30px "JetBrains Mono", monospace';
             g.textBaseline = "top";
@@ -141,6 +142,8 @@ export function createDilateMenu(): MenuModule {
             g.fillStyle = engaged ? accent : "rgba(255,255,255,0.35)";
             g.font = '16px "JetBrains Mono", monospace';
             g.fillText(engaged ? "[ scaling ]" : "pinch both hands", 24, 308);
+
+            drawPanelHints(g, w, h, MENU_HINTS[MenuId.DILATE], accent, 0);
         });
     }
 

@@ -28,7 +28,8 @@
 import * as THREE from "three";
 import type { MenuModule, SceneContext, HandPose } from "../types";
 import { MenuId } from "../types";
-import { SpatialPanel } from "./spatialPanel";
+import { SpatialPanel, drawPanelHints } from "./spatialPanel";
+import { MENU_HINTS } from "../ui/gestureGuide";
 import { classify, pinchAmount } from "../gesture/predicates";
 import { fingertipToWorld } from "../math/coords";
 import { MENU_META } from "../render/tokens";
@@ -179,7 +180,7 @@ export function createRotateMenu(): MenuModule {
             ? "FREE"
             : `LOCK ${AXIS_NAMES[lockedRing]}`;
         const axisLabel = active === null ? "--" : AXIS_NAMES[active];
-        panel.draw((g, w) => {
+        panel.draw((g, w, h) => {
             g.fillStyle = accent;
             g.font = 'bold 30px "JetBrains Mono", monospace';
             g.fillText("ROTATE", 24, 26);
@@ -205,6 +206,9 @@ export function createRotateMenu(): MenuModule {
             g.font = '15px "JetBrains Mono", monospace';
             g.fillStyle = "rgba(255,255,255,0.35)";
             g.fillText('"gun" pose = lock axis', 24, 340);
+
+            // Operate hints sit in the open band above the lock/turn chips (y=300).
+            drawPanelHints(g, w, h, MENU_HINTS[MenuId.ROTATE], accent, 100);
         });
     }
 

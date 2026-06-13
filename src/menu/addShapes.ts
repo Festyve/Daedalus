@@ -16,7 +16,8 @@ import * as THREE from "three";
 import type { MenuModule, SceneContext, HandPose } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
-import { SpatialPanel } from "./spatialPanel";
+import { SpatialPanel, drawPanelHints } from "./spatialPanel";
+import { MENU_HINTS } from "../ui/gestureGuide";
 import { toNDC } from "../math/coords";
 import { pinchAmount } from "../gesture/predicates";
 
@@ -165,9 +166,10 @@ export function createAddShapesMenu(): MenuModule {
             g.font = 'bold 30px "JetBrains Mono", monospace';
             g.textBaseline = "top";
             g.fillText(label, 20, 16);
-            g.font = '16px "JetBrains Mono", monospace';
-            g.fillStyle = "rgba(255,255,255,0.45)";
-            g.fillText("point+dwell // pinch to spawn", 20, 52);
+            // Operating instructions in the title band (the grid fills the lower
+            // panel). bottomPad = h-98 anchors the two lines at y≈58/82, under the
+            // title and above the grid (GRID_TOP).
+            drawPanelHints(g, w, h, MENU_HINTS[MenuId.ADD_SHAPES], accent, h - 98);
 
             const gx0 = GRID_LEFT * w, gx1 = GRID_RIGHT * w;
             const gy0 = GRID_TOP * h, gy1 = GRID_BOTTOM * h;

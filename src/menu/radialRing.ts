@@ -76,6 +76,7 @@ export class RadialRing {
                 map: texture,
                 transparent: true,
                 depthWrite: false,
+                depthTest: false, // ring tiles always draw ABOVE the shape (never occluded)
                 toneMapped: false,
             });
             const mesh = new THREE.Mesh(new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE), material);

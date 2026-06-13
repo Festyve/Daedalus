@@ -62,6 +62,7 @@ export class SpatialPanel {
             map: this.texture,
             transparent: true,
             depthWrite: false,
+            depthTest: false, // always draw the menu card ABOVE the shape (never occluded)
             toneMapped: false,
         });
         this.geometry = new THREE.PlaneGeometry(PLANE_W, PLANE_H);
@@ -129,4 +130,34 @@ export class SpatialPanel {
         this.material.dispose();
         this.texture.dispose();
     }
+}
+
+// Shared helper: draw a small operating-instructions block (1-3 dim lines) at the
+// bottom-left of a panel canvas, each line led by an accent tick. Menus call this at
+// the end of their draw() callback so every panel shows a consistent "how to operate"
+// hint (#4). `bottomPad` lifts the block clear of bottom-anchored content (an arming
+// meter, a thumbnail grid).
+export function drawPanelHints(
+    g: CanvasRenderingContext2D,
+    _w: number,
+    h: number,
+    lines: string[],
+    accent: string,
+    bottomPad = 0,
+): void {
+    const LINE_H = 24;
+    const base = h - 16 - bottomPad;
+    let y = base - (lines.length - 1) * LINE_H;
+    g.save();
+    g.textAlign = "left";
+    g.textBaseline = "alphabetic";
+    g.font = '17px "JetBrains Mono", monospace';
+    for (const line of lines) {
+        g.fillStyle = accent;
+        g.fillText("›", 26, y); // › tick
+        g.fillStyle = "rgba(255,255,255,0.55)";
+        g.fillText(line, 44, y);
+        y += LINE_H;
+    }
+    g.restore();
 }

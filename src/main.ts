@@ -145,7 +145,10 @@ function driveNav(nav: HandPose | null): void {
     fingertipToWorld(nav.landmarks[5], ctx.camera, ctx.interactionPlaneZ, navRay, navPlane, navMcp);
     navAim.subVectors(navTip, navMcp).normalize();
 
-    if (g.name === "gun" && !ring.isOpen) ring.open(navTip);
+    if (g.name === "gun" && !ring.isOpen) {
+        ring.open(navTip);
+        router.select(ctx, null); // opening the wheel deactivates the current menu (#3)
+    }
     if (g.name === "fist" && ring.isOpen) ring.close();
 
     if (ring.isOpen) {

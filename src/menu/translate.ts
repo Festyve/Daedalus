@@ -12,7 +12,8 @@ import * as THREE from "three";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
 import { TOKENS } from "../render/tokens";
-import { SpatialPanel } from "./spatialPanel";
+import { SpatialPanel, drawPanelHints } from "./spatialPanel";
+import { MENU_HINTS } from "../ui/gestureGuide";
 import { fingertipToWorld, projectOntoAxis } from "../math/coords";
 import { pinchAmount } from "../gesture/predicates";
 
@@ -150,7 +151,7 @@ export function createTranslateMenu(): MenuModule {
     function drawPanel(ctx: SceneContext): void {
         if (!panel) return;
         const p = ctx.mesh.position;
-        panel.draw((g) => {
+        panel.draw((g, w, h) => {
             g.fillStyle = TOKENS.menuBlue;
             g.font = 'bold 34px "JetBrains Mono", monospace';
             g.fillText("TRANSLATE", 28, 26);
@@ -170,6 +171,8 @@ export function createTranslateMenu(): MenuModule {
                     ? "PINCH TO GRAB"
                     : "HOVER AN ARROW";
             g.fillText(hint, 28, 300);
+
+            drawPanelHints(g, w, h, MENU_HINTS[MenuId.TRANSLATE], TOKENS.menuBlue, 0);
         });
     }
 

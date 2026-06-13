@@ -24,7 +24,8 @@ import { MENU_META } from "../render/tokens";
 import { classify, fingerSpread } from "../gesture/predicates";
 import { fingertipToWorld } from "../math/coords";
 import { SculptEngine } from "../sculpt/engine";
-import { SpatialPanel } from "./spatialPanel";
+import { SpatialPanel, drawPanelHints } from "./spatialPanel";
+import { MENU_HINTS } from "../ui/gestureGuide";
 import { Sfx } from "../audio/sfx";
 
 type MorphTab = "squish" | "free";
@@ -265,7 +266,7 @@ class MorphMenu implements MenuModule {
         const tab = this.tab;
         const isDonut = t > DONUT_T;
 
-        this.panel.draw((g, w) => {
+        this.panel.draw((g, w, h) => {
             // Title.
             g.fillStyle = accent;
             g.font = 'bold 30px "JetBrains Mono", monospace';
@@ -317,6 +318,8 @@ class MorphMenu implements MenuModule {
                 g.fillStyle = "rgba(255,255,255,0.5)";
                 g.fillText(`spread ${spread.toFixed(2)}`, 24, 316);
             }
+
+            drawPanelHints(g, w, h, MENU_HINTS[MenuId.MORPH], accent, 0);
         });
     }
 }

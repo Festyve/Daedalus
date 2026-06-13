@@ -23,7 +23,8 @@ import type { CSGOperation } from "three-bvh-csg";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
 import { MENU_META, TOKENS } from "../render/tokens";
-import { SpatialPanel } from "./spatialPanel";
+import { SpatialPanel, drawPanelHints } from "./spatialPanel";
+import { MENU_HINTS } from "../ui/gestureGuide";
 import { fingertipToWorld } from "../math/coords";
 import { classify } from "../gesture/predicates";
 
@@ -335,9 +336,11 @@ export function createInteractMenu(): MenuModule {
             g.fillStyle = target ? TARGET_HEX : TOKENS.textDim;
             g.fillText(target ? "TGT: shape" : "TGT: tap a shape", 200, 52);
 
-            // Slot list.
+            // Slot list. Reserve a taller bottom band for the status footer + the
+            // operate-hints block (this canvas layout is cosmetic only — slot hit-testing
+            // maps image-space finger Y, not these pixels, so compressing is safe).
             const top = 86;
-            const row_h = (h - top - 36) / SLOTS.length;
+            const row_h = (h - top - 92) / SLOTS.length;
             for (let i = 0; i < SLOTS.length; i++) {
                 const slot = SLOTS[i];
                 const y = top + i * row_h;
@@ -365,10 +368,12 @@ export function createInteractMenu(): MenuModule {
                 g.fillText(slot.sub, 22, y + 32);
             }
 
-            // Status footer.
+            // Status footer (lifted to clear the operate-hints block below it).
             g.fillStyle = meta.accent;
             g.font = '16px "JetBrains Mono", monospace';
-            g.fillText("> " + status, 20, h - 28);
+            g.fillText("> " + status, 20, h - 70);
+
+            drawPanelHints(g, w, h, MENU_HINTS[MenuId.INTERACT], meta.accent, 0);
         });
     }
 
