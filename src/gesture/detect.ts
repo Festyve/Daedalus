@@ -68,16 +68,23 @@ function imageScale(lm: Vec3[]): number {
  * - `vx`       index-tip horizontal velocity in units of S per frame; needs `prevLm`
  *              (the previous frame's image-space landmarks). 0 when no previous frame.
  *
- * @param lm     this frame's image-space landmarks (21, normalized, mirrored).
- * @param world  this frame's metric landmarks (21), source of hand scale S.
+ * @param lm     this frame's image-space landmarks (21, normalized, mirrored); used
+ *               only for the screen-horizontal velocity channel `vx`.
+ * @param world  this frame's metric landmarks (21); source of hand scale S and of all
+ *               pose-shape thresholds (§3.5), so numerator and S share one space.
  * @param prevLm previous frame's image-space landmarks, or null/undefined on frame 1.
  */
 export function classify(lm: Vec3[], world: Vec3[], prevLm?: Vec3[] | null): GestureState {
     const s = handScale(world);
 
-    const pinch = pinchAmount(lm, s);
-    const spread = spreadAmount(lm, s);
-    const extended = countExtended(lm);
+    // Pose-shape thresholds are fractions of the world-space hand scale S (§3.5/§12),
+    // so they must read the WORLD landmarks too — feeding image-space `lm` here would
+    // divide an image-space numerator by a metric S, a non-dimensionless ratio that
+    // drifts with camera distance and frame aspect. Only `vx` below stays in image
+    // space, where a screen-horizontal flick velocity belongs.
+    const pinch = pinchAmount(world, s);
+    const spread = spreadAmount(world, s);
+    const extended = countExtended(world);
 
     // Horizontal index-tip velocity, normalized by the image-space hand scale so the
     // result is a unitless per-frame ratio. Positive = rightward in mirrored image space.
@@ -89,17 +96,17 @@ export function classify(lm: Vec3[], world: Vec3[], prevLm?: Vec3[] | null): Ges
     // Discrete name. Pinch wins over poses (it is the select action), then the held
     // poses in §12 order, then flick (transient), then a bare point, else none.
     let name: GestureName = "none";
-    if (isPinching(lm, s)) {
+    if (isPinching(world, s)) {
         name = "pinch";
-    } else if (isGun(lm, s)) {
+    } else if (isGun(world, s)) {
         name = "gun";
-    } else if (isFist(lm, s)) {
+    } else if (isFist(world, s)) {
         name = "fist";
-    } else if (isOpenPalm(lm, s)) {
+    } else if (isOpenPalm(world, s)) {
         name = "open";
     } else if (Math.abs(vx) > FLICK_VX) {
         name = "flick";
-    } else if (extended === 1 && fingerExtended(lm, FINGER_TIPS[0], FINGER_PIPS[0])) {
+    } else if (extended === 1 && fingerExtended(world, FINGER_TIPS[0], FINGER_PIPS[0])) {
         // Index alone extended (no thumb-up → not a gun): a plain pointing hand.
         name = "point";
     }
