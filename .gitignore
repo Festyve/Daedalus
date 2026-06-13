@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+.vite/
+.next/
+
+# generated
+next-env.d.ts
+
+# logs
+*.log
+.npm-install.log
+.next-dev.log
+
+# env
+*.local
+
+# OS
+.DS_Store
+
+# worktrees (managed by Claude Code, not source)
+.claude/worktrees/
