@@ -1,0 +1,55 @@
+/* Brutalist base (SPEC §15): pure black, JetBrains Mono, no gradients/rounding
+   outside menus. HUD specifics live in ui/chrome.ts; this is the shell. */
+:root {
+    --bg: #000000;
+    --text: #ffffff;
+    --text-dim: rgba(255, 255, 255, 0.45);
+    --line: rgba(255, 255, 255, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    overflow: hidden;
+}
+
+/* the WebGL canvas is appended by the renderer with id="webgl" */
+canvas#webgl { position: fixed; inset: 0; z-index: 0; display: block; }
+
+/* desaturated webcam, bottom-right (§15.3) */
+#preview {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 3;
+    width: 260px;
+    height: auto;
+    border: 1px solid var(--line);
+    background: #000;
+    filter: saturate(0.35) brightness(0.92);
+}
+
+/* HUD overlay layer (chrome.ts paints into this) */
+#chrome { position: fixed; inset: 0; z-index: 3; pointer-events: none; }
+
+#banner {
+    position: fixed;
+    left: 50%;
+    top: 24px;
+    transform: translateX(-50%);
+    z-index: 5;
+    padding: 12px 18px;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    background: rgba(180, 40, 40, 0.92);
+    color: #fff;
+    max-width: 80vw;
+    text-align: center;
+}
+
+.hidden { display: none !important; }
