@@ -1,18 +1,21 @@
+// Daedalus v5 shared contracts (SPEC §3.4, §5, §6, §8). Authoritative — all modules
+// code against these types. World starts empty: ctx.mesh is null until ADD SHAPES.
 import type * as THREE from "three";
 import type { MeshBVH } from "three-mesh-bvh";
-import type { CSS3DRenderer } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 
-// ---------- Tracking ----------
-export interface Landmark { x: number; y: number; z: number; } // normalized mirrored image space
-export interface WorldLandmark { x: number; y: number; z: number; } // MediaPipe metric, wrist origin
+// ---------- Tracking (§3) ----------
+export interface Vec3 { x: number; y: number; z: number; }
+export type Landmark = Vec3;       // normalized, mirrored image space
+export type WorldLandmark = Vec3;  // MediaPipe metric (meters), wrist origin
 export type Handedness = "Left" | "Right";
 
 export interface HandPose {
     handedness: Handedness;
-    landmarks: Landmark[];   // 21, One-Euro-filtered, image space
-    world: WorldLandmark[];  // 21, filtered, metric
+    landmarks: Vec3[];   // 21, One-Euro-filtered, image space
+    world: Vec3[];       // 21, filtered, metric
     confidence: number;
-    handScale: number;       // S = ||wrist(0) - middleMCP(9)|| in world landmarks (§0.6.2)
+    handScale: number;   // S = ||wrist(0) - middleMCP(9)|| in world landmarks (§3.5)
+    timestamp: number;
 }
 
 export interface PoseFrame {
@@ -20,121 +23,111 @@ export interface PoseFrame {
     Right: HandPose | null;
     count: number;
     tMs: number;
+    source: "live" | "mock";
 }
 
-// ---------- Calibration (§0.6.3) ----------
-export interface CalibrationProfile {
-    handScaleMeters: number;
-    restingJitter: number;
-    peakVelocity: number;
-    pinchClosed: number;   // fraction of S at full pinch
-    pinchOpen: number;     // fraction of S at rest
-    depthNear: number;
-    depthFar: number;
-    responsiveness: number; // 0..1 master sensitivity
-    handedness: Handedness; // which hand navigates menus
+// ---------- Input abstraction (§3.4) ----------
+export interface InputSource {
+    init(): Promise<void>;
+    /** Pump the latest frame given dt (ms). Non-blocking; last-write-wins. */
+    pump(dtMs: number): PoseFrame;
+    readonly ready: boolean;
+    dispose(): void;
 }
 
-// §0.6.4 skip-calibration defaults
-export const DEFAULT_CALIBRATION: CalibrationProfile = {
-    handScaleMeters: 0.09,
-    restingJitter: 0.0025,
-    peakVelocity: 2.0,
-    pinchClosed: 0.30,
-    pinchOpen: 0.9,
-    depthNear: -0.1,
-    depthFar: 0.2,
-    responsiveness: 0.6,
-    handedness: "Left",
-};
-
-// ---------- Gesture ----------
-export type GestureName =
-    | "none" | "fist" | "open" | "point" | "pinch" | "gun" | "peace" | "other";
+// ---------- Gesture (§12) ----------
+export type GestureName = "none" | "fist" | "open" | "point" | "pinch" | "gun" | "flick";
 export interface GestureState {
     name: GestureName;
     extended: number;   // count of extended non-thumb fingers
     pinch: number;      // 0..1 closure (1 = fully pinched)
-    spread: number;     // 0..1 normalized fingertip spread (drives squish -> t)
+    spread: number;     // 0..1 normalized fingertip spread
+    vx: number;         // index-tip horizontal velocity, units of S per frame
 }
 
-// ---------- Menus ----------
+// ---------- Menus (§5) — six tools ----------
 export enum MenuId {
     ADD_SHAPES = "ADD_SHAPES",
     TRANSLATE = "TRANSLATE",
     DILATE = "DILATE",
     ROTATE = "ROTATE",
-    INTERACT = "INTERACT",
     MORPH = "MORPH",
     DECORATE = "DECORATE",
-    DESTROY = "DESTROY",
 }
 export const MENU_ORDER: MenuId[] = [
-    MenuId.ADD_SHAPES, MenuId.TRANSLATE, MenuId.DILATE, MenuId.ROTATE,
-    MenuId.INTERACT, MenuId.MORPH, MenuId.DECORATE, MenuId.DESTROY,
+    MenuId.ADD_SHAPES, MenuId.TRANSLATE, MenuId.DILATE,
+    MenuId.ROTATE, MenuId.MORPH, MenuId.DECORATE,
 ];
+export const MENU_LABEL: Record<MenuId, string> = {
+    [MenuId.ADD_SHAPES]: "ADD SHAPES",
+    [MenuId.TRANSLATE]: "TRANSLATE",
+    [MenuId.DILATE]: "DILATE",
+    [MenuId.ROTATE]: "ROTATE",
+    [MenuId.MORPH]: "MORPH",
+    [MenuId.DECORATE]: "DECORATE",
+};
 
-// ---------- Sculpt ----------
-export enum BrushVerb { Grab, Inflate, Draw, Flatten, Pinch, Crease, Smooth }
+// ---------- Sculpt (§6.3) ----------
+export enum BrushVerb { Grab, Inflate, Draw, Flatten, Smooth }
 
-// ---------- Decorate (§9.2.2, §9.3) ----------
-export interface SprinkleDesign {
-    geometry: "capsule" | "star";
-    palette: string[];
-    length: number; radius: number; sizeJitter: number;
-    orientation: "random" | "normal";
-}
+// ---------- Decorate (§8.2) ----------
 export interface IcingDesign {
-    color: string; gloss: number;
-    dripStyle: "smooth" | "thick"; edgeNoise: number; sugarDusting: boolean;
+    color: string;
+    gloss: number;
+    dripStyle: "smooth" | "thick";
 }
-export interface GlazeDesign { color: string; shimmer: number; }
-
-export type DecorationAction =
-    | { type: "apply_icing"; design: IcingDesign; region?: "top" | "all" | "drip" }
-    | { type: "add_sprinkles"; design: SprinkleDesign }
-    | { type: "add_glaze"; design: GlazeDesign }
-    | { type: "clear" };
-
-export interface ChatTurn {
-    role: "user" | "ai";
-    text: string;
-    action?: DecorationAction;
-    delay: number; // ms after previous turn
+export interface SprinkleDesign {
+    geometry: "capsule";
+    palette: string[];
+    length: number;
+    radius: number;
 }
 
-// ---------- Director (§14) ----------
-export type DirectorMode = "guided" | "assist" | "safety" | "freeplay";
-export type Stage = "SPHERE" | "DONUT" | "DECORATED" | "CONSUMED";
+// ---------- Voice adapter (§8.1; ElevenLabs deferred — see TODO.md) ----------
+export interface VoiceReply { text: string; }
+export interface VoiceAdapter {
+    /** Produce a reply to a transcript, streaming tokens for the typewriter. */
+    respond(transcript: string, onToken: (chunk: string) => void): Promise<VoiceReply>;
+    /** Speak text via TTS (browser SpeechSynthesis for the scripted adapter). */
+    speak(text: string): void;
+}
 
-// ---------- Shared scratch math: reused objects, zero per-frame alloc (§12.2) ----------
+// ---------- View mode (§0.7) ----------
+export type ViewMode = "scene" | "ar";
+
+// ---------- Director (§13) ----------
+export type DirectorMode = "freeplay" | "safety";
+export type Stage = "EMPTY" | "SPHERE" | "DONUT" | "DECORATED";
+
+// ---------- Scratch math: reused objects, zero per-frame alloc (§6.2, §11) ----------
 export interface ScratchMath {
-    v1: THREE.Vector3; v2: THREE.Vector3; v3: THREE.Vector3;
-    m1: THREE.Matrix4; q1: THREE.Quaternion; plane: THREE.Plane;
-    ray: THREE.Ray;
+    v1: THREE.Vector3; v2: THREE.Vector3; v3: THREE.Vector3; v4: THREE.Vector3;
+    m1: THREE.Matrix4; q1: THREE.Quaternion; q2: THREE.Quaternion;
+    plane: THREE.Plane; ray: THREE.Ray;
 }
 
-// ---------- SceneContext: the single shared-state channel (§3.2, §6) ----------
+// ---------- SceneContext: the single shared-state channel ----------
 export interface SceneContext {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
-    css3d: CSS3DRenderer;      // DOM layer for the AI chat panel (§9, §11.5)
-    mesh: THREE.Mesh;          // the active sculptable object
-    bvh: MeshBVH | null;       // built on mesh.geometry position
-    extraMeshes: THREE.Mesh[]; // spawned shapes (ADD/INTERACT)
-    calibration: CalibrationProfile;
-    morphT: number;            // current donut blend 0..1
+    mesh: THREE.Mesh | null;        // active sculptable object; null while world is empty (§5.1)
+    bvh: MeshBVH | null;            // built on mesh.geometry position
+    extraMeshes: THREE.Mesh[];      // additional spawned shapes
+    morphT: number;                 // current donut blend 0..1
     stage: Stage;
+    viewMode: ViewMode;
     activeMenu: MenuId | null;
-    scratch: ScratchMath;      // reused objects (§12.2)
-    interactionPlaneZ: number; // object depth for unprojection (§13.2)
+    scratch: ScratchMath;           // reused objects (§6.2)
+    interactionPlaneZ: number;      // object depth for unprojection (§12)
 }
 
 // ---------- MenuModule contract: every menu honors this ----------
 export interface MenuModule {
     id: MenuId;
     enter(ctx: SceneContext): void;
-    update(ctx: SceneContext, right: HandPose | null, left: HandPose | null, dt: number): void;
+    update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void;
     exit(ctx: SceneContext): void;
+    /** Optional plain-DOM panel, fixed right side (§4.2). */
+    panel?: HTMLElement;
 }

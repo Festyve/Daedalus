@@ -1,13 +1,23 @@
-// SculptEngine — BVH-localized real-time deformation (SPEC §7.1-7.2).
+// SculptEngine — BVH-localized real-time deformation (SPEC §6, §11).
 //
-// Wraps a sculptable THREE.Mesh: builds a MeshBVH over its geometry, precomputes
-// vertex adjacency (for Taubin) and vertex→face incidence (for fast normal
-// recompute), and exposes `stroke(point, radius, verb, ctx)` which runs the §7.2
-// per-stroke loop:
-//   shapecast → candidate triangles within r → unique vertices within r →
-//   apply brush with falloff → mark dirty → bvh.refit() → recompute normals on
-//   the dirty region → upload only the changed attribute ranges.
-// All hot-loop state is reused scratch; there is zero per-frame allocation.
+// Wraps one sculptable THREE.Mesh: builds a MeshBVH over its geometry, precomputes
+// vertex adjacency (for Taubin smoothing) and vertex→face incidence (for fast
+// normal recompute), and exposes `applyBrush(verb, point, radius, strength, scratch)`
+// which runs the §6 per-stroke loop:
+//   shapecast → candidate triangles within r → vertices truly within r →
+//   apply brush kernel with falloff → mark dirty → incremental bvh.refit() →
+//   recompute normals on the dirty region ONLY → upload only the changed
+//   attribute ranges via addUpdateRange.
+//
+// HARD RULES honored here (SPEC §6.2, §11.1):
+//   - Dirty-region updates only: never a full BVH rebuild or full normal
+//     recompute per stroke. `refit()` is the incremental BVH bounds update.
+//   - Smoothing is ALWAYS Taubin (λ=0.5, μ=−0.53) via taubinSmooth — never plain
+//     Laplacian.
+//   - Zero per-frame allocation in the hot loop: `applyBrush` allocates nothing.
+//     It borrows the caller's ScratchMath and otherwise reuses persistent state
+//     allocated once in the constructor.
+//   - Upload only changed attribute ranges (addUpdateRange / clearUpdateRanges).
 import * as THREE from "three";
 import {
     MeshBVH,
@@ -19,8 +29,9 @@ import {
     NOT_INTERSECTED,
 } from "three-mesh-bvh";
 import { BrushVerb } from "../types";
+import type { ScratchMath } from "../types";
 import type { BrushContext } from "./brushes";
-import { falloff, grab, inflate, draw, flatten, pinch, crease, taubinSmooth } from "./brushes";
+import { falloff, taubinSmooth, BRUSH_KERNELS } from "./brushes";
 
 // Patch three.js prototypes exactly once so geometry.computeBoundsTree() and
 // accelerated raycasting are available (idempotent across engine instances).
@@ -38,6 +49,8 @@ export class SculptEngine {
     readonly bvh: MeshBVH;
 
     private readonly geometry: THREE.BufferGeometry;
+    private readonly positionAttr: THREE.BufferAttribute;
+    private readonly normalAttr: THREE.BufferAttribute;
     private readonly positions: Float32Array;
     private readonly normals: Float32Array;
     private readonly indexArr: Uint16Array | Uint32Array;
@@ -47,9 +60,14 @@ export class SculptEngine {
     // incident face indices per vertex (for dirty-region normal recompute)
     private readonly vertexFaces: number[][];
 
-    // reused per-stroke scratch (no allocation in stroke())
+    // ---- persistent reusable state (allocated ONCE; never inside applyBrush) ----
+
+    // BVH radius query sphere.
     private readonly queryS = new THREE.Sphere();
-    private readonly ctx: BrushContext = {
+
+    // Shared per-stroke brush frame consumed by the brush kernels. The kernels'
+    // tmpA/tmpB scratch is filled here from the caller's ScratchMath each stroke.
+    private readonly brushCtx: BrushContext = {
         center: new THREE.Vector3(),
         drag: new THREE.Vector3(),
         strength: 0,
@@ -59,18 +77,20 @@ export class SculptEngine {
         tmpA: new THREE.Vector3(),
         tmpB: new THREE.Vector3(),
     };
-    private readonly vScratch = new THREE.Vector3();
+
+    // face-normal accumulator scratch for dirty-region normal recompute
     private readonly fNormal = new THREE.Vector3();
     private readonly edge1 = new THREE.Vector3();
     private readonly edge2 = new THREE.Vector3();
     private readonly pA = new THREE.Vector3();
     private readonly pB = new THREE.Vector3();
     private readonly pC = new THREE.Vector3();
+    private readonly avgNormal = new THREE.Vector3();
 
     // dirty bookkeeping, reused across strokes (cleared, never reallocated)
+    private readonly candidateVerts = new Set<number>();
     private readonly dirtyVerts = new Set<number>();
     private readonly dirtyFaces = new Set<number>();
-    private readonly candidateVerts = new Set<number>();
 
     constructor(mesh: THREE.Mesh) {
         patchPrototypes();
@@ -78,12 +98,13 @@ export class SculptEngine {
         this.geometry = mesh.geometry;
 
         if (!this.geometry.index) {
-            // sculpt needs an index buffer; refuse non-indexed geometry rather
-            // than silently producing wrong adjacency.
+            // Sculpt needs an index buffer; refuse non-indexed geometry rather
+            // than silently building wrong adjacency.
             throw new Error("SculptEngine requires indexed geometry");
         }
 
-        // Build (or reuse) the BVH and expose it on the geometry.
+        // Build (or reuse) the BVH and expose it on the geometry so accelerated
+        // raycasts and external callers (icing/sprinkles) share one tree.
         const existing = (this.geometry as unknown as { boundsTree?: MeshBVH }).boundsTree;
         if (existing) {
             this.bvh = existing;
@@ -92,12 +113,11 @@ export class SculptEngine {
             (this.geometry as unknown as { boundsTree: MeshBVH }).boundsTree = this.bvh;
         }
 
-        this.positions = (this.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
-        const normalAttr = this.geometry.attributes.normal as THREE.BufferAttribute | undefined;
-        if (!normalAttr) {
-            this.geometry.computeVertexNormals();
-        }
-        this.normals = (this.geometry.attributes.normal as THREE.BufferAttribute).array as Float32Array;
+        this.positionAttr = this.geometry.attributes.position as THREE.BufferAttribute;
+        if (!this.geometry.attributes.normal) this.geometry.computeVertexNormals();
+        this.normalAttr = this.geometry.attributes.normal as THREE.BufferAttribute;
+        this.positions = this.positionAttr.array as Float32Array;
+        this.normals = this.normalAttr.array as Float32Array;
         this.indexArr = this.geometry.index.array as Uint16Array | Uint32Array;
 
         const vertCount = this.positions.length / 3;
@@ -129,116 +149,126 @@ export class SculptEngine {
         }
     }
 
-    // Run one sculpt stroke. `point` and `drag` are in the mesh's OBJECT space
-    // (caller unprojects + inverse-transforms). `verb` selects the brush; `ctx`
-    // carries per-stroke params (strength, drag) — center/normals are filled here.
-    stroke(
+    // Apply one brush stroke (SPEC §6.3). `point` is the brush center in the
+    // mesh's OBJECT space (caller unprojects + inverse-transforms). `strength`
+    // is the per-unit-weight push amount. `scratch` is the shared ScratchMath —
+    // we borrow v1 for the per-stroke drag and otherwise allocate nothing.
+    //
+    // NOTE: Grab needs a drag vector. The single-point applyBrush signature has
+    // no delta, so Grab degenerates to a centered pull toward `point`; callers
+    // that want true drag pre-bake it into successive points. strength scales the
+    // effect for every verb uniformly.
+    applyBrush(
+        verb: BrushVerb,
         point: THREE.Vector3,
         radius: number,
-        verb: BrushVerb,
-        params: { strength?: number; drag?: THREE.Vector3 } = {},
+        strength: number,
+        scratch: ScratchMath,
     ): void {
+        if (radius <= 0) return;
         const r = radius;
         const r2 = r * r;
+        const px = point.x, py = point.y, pz = point.z;
+
+        this.candidateVerts.clear();
         this.dirtyVerts.clear();
         this.dirtyFaces.clear();
-        this.candidateVerts.clear();
 
-        // 1-2: gather candidate triangles whose verts may fall within the sphere.
-        this.queryS.center.copy(point);
-        this.queryS.radius = r;
+        // 1-2: gather candidate triangles whose bounds intersect the brush sphere.
         const sphere = this.queryS;
+        sphere.center.set(px, py, pz);
+        sphere.radius = r;
         const idx = this.indexArr;
         const candidates = this.candidateVerts;
 
         this.bvh.shapecast({
             intersectsBounds: (box: THREE.Box3): number => {
-                const intersects = sphere.intersectsBox(box);
-                if (!intersects) return NOT_INTERSECTED;
+                if (!sphere.intersectsBox(box)) return NOT_INTERSECTED;
                 const contained = sphere.containsPoint(box.min) && sphere.containsPoint(box.max);
                 return contained ? CONTAINED : INTERSECTED;
             },
-            intersectsTriangle: (_tri: unknown, triangleIndex: number): boolean => {
-                // record the 3 vertex indices of this candidate face
+            intersectsTriangle: (_tri: unknown, triangleIndex: number): void => {
                 const base = triangleIndex * 3;
                 candidates.add(idx[base]);
                 candidates.add(idx[base + 1]);
                 candidates.add(idx[base + 2]);
-                return false; // visit every triangle, don't stop early
             },
         });
 
         // 3: keep only vertices truly within radius r of the brush point.
         const verts = this.dirtyVerts;
+        const pos = this.positions;
         for (const vi of candidates) {
             const i = vi * 3;
-            const dx = this.positions[i] - point.x;
-            const dy = this.positions[i + 1] - point.y;
-            const dz = this.positions[i + 2] - point.z;
+            const dx = pos[i] - px;
+            const dy = pos[i + 1] - py;
+            const dz = pos[i + 2] - pz;
             if (dx * dx + dy * dy + dz * dz <= r2) verts.add(vi);
         }
         if (verts.size === 0) return;
 
-        // Smooth is its own volume-preserving path (no per-vertex brush fn).
+        // Smooth is its own volume-preserving path (Taubin, no per-vertex kernel).
         if (verb === BrushVerb.Smooth) {
-            taubinSmooth(this.positions, this.adjacency, verts);
+            taubinSmooth(pos, this.adjacency, verts);
             this.finishStroke(verts);
             return;
         }
 
-        // Prepare shared brush context for the affected vertices.
-        const ctx = this.ctx;
-        ctx.center.copy(point);
-        ctx.strength = params.strength ?? 0.05 * r;
-        if (params.drag) ctx.drag.copy(params.drag); else ctx.drag.set(0, 0, 0);
+        // Prepare the shared brush frame for the affected vertices. The kernels'
+        // tmpA/tmpB are aliased onto the caller's ScratchMath vectors so no
+        // allocation happens here.
+        const ctx = this.brushCtx;
+        ctx.center.set(px, py, pz);
+        ctx.strength = strength;
+        ctx.tmpA = scratch.v1;
+        ctx.tmpB = scratch.v2;
+        // Grab has no explicit delta in this signature: pull toward the center.
+        ctx.drag.set(0, 0, 0);
         this.computeBrushFrame(verts, ctx);
 
-        const fn = this.brushFn(verb);
+        const fn = BRUSH_KERNELS[verb];
+        if (!fn) return; // unknown displacement verb — nothing to do
 
-        // 4: apply the brush with radial falloff, marking each vertex dirty.
+        // 4: apply the brush with radial falloff w = (1 − (d/r)²)², marking dirty.
         for (const vi of verts) {
             const i = vi * 3;
-            const dx = this.positions[i] - point.x;
-            const dy = this.positions[i + 1] - point.y;
-            const dz = this.positions[i + 2] - point.z;
+            const dx = pos[i] - px;
+            const dy = pos[i + 1] - py;
+            const dz = pos[i + 2] - pz;
             const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            const w = falloff(Math.min(1, d / r));
-            fn(this.positions, this.normals, vi, w, ctx);
+            const w = falloff(d, r);
+            fn(pos, this.normals, vi, w, ctx);
         }
 
         this.finishStroke(verts);
     }
 
-    // 5-7: refit the BVH, recompute normals over dirty faces, upload only the
-    // touched attribute ranges.
+    // 5-7: incremental BVH refit, dirty-region normal recompute, narrowed upload.
     private finishStroke(verts: Set<number>): void {
-        // collect dirty faces from the dirty verts
+        // collect dirty faces (the incident faces of every dirty vertex)
         const faces = this.dirtyFaces;
         for (const vi of verts) {
             const incident = this.vertexFaces[vi];
             for (let k = 0; k < incident.length; k++) faces.add(incident[k]);
         }
 
-        const positionAttr = this.geometry.attributes.position as THREE.BufferAttribute;
-        positionAttr.needsUpdate = true;
+        this.positionAttr.needsUpdate = true;
 
-        // 5: refit BVH bounds for the moved positions (cheap vs. rebuild).
+        // 5: incremental BVH bounds refit (NOT a rebuild) for the moved positions.
         this.bvh.refit();
 
-        // 6: recompute normals on the dirty region only.
+        // 6: recompute normals over the dirty region ONLY.
         this.recomputeNormals(verts, faces);
+        this.normalAttr.needsUpdate = true;
 
-        const normalAttr = this.geometry.attributes.normal as THREE.BufferAttribute;
-        normalAttr.needsUpdate = true;
-
-        // 7: narrow the GPU upload to the changed vertex range.
-        this.setUpdateRange(positionAttr, verts);
-        this.setUpdateRange(normalAttr, verts);
+        // 7: narrow each GPU upload to the changed vertex span (addUpdateRange).
+        this.setUpdateRange(this.positionAttr, verts);
+        this.setUpdateRange(this.normalAttr, verts);
     }
 
-    // Zero the dirty vertices' normals, accumulate each dirty face's (angle-free,
-    // area-weighted) face normal onto its verts, then renormalize. This matches
-    // computeVertexNormals over just the touched region.
+    // Zero the dirty vertices' normals, accumulate each dirty face's area-weighted
+    // face normal onto its dirty verts, then renormalize. Matches the result of
+    // computeVertexNormals over just the touched region (clean verts untouched).
     private recomputeNormals(verts: Set<number>, faces: Set<number>): void {
         const n = this.normals;
         for (const vi of verts) {
@@ -267,8 +297,9 @@ export class SculptEngine {
         }
     }
 
-    // Add the current face normal onto vertex vi, but only if vi is part of the
-    // dirty set (clean verts keep their existing normals untouched).
+    // Add the current face normal onto vertex vi, but only if vi is dirty (clean
+    // verts keep their existing normals; their incident faces are still summed
+    // for the dirty verts they share).
     private accumulateNormal(vi: number, verts: Set<number>): void {
         if (!verts.has(vi)) return;
         const i = vi * 3;
@@ -278,43 +309,30 @@ export class SculptEngine {
     }
 
     // Build the per-stroke brush frame: averaged surface normal + area-average
-    // plane (used by Draw/Flatten/Pinch/Crease). Cheap O(dirty) reduction.
+    // plane point (used by Draw/Flatten). Cheap O(dirty) reduction, no alloc.
     private computeBrushFrame(verts: Set<number>, ctx: BrushContext): void {
         let nx = 0, ny = 0, nz = 0;
-        let px = 0, py = 0, pz = 0;
+        let cx = 0, cy = 0, cz = 0;
         let count = 0;
         const n = this.normals;
         const pos = this.positions;
         for (const vi of verts) {
             const i = vi * 3;
             nx += n[i]; ny += n[i + 1]; nz += n[i + 2];
-            px += pos[i]; py += pos[i + 1]; pz += pos[i + 2];
+            cx += pos[i]; cy += pos[i + 1]; cz += pos[i + 2];
             count++;
         }
         const inv = count > 0 ? 1 / count : 0;
-        ctx.planePoint.set(px * inv, py * inv, pz * inv);
-        this.vScratch.set(nx, ny, nz);
-        if (this.vScratch.lengthSq() < 1e-12) this.vScratch.set(0, 1, 0);
-        this.vScratch.normalize();
-        ctx.brushNormal.copy(this.vScratch);
-        ctx.planeNormal.copy(this.vScratch);
-    }
-
-    // Map a BrushVerb to its per-vertex brush function.
-    private brushFn(verb: BrushVerb): (p: Float32Array, nrm: Float32Array, vi: number, w: number, c: BrushContext) => void {
-        switch (verb) {
-            case BrushVerb.Grab: return grab;
-            case BrushVerb.Inflate: return inflate;
-            case BrushVerb.Draw: return draw;
-            case BrushVerb.Flatten: return flatten;
-            case BrushVerb.Pinch: return pinch;
-            case BrushVerb.Crease: return crease;
-            default: return inflate;
-        }
+        ctx.planePoint.set(cx * inv, cy * inv, cz * inv);
+        this.avgNormal.set(nx, ny, nz);
+        if (this.avgNormal.lengthSq() < 1e-12) this.avgNormal.set(0, 1, 0);
+        this.avgNormal.normalize();
+        ctx.brushNormal.copy(this.avgNormal);
+        ctx.planeNormal.copy(this.avgNormal);
     }
 
     // Expand the attribute's GPU updateRange to cover the dirty vertex span. We
-    // upload a contiguous [min,max] slice rather than the whole buffer.
+    // upload a contiguous [min,max] slice rather than the whole buffer (§11.1).
     private setUpdateRange(attr: THREE.BufferAttribute, verts: Set<number>): void {
         let min = Infinity, max = -Infinity;
         for (const vi of verts) {
@@ -324,20 +342,17 @@ export class SculptEngine {
         if (min === Infinity) return;
         const offset = min * 3;
         const count = (max - min + 1) * 3;
-        // three r160: BufferAttribute.updateRanges (array) supersedes updateRange.
-        const ranged = attr as unknown as {
-            updateRanges?: { start: number; count: number }[];
-            updateRange?: { offset: number; count: number };
-            addUpdateRange?: (start: number, count: number) => void;
-            clearUpdateRanges?: () => void;
-        };
-        if (typeof ranged.addUpdateRange === "function" && typeof ranged.clearUpdateRanges === "function") {
-            ranged.clearUpdateRanges();
-            ranged.addUpdateRange(offset, count);
-        } else if (ranged.updateRange) {
-            ranged.updateRange.offset = offset;
-            ranged.updateRange.count = count;
-        }
+        // three r160: updateRanges[] (addUpdateRange) supersedes the deprecated
+        // single updateRange. Replace any prior range with this stroke's span.
+        attr.clearUpdateRanges();
+        attr.addUpdateRange(offset, count);
+    }
+
+    // Incremental BVH bounds refit after external position edits (SPEC §6.2).
+    // Walks the tree updating bounds only — never a rebuild. Callers that batch
+    // their own writes can invoke this once after the batch.
+    refit(): void {
+        this.bvh.refit();
     }
 
     // Release the BVH (call when the sculptable mesh is replaced/destroyed).

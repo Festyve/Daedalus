@@ -1,7 +1,8 @@
-// Post-processing pipeline (§11.4): RenderPass -> GTAOPass (subtle contact AO) ->
-// UnrealBloomPass (high threshold so only the rim and the dissolve edge bloom) ->
-// OutputPass (tone map + color space) -> vignette ShaderPass. The composer is
-// resized alongside the renderer.
+// Post-processing pipeline (SPEC §9.4): RenderPass -> GTAOPass (subtle contact AO) ->
+// UnrealBloomPass (high threshold so only glowing affordances bloom) -> OutputPass
+// (tone map + color space) -> vignette ShaderPass (darken-the-corners). The composer
+// is resized alongside the renderer; setBloom() lets the app dial glow up/down (e.g.
+// pulse on a proximity affordance) without rebuilding the pipeline.
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
@@ -11,7 +12,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
 // Bloom tuning: high threshold so the matte steel body stays dark and only bright
-// rim/dissolve pixels (luminance > BLOOM_THRESHOLD) glow.
+// rim / affordance pixels (luminance > BLOOM_THRESHOLD) glow.
 const BLOOM_STRENGTH = 0.55;
 const BLOOM_RADIUS = 0.4;
 const BLOOM_THRESHOLD = 0.85;
@@ -20,12 +21,16 @@ const BLOOM_THRESHOLD = 0.85;
 // washing the silhouette.
 const GTAO_RADIUS = 0.25;
 
-// Darken-the-corners vignette applied to the already tone-mapped image.
+// Darken-the-corners vignette applied to the already tone-mapped image. Kept gentle
+// so it frames the scene without crushing the periphery.
+const VIGNETTE_OFFSET = 1.05;
+const VIGNETTE_DARKNESS = 1.1;
+
 const VIGNETTE_SHADER = {
     uniforms: {
         tDiffuse: { value: null as THREE.Texture | null },
-        uOffset: { value: 1.05 },
-        uDarkness: { value: 1.1 },
+        uOffset: { value: VIGNETTE_OFFSET },
+        uDarkness: { value: VIGNETTE_DARKNESS },
     },
     vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -48,13 +53,14 @@ const VIGNETTE_SHADER = {
     `,
 };
 
-// Build the composer for the given scene/camera/renderer. Returns the composer
-// plus a resize() helper to keep the pipeline in sync with the canvas.
+// Build the composer for the given scene/camera/renderer. Returns the composer plus:
+//   resize(w, h)        — keep every pass in sync with the canvas.
+//   setBloom(strength)  — set UnrealBloomPass strength (0 = off) for glow pulses.
 export function makeComposer(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
-    camera: THREE.PerspectiveCamera,
-): { composer: EffectComposer; resize: (w: number, h: number) => void } {
+    camera: THREE.Camera,
+): { composer: EffectComposer; resize: (w: number, h: number) => void; setBloom: (strength: number) => void } {
     const width = innerWidth;
     const height = innerHeight;
 
@@ -76,16 +82,25 @@ export function makeComposer(
     );
     composer.addPass(bloom_pass);
 
+    // Tone map + convert to the renderer's output color space. Must precede the
+    // vignette so corner darkening happens in display space, not linear HDR.
     composer.addPass(new OutputPass());
 
     const vignette_pass = new ShaderPass(VIGNETTE_SHADER);
     composer.addPass(vignette_pass);
 
     const resize = (w: number, h: number): void => {
+        // composer.setSize cascades to each pass (RenderPass, GTAOPass, OutputPass,
+        // ShaderPass); UnrealBloomPass tracks its own mip chain via resolution.
         composer.setSize(w, h);
         bloom_pass.resolution.set(w, h);
     };
+
+    const setBloom = (strength: number): void => {
+        bloom_pass.strength = strength;
+    };
+
     addEventListener("resize", () => resize(innerWidth, innerHeight));
 
-    return { composer, resize };
+    return { composer, resize, setBloom };
 }

@@ -1,67 +1,96 @@
-// §14 — the Director: tracks the demo arc stage and the active interaction mode.
-// Stage milestones advance automatically (guided/assist/freeplay); in `safety`
-// mode the operator advances stages by keypress using authored snapshots.
+// §13 — the Director: freeplay/safety flow controller.
+// Tracks the demo arc stage and advances it forward-only from observable milestones.
+// Stages: EMPTY → SPHERE → DONUT → DECORATED (monotonic; never moves backward).
+//   - freeplay (default): real sculptor; milestones drive progression.
+//   - safety: tracking failed on stage; the operator steps through authored
+//     snapshots (§13.2) by keypress via advanceSafety().
 import type { DirectorMode, Stage } from "../types";
 
-const STAGE_ORDER: Stage[] = ["SPHERE", "DONUT", "DECORATED", "CONSUMED"];
-const MORPH_DONE = 0.95; // morphT past this → the sphere has become a donut
+// Forward-only stage order. The world begins EMPTY; ADD SHAPES yields the first
+// mesh (SPHERE), MORPH yields DONUT, DECORATE yields DECORATED.
+const STAGE_ORDER: Stage[] = ["EMPTY", "SPHERE", "DONUT", "DECORATED"];
+
+// morphT past this counts the sphere as fully donut'd (mirrors menu/morph.ts).
+const MORPH_DONE = 0.95;
+
+// Authored safety snapshots (§13.2), one per stage, in forward order. In safety
+// mode each keypress loads the next snapshot, stepping the arc deterministically.
+export const SAFETY_SNAPSHOTS: Record<Stage, string> = {
+    EMPTY: "snapshot_empty.json",
+    SPHERE: "snapshot_sphere.json",
+    DONUT: "snapshot_donut.json",
+    DECORATED: "snapshot_decorated.json",
+};
 
 export class Director {
-    mode: DirectorMode;
-    stage: Stage = "SPHERE";
+    private current_mode: DirectorMode;
+    private current_stage: Stage = "EMPTY";
 
-    constructor(mode: DirectorMode = "guided") {
-        this.mode = mode;
+    constructor(mode: DirectorMode) {
+        this.current_mode = mode;
+    }
+
+    /** Current arc stage. Read-only to callers; only milestones/safety mutate it. */
+    get stage(): Stage {
+        return this.current_stage;
+    }
+
+    /** Active director mode (freeplay or safety). */
+    get mode(): DirectorMode {
+        return this.current_mode;
     }
 
     private stageIndex(s: Stage): number {
         return STAGE_ORDER.indexOf(s);
     }
 
-    // Advance to `next` only if it is strictly ahead of the current stage, so a
-    // milestone can never move the arc backwards.
+    // Move to `next` only when it is strictly ahead of the current stage, so no
+    // milestone (or out-of-order event) can ever rewind the arc.
     private advanceTo(next: Stage): boolean {
-        if (this.stageIndex(next) > this.stageIndex(this.stage)) {
-            this.stage = next;
+        if (this.stageIndex(next) > this.stageIndex(this.current_stage)) {
+            this.current_stage = next;
             return true;
         }
         return false;
     }
 
-    // SPHERE → DONUT once the morph completes. No-op in `safety` (operator-driven).
-    onMorph(morphT: number): boolean {
-        if (this.mode === "safety") return false;
-        if (this.stage === "SPHERE" && morphT > MORPH_DONE) return this.advanceTo("DONUT");
-        return false;
-    }
-
-    // → DECORATED when the decorate chat panel opens.
-    onChatOpened(): boolean {
-        if (this.mode === "safety") return false;
-        return this.advanceTo("DECORATED");
-    }
-
-    // → CONSUMED when the dissolve finale finishes.
-    onDissolveDone(): boolean {
-        if (this.mode === "safety") return false;
-        return this.advanceTo("CONSUMED");
-    }
-
-    // `safety` mode: step to the next authored stage on a keypress.
-    advanceManual(): boolean {
-        const i = this.stageIndex(this.stage);
-        if (i < STAGE_ORDER.length - 1) {
-            this.stage = STAGE_ORDER[i + 1];
-            return true;
-        }
-        return false;
-    }
-
+    /** Switch modes at runtime (e.g. fall back to safety when tracking is lost). */
     setMode(mode: DirectorMode): void {
-        this.mode = mode;
+        this.current_mode = mode;
     }
 
+    /** ADD SHAPES spawned the first mesh: EMPTY → SPHERE. */
+    onShapeAdded(): void {
+        this.advanceTo("SPHERE");
+    }
+
+    /** MORPH progress: SPHERE → DONUT once the donut blend completes (t > 0.95). */
+    onMorph(t: number): void {
+        if (t > MORPH_DONE) this.advanceTo("DONUT");
+    }
+
+    /** DECORATE applied icing/sprinkles: → DECORATED. */
+    onDecorated(): void {
+        this.advanceTo("DECORATED");
+    }
+
+    /** Authored snapshot file for the current stage (§13.2). */
+    get snapshot(): string {
+        return SAFETY_SNAPSHOTS[this.current_stage];
+    }
+
+    /** safety mode: step forward one authored snapshot on a keypress. Forces
+     *  safety mode (this is the recovery path) and stops at the final stage. */
+    advanceSafety(): void {
+        this.current_mode = "safety";
+        const i = this.stageIndex(this.current_stage);
+        if (i < STAGE_ORDER.length - 1) {
+            this.current_stage = STAGE_ORDER[i + 1];
+        }
+    }
+
+    /** Restart the arc at EMPTY (e.g. world cleared). */
     reset(): void {
-        this.stage = "SPHERE";
+        this.current_stage = "EMPTY";
     }
 }

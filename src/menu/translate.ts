@@ -1,303 +1,197 @@
-// §6.2 TRANSLATE — directional arrow drag.
+// §5.2 TRANSLATE — open-palm grab, fist lock. Pure free movement, no axis arrows.
 //
-// Six world-axis arrows (±X, ±Y, ±Z) appear around the active mesh, color-coded
-// X=red / Y=green / Z=blue (standard 3D-app convention). Each arrow is a cone+cylinder
-// affordance. The right hand hovers near an arrow to highlight it; pinching near an
-// arrow latches that axis and dragging translates the mesh along it
-// (§13.3: projected = dot(drag, axisDir)·axisDir, scaled by calibration responsiveness).
-// A SpatialPanel beside the mesh shows the live X/Y/Z readout.
+// Paradigm: the right hand *is* the handle. An open palm grabs the active object and it
+// tracks the hand's world position freely; closing to a fist locks the object in place.
+// There is no affordance geometry — the only UI is a plain-DOM Panel pinned to the right
+// edge of the screen (§4.2) showing the live X/Y/Z position and the current grab state.
 //
-// Module-boundary rule (§3.2): this talks only to SceneContext.
+// World tracking math (§12):
+//   - The palm anchor (MIDDLE_MCP, landmark 9) is unprojected from mirrored image space
+//     onto the interaction plane at object depth → a world point that follows the hand.
+//   - On grab we latch a constant offset = (mesh position in parent space) − (hand point
+//     in parent space). Each frame the target mesh position = handPoint(parent) + offset,
+//     so the object follows the hand's *motion* from wherever it was — no teleport snap.
+//   - The mesh lives inside the tilt/spin rig, so its local position is parent-space; we
+//     convert the world hand point into that parent space before applying the offset.
+//   - A light per-frame lerp smooths residual landmark jitter without lagging the hand.
+//
+// Discrete grab/lock transitions are debounced (§12: gestures commit after 5 consecutive
+// frames) so a single misclassified frame never flips the lock state.
+//
+// World starts empty (§5.1): ctx.mesh may be null — every access is guarded and the tool
+// idles (panel shows a prompt) until ADD SHAPES creates the first mesh.
+//
+// Module-boundary rule (§3.2): this talks only to SceneContext. HOT LOOP: zero per-frame
+// allocation — reuses ctx.scratch plus a handful of module-owned vectors created once.
 import * as THREE from "three";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
-import { TOKENS } from "../render/tokens";
-import { SpatialPanel, drawPanelHints } from "./spatialPanel";
-import { MENU_HINTS } from "../ui/gestureGuide";
-import { fingertipToWorld, projectOntoAxis } from "../math/coords";
-import { pinchAmount } from "../gesture/predicates";
+import { T, FONT, TOOL_ACCENT } from "../render/tokens";
+import { Panel } from "./panel";
+import { fingertipToWorld } from "../math/coords";
+import { isOpenPalm, isFist } from "../gesture/predicates";
 
-// Arrow geometry sizing (metres), tuned to sit around the unit sphere/donut (radius ~1).
-const SHAFT_RADIUS = 0.035;
-const SHAFT_LENGTH = 0.7;
-const TIP_RADIUS = 0.11;
-const TIP_LENGTH = 0.28;
-// Gap between the mesh centre and the tail of each arrow so they read as separate from the body.
-const ARROW_GAP = 1.15;
+// MediaPipe palm-center anchor: middle-finger MCP reads as the centre of the hand, so the
+// object tracks the palm rather than a wandering fingertip.
+const PALM_ANCHOR = 9;
 
-// Right index fingertip must be within this world-space distance of an arrow's body to hover it.
-const HOVER_RADIUS = 0.55;
-// Pinch closure (0..1) at/above which a hovered arrow is grabbed and a drag begins.
-const PINCH_ON = 0.6;
-// Hysteresis: once dragging, only release when the pinch relaxes below this.
-const PINCH_OFF = 0.45;
+// Discrete gestures commit after this many consecutive frames (§12 debounce) to defeat
+// per-frame classifier flicker between open palm / fist / neither.
+const COMMIT_FRAMES = 5;
 
-// Highlight feedback (§6.2: "highlights + scales up slightly").
-const HOVER_SCALE = 1.18;
-const BASE_EMISSIVE = 0.0;
-const HOVER_EMISSIVE = 0.55;
-
-// Per-axis color coding.
-const AXIS_COLOR = {
-    x: 0xff4444,
-    y: 0x44ff44,
-    z: 0x4488ff,
-} as const;
-
-// The six world axes, with the buffer key used to color each arrow.
-const AXES: ReadonlyArray<{ dir: readonly [number, number, number]; color: number }> = [
-    { dir: [1, 0, 0], color: AXIS_COLOR.x },
-    { dir: [-1, 0, 0], color: AXIS_COLOR.x },
-    { dir: [0, 1, 0], color: AXIS_COLOR.y },
-    { dir: [0, -1, 0], color: AXIS_COLOR.y },
-    { dir: [0, 0, 1], color: AXIS_COLOR.z },
-    { dir: [0, 0, -1], color: AXIS_COLOR.z },
-];
-
-// One axis arrow: a cylinder shaft + cone tip, both built centred on +Y then the whole
-// group is oriented to its world axis. Carries its axis direction for proximity + drag math.
-interface AxisArrow {
-    group: THREE.Group;
-    axis: THREE.Vector3;          // unit world-space direction this arrow points
-    shaft: THREE.MeshStandardMaterial;
-    tip: THREE.MeshStandardMaterial;
-    emissive: THREE.Color;        // shared base color, scaled by emissiveIntensity for highlight
-}
-
-function buildArrow(dir: readonly [number, number, number], color: number): AxisArrow {
-    const group = new THREE.Group();
-    const emissive = new THREE.Color(color);
-
-    const shaft = new THREE.MeshStandardMaterial({
-        color,
-        emissive,
-        emissiveIntensity: BASE_EMISSIVE,
-        roughness: 0.45,
-        metalness: 0.1,
-    });
-    const tip = new THREE.MeshStandardMaterial({
-        color,
-        emissive,
-        emissiveIntensity: BASE_EMISSIVE,
-        roughness: 0.45,
-        metalness: 0.1,
-    });
-
-    // Shaft: centred on origin along +Y, shifted up so its tail sits at ARROW_GAP.
-    const shaft_geo = new THREE.CylinderGeometry(SHAFT_RADIUS, SHAFT_RADIUS, SHAFT_LENGTH, 16);
-    const shaft_mesh = new THREE.Mesh(shaft_geo, shaft);
-    shaft_mesh.position.y = ARROW_GAP + SHAFT_LENGTH / 2;
-
-    // Tip: cone pointing +Y, seated on top of the shaft.
-    const tip_geo = new THREE.ConeGeometry(TIP_RADIUS, TIP_LENGTH, 20);
-    const tip_mesh = new THREE.Mesh(tip_geo, tip);
-    tip_mesh.position.y = ARROW_GAP + SHAFT_LENGTH + TIP_LENGTH / 2;
-
-    group.add(shaft_mesh, tip_mesh);
-
-    // Orient the +Y-built arrow onto its world axis.
-    const axis = new THREE.Vector3(dir[0], dir[1], dir[2]).normalize();
-    group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
-
-    return { group, axis, shaft, tip, emissive };
-}
+// Per-frame smoothing toward the hand target while grabbed. 1 = rigid (snaps exactly to
+// the hand); lower lags slightly to absorb landmark jitter. Tuned for a responsive feel.
+const TRACK_LERP = 0.5;
 
 export function createTranslateMenu(): MenuModule {
-    let root: THREE.Group | null = null;
-    let arrows: AxisArrow[] = [];
-    let panel: SpatialPanel | null = null;
+    const accent = TOOL_ACCENT[MenuId.TRANSLATE];
 
-    // Drag state.
-    let hovered: AxisArrow | null = null;
-    let dragging: AxisArrow | null = null;
-    let pinching = false;
-    let has_prev_tip = false;
-    const prev_tip_world = new THREE.Vector3(); // last frame's right fingertip world position
+    let panel: Panel | null = null;
 
-    // Persistent scratch owned by this module (zero per-frame alloc beyond ctx.scratch).
-    const tip_world = new THREE.Vector3();      // current right fingertip world position
-    const drag_world = new THREE.Vector3();     // frame-to-frame fingertip delta (world)
-    const projected = new THREE.Vector3();      // delta projected onto the active axis (world)
-    const mesh_world_pos = new THREE.Vector3(); // mesh centre in world space (mesh is nested in groups)
+    // Grab state. `grabbed` true ⇒ the object is currently following the hand.
+    let grabbed = false;
+    // Debounce counters for the two discrete poses (reset when the pose is not seen).
+    let open_frames = 0;
+    let fist_frames = 0;
 
-    function setHighlight(arrow: AxisArrow | null): void {
-        for (const a of arrows) {
-            const on = a === arrow;
-            const intensity = on ? HOVER_EMISSIVE : BASE_EMISSIVE;
-            a.shaft.emissiveIntensity = intensity;
-            a.tip.emissiveIntensity = intensity;
-            a.group.scale.setScalar(on ? HOVER_SCALE : 1);
-        }
-    }
+    // Offset (parent space) captured at grab: meshLocalPos − handPointParent. Applying it
+    // each frame keeps the object's relative position to the hand fixed (no snap on grab).
+    const grab_offset = new THREE.Vector3();
 
-    // Nearest arrow whose body is within HOVER_RADIUS of the fingertip (world space).
-    // Distance is measured to the arrow's midpoint along its axis from the mesh centre.
-    function pickArrow(ctx: SceneContext, tip: THREE.Vector3): AxisArrow | null {
-        const mid = ARROW_GAP + SHAFT_LENGTH / 2;
-        let best: AxisArrow | null = null;
-        let best_d = HOVER_RADIUS;
-        for (const a of arrows) {
-            // Arrow body midpoint in world = mesh centre + axis * mid (root tracks mesh centre).
-            ctx.scratch.v2.copy(mesh_world_pos).addScaledVector(a.axis, mid);
-            const dist = ctx.scratch.v2.distanceTo(tip);
-            if (dist < best_d) {
-                best_d = dist;
-                best = a;
-            }
-        }
-        return best;
-    }
+    // Module-owned scratch, created once (ctx.scratch is shared; these are private to the
+    // hot loop and never reallocated).
+    const hand_world = new THREE.Vector3();   // palm anchor unprojected to world
+    const hand_parent = new THREE.Vector3();  // same point in the mesh's parent space
+    const target_local = new THREE.Vector3(); // desired mesh local position this frame
 
-    function drawPanel(ctx: SceneContext): void {
+    // Update the panel body (live X/Y/Z + state). Pure DOM text — cheap; called per frame.
+    function paint(ctx: SceneContext): void {
         if (!panel) return;
-        const p = ctx.mesh.position;
-        panel.draw((g, w, h) => {
-            g.fillStyle = TOKENS.menuBlue;
-            g.font = 'bold 34px "JetBrains Mono", monospace';
-            g.fillText("TRANSLATE", 28, 26);
-
-            g.fillStyle = TOKENS.text;
-            g.font = '28px "JetBrains Mono", monospace';
-            const fmt = (n: number) => (n >= 0 ? " " : "") + n.toFixed(2);
-            g.fillText(`X ${fmt(p.x)}`, 28, 96);
-            g.fillText(`Y ${fmt(p.y)}`, 28, 142);
-            g.fillText(`Z ${fmt(p.z)}`, 28, 188);
-
-            g.fillStyle = TOKENS.textDim;
-            g.font = '20px "JetBrains Mono", monospace';
-            const hint = dragging
-                ? "DRAGGING"
-                : hovered
-                    ? "PINCH TO GRAB"
-                    : "HOVER AN ARROW";
-            g.fillText(hint, 28, 300);
-
-            drawPanelHints(g, w, h, MENU_HINTS[MenuId.TRANSLATE], TOKENS.menuBlue, 0);
-        });
+        const mesh = ctx.mesh;
+        if (!mesh) {
+            panel.setBody(
+                `<div style="color:${T.textDim};font-size:12px;line-height:1.6">` +
+                "No object yet.<br>Use <b>ADD SHAPES</b> to create one," +
+                "<br>then open your palm to grab it." +
+                "</div>",
+            );
+            return;
+        }
+        const p = mesh.position;
+        const fmt = (n: number): string => (n >= 0 ? "+" : "") + n.toFixed(2);
+        const row = (axis: string, v: number): string =>
+            `<div style="display:flex;justify-content:space-between;` +
+            `font-variant-numeric:tabular-nums">` +
+            `<span style="color:${accent}">${axis}</span>` +
+            `<span>${fmt(v)}</span></div>`;
+        const state = grabbed
+            ? `<span style="color:${accent}">TRACKING</span>`
+            : `<span style="color:${T.textDim}">LOCKED</span>`;
+        panel.setBody(
+            `<div style="display:flex;flex-direction:column;gap:6px;` +
+            `font-size:15px;letter-spacing:0.04em">` +
+            row("X", p.x) + row("Y", p.y) + row("Z", p.z) +
+            `</div>` +
+            `<div style="margin-top:14px;font-size:11px;` +
+            `text-transform:uppercase;letter-spacing:0.12em">${state}</div>`,
+        );
     }
 
     return {
         id: MenuId.TRANSLATE,
-
-        enter(ctx: SceneContext): void {
-            root = new THREE.Group();
-            arrows = AXES.map(({ dir, color }) => buildArrow(dir, color));
-            for (const a of arrows) root.add(a.group);
-            ctx.scene.add(root);
-
-            // Seat the arrow rig on the mesh's world position immediately.
-            ctx.mesh.updateWorldMatrix(true, false);
-            ctx.mesh.getWorldPosition(mesh_world_pos);
-            root.position.copy(mesh_world_pos);
-
-            panel = new SpatialPanel(TOKENS.menuBlue);
-            ctx.scene.add(panel.object);
-            panel.placeBeside(mesh_world_pos, ctx.camera);
-            drawPanel(ctx);
-
-            hovered = null;
-            dragging = null;
-            pinching = false;
-            has_prev_tip = false;
+        get panel(): HTMLElement | undefined {
+            return panel ? panel.el : undefined;
         },
 
-        update(ctx: SceneContext, right: HandPose | null, _left: HandPose | null, _dt: number): void {
-            if (!root || !panel) return;
+        enter(ctx: SceneContext): void {
+            panel = new Panel({ title: "TRANSLATE", accent });
+            panel.setInstructions("OPEN PALM&nbsp;&nbsp;GRAB&nbsp;&nbsp;·&nbsp;&nbsp;FIST&nbsp;&nbsp;LOCK");
+            panel.show();
 
-            // Keep the rig + panel anchored to the (possibly moved) mesh centre.
-            ctx.mesh.updateWorldMatrix(true, false);
-            ctx.mesh.getWorldPosition(mesh_world_pos);
-            root.position.copy(mesh_world_pos);
-            panel.placeBeside(mesh_world_pos, ctx.camera);
+            grabbed = false;
+            open_frames = 0;
+            fist_frames = 0;
 
-            // No right hand → drop any hover/drag and idle.
-            if (!right) {
-                hovered = null;
-                dragging = null;
-                pinching = false;
-                has_prev_tip = false;
-                setHighlight(null);
-                drawPanel(ctx);
+            paint(ctx);
+        },
+
+        update(ctx: SceneContext, exec: HandPose | null, _nav: HandPose | null, _dt: number): void {
+            if (!panel) return;
+
+            const mesh = ctx.mesh;
+
+            // No mesh (empty world) or no execution hand → drop any grab and idle.
+            if (!mesh || !exec) {
+                if (grabbed) {
+                    grabbed = false;
+                    open_frames = 0;
+                    fist_frames = 0;
+                }
+                paint(ctx);
                 return;
             }
 
-            // Right index fingertip (landmark 8) → world on the interaction plane.
-            fingertipToWorld(
-                right.landmarks[8], ctx.camera, ctx.interactionPlaneZ,
-                ctx.scratch.ray, ctx.scratch.plane, tip_world,
-            );
+            // Classify the hand with scale-invariant world landmarks (§3.5). Debounce each
+            // discrete pose so a single stray frame cannot flip the grab/lock state (§12).
+            const open_now = isOpenPalm(exec.world, exec.handScale);
+            const fist_now = isFist(exec.world, exec.handScale);
+            open_frames = open_now ? open_frames + 1 : 0;
+            fist_frames = fist_now ? fist_frames + 1 : 0;
 
-            const pinch = pinchAmount(right.landmarks);
-
-            // Pinch edge detection with hysteresis.
-            if (!pinching && pinch >= PINCH_ON) pinching = true;
-            else if (pinching && pinch <= PINCH_OFF) pinching = false;
-
-            if (dragging) {
-                if (!pinching) {
-                    // Release: latch position, stop dragging.
-                    dragging = null;
-                } else if (has_prev_tip) {
-                    // Frame-to-frame fingertip displacement in world space.
-                    drag_world.copy(tip_world).sub(prev_tip_world);
-                    // Project onto the grabbed world axis (§13.3).
-                    projectOntoAxis(drag_world, dragging.axis, projected);
-                    // Sensitivity scalar from calibration.
-                    projected.multiplyScalar(ctx.calibration.responsiveness);
-                    // The projected delta is world-space; the mesh's position lives in its
-                    // parent (spin group) space. Convert the world delta into that parent
-                    // space so the motion stays locked to the grabbed world axis regardless
-                    // of the display tilt/spin. Delta-only: rotate by the inverse of the
-                    // parent's world rotation (no translation component).
-                    const parent = ctx.mesh.parent;
-                    if (parent) {
-                        parent.updateWorldMatrix(true, false);
-                        ctx.scratch.q1.setFromRotationMatrix(parent.matrixWorld).invert();
-                        projected.applyQuaternion(ctx.scratch.q1);
-                    }
-                    ctx.mesh.position.add(projected);
+            if (!grabbed && open_frames >= COMMIT_FRAMES) {
+                // Grab: latch the offset so the object stays where it is and follows from
+                // there (no teleport to the hand). Convert the palm world point into the
+                // mesh's parent space, then offset = currentMeshLocal − handParent.
+                fingertipToWorld(
+                    exec.landmarks[PALM_ANCHOR], ctx.camera, ctx.interactionPlaneZ,
+                    ctx.scratch.ray, ctx.scratch.plane, hand_world,
+                );
+                const parent = mesh.parent;
+                if (parent) {
+                    parent.updateWorldMatrix(true, false);
+                    hand_parent.copy(hand_world);
+                    parent.worldToLocal(hand_parent);
+                } else {
+                    hand_parent.copy(hand_world);
                 }
-            } else {
-                // Not dragging: update hover, and grab if the user pinches on a hovered arrow.
-                hovered = pickArrow(ctx, tip_world);
-                if (hovered && pinching) {
-                    dragging = hovered;
-                }
+                grab_offset.copy(mesh.position).sub(hand_parent);
+                grabbed = true;
+            } else if (grabbed && fist_frames >= COMMIT_FRAMES) {
+                // Fist → lock in place. The mesh keeps its current position untouched.
+                grabbed = false;
             }
 
-            // Highlight the arrow under attention (the dragged one wins).
-            setHighlight(dragging ?? hovered);
+            // While grabbed, the object tracks the hand: target = handPoint(parent)+offset,
+            // smoothed to soak up landmark jitter without lagging the motion.
+            if (grabbed) {
+                fingertipToWorld(
+                    exec.landmarks[PALM_ANCHOR], ctx.camera, ctx.interactionPlaneZ,
+                    ctx.scratch.ray, ctx.scratch.plane, hand_world,
+                );
+                const parent = mesh.parent;
+                if (parent) {
+                    parent.updateWorldMatrix(true, false);
+                    hand_parent.copy(hand_world);
+                    parent.worldToLocal(hand_parent);
+                } else {
+                    hand_parent.copy(hand_world);
+                }
+                target_local.copy(hand_parent).add(grab_offset);
+                mesh.position.lerp(target_local, TRACK_LERP);
+            }
 
-            prev_tip_world.copy(tip_world);
-            has_prev_tip = true;
-
-            drawPanel(ctx);
+            // Keep the panel readout live (mesh.position may also have changed elsewhere).
+            paint(ctx);
         },
 
-        exit(ctx: SceneContext): void {
-            if (root) {
-                ctx.scene.remove(root);
-                for (const a of arrows) {
-                    a.group.traverse((obj) => {
-                        if ((obj as THREE.Mesh).isMesh) {
-                            (obj as THREE.Mesh).geometry.dispose();
-                        }
-                    });
-                    a.shaft.dispose();
-                    a.tip.dispose();
-                }
-            }
+        exit(_ctx: SceneContext): void {
             if (panel) {
-                ctx.scene.remove(panel.object);
-                panel.dispose();
+                panel.destroy();
+                panel = null;
             }
-            root = null;
-            arrows = [];
-            panel = null;
-            hovered = null;
-            dragging = null;
-            pinching = false;
-            has_prev_tip = false;
+            grabbed = false;
+            open_frames = 0;
+            fist_frames = 0;
         },
     };
 }

@@ -1,48 +1,47 @@
-// §6.4 ROTATE — paradigm: hand-twist quaternion.
+// §5.4 ROTATE — paradigm: hand-twist quaternion.
 //
-// The right hand pinches near the object to "grab" its rotation. On engage we
-// snapshot the hand's orientation as a reference quaternion Q_start and the mesh's
-// current rotation R_start. Each frame we measure the hand orientation again
-// (Q_current) and apply the rotation it has swept since engage:
+// The right hand pinches near the object to "grab" its rotation. On engage we snapshot
+// the hand's orientation as a reference quaternion Q_start and the mesh's current
+// rotation R_start. Each frame we measure the hand orientation again (Q_current) and
+// apply the rotation it has swept since engage:
 //
-//     deltaQ = Q_current · Q_start⁻¹      (the hand-applied rotation, §13.4)
-//     mesh.quaternion = deltaQ · R_start  (premultiply so deltaQ acts in the
-//                                          parent frame, never accumulating drift)
+//     deltaQ          = Q_current · Q_start⁻¹      (the hand-applied rotation, §5.4)
+//     mesh.quaternion = deltaQ · R_start           (premultiply: deltaQ acts in the
+//                                                   parent frame, so there is no drift)
 //
-// Quaternions are used throughout — there is NO Euler in the math path, so there is
-// no gimbal lock. Euler appears only as a human-readable readout on the panel.
+// Pinch release latches the rotation in place (it is already written to the mesh).
+// Quaternions are used throughout — there is NO Euler in the math path, so there is no
+// gimbal lock. Euler appears only as a human-readable readout on the panel (§5.4).
 //
 // Hand orientation is built from the right-hand *world* landmarks (metric 3D, so
 // roll/pitch/yaw are all real) via an orthonormal basis:
-//     yHand   = wrist → indexMCP            (up the fingers)
-//     zHand   = (indexMCP-wrist) × (pinkyMCP-wrist)   (palm normal)
-//     xHand   = yHand × zHand               (re-orthogonalized, right-handed)
+//     yHand = wrist → indexMCP                       (up the fingers)
+//     zHand = (indexMCP-wrist) × (pinkyMCP-wrist)    (palm normal)
+//     xHand = yHand × zHand                          (re-orthogonalized, right-handed)
 //
-// Affordances (§6.4, §11.5): an arcball of three colored TorusGeometry rings (X/Y/Z)
-// around the mesh; the ring whose axis the hand is turning about lights up. A
-// SpatialPanel shows the live Euler readout and the axis-lock state.
-//
-// Axis lock (§6.4): a brief right-hand "gun" pose locks rotation to the X/Y/Z axis
-// closest to the pointing index direction; subsequent twist is constrained to that
-// single axis via swing-twist decomposition. Another "gun" clears the lock.
+// Affordances (§4.3, §5.4): an arcball of three colored TorusGeometry rings (X/Y/Z) around
+// the mesh; the ring whose axis the hand is most turning about lights up. Rings live on
+// Layer 1 via asMenuLayer() so they always draw above the mesh. A plain-DOM Panel fixed to
+// the right shows the live display-only Euler readout.
 import * as THREE from "three";
 import type { MenuModule, SceneContext, HandPose } from "../types";
 import { MenuId } from "../types";
-import { SpatialPanel, drawPanelHints } from "./spatialPanel";
-import { MENU_HINTS } from "../ui/gestureGuide";
-import { classify, pinchAmount } from "../gesture/predicates";
+import { Panel } from "./panel";
+import { asMenuLayer } from "../render/layers";
+import { isPinching, pinchAmount, handScale } from "../gesture/predicates";
 import { fingertipToWorld } from "../math/coords";
 import { MENU_META } from "../render/tokens";
 
-// World-landmark indices used to build the hand basis (§6.4).
+// World-landmark indices used to build the hand basis (§5.4).
 const WRIST = 0;
 const INDEX_MCP = 5;
 const INDEX_TIP = 8;
 const PINKY_MCP = 17;
 
-// Engage when the pinch closes past this and the fingertip is near the object.
+// Engage once the pinch closes past this; release once it clearly opens (hysteresis so a
+// momentary jitter at the threshold cannot chatter the grab on and off).
 const PINCH_ENGAGE = 0.7;
-const PINCH_RELEASE = 0.5; // hysteresis: release only once clearly open
+const PINCH_RELEASE = 0.5;
 // Proximity (world units) of the index fingertip to the mesh center to allow engage.
 const ENGAGE_RADIUS = 2.4;
 
@@ -56,53 +55,49 @@ const RING_TUBULAR_SEG = 96;
 const AXIS_COLOR_X = 0xff4d4d;
 const AXIS_COLOR_Y = 0x4dff7a;
 const AXIS_COLOR_Z = 0x4d8cff;
-// Dim vs. highlighted ring opacity (cheap uniform update, §12.2).
+// Dim vs. highlighted ring opacity (cheap uniform update — no geometry churn).
 const RING_DIM = 0.28;
 const RING_HOT = 0.95;
 
-// "Gun" pose must persist this long (ms) before it toggles the axis lock, so a
-// transient classification blip can't flip it.
-const GUN_HOLD_MS = 220;
+// Below this squared rotation-axis magnitude the delta is ~identity and the dominant
+// axis is ill-defined, so no ring is highlighted.
+const AXIS_EPS_SQ = 1e-6;
 
-// Local mesh axes the lock can snap to, paired with their ring index (0=X,1=Y,2=Z).
-const LOCK_AXES: ReadonlyArray<{ axis: THREE.Vector3; ring: 0 | 1 | 2 }> = [
-    { axis: new THREE.Vector3(1, 0, 0), ring: 0 },
-    { axis: new THREE.Vector3(0, 1, 0), ring: 1 },
-    { axis: new THREE.Vector3(0, 0, 1), ring: 2 },
-];
+const AXIS_NAMES = ["X", "Y", "Z"] as const;
 
 export function createRotateMenu(): MenuModule {
-    const accent = MENU_META[MenuId.ROTATE].accent;
+    const ACCENT = MENU_META[MenuId.ROTATE].accent;
 
     // ----- affordance objects (created in enter, freed in exit) -----
-    let panel: SpatialPanel | null = null;
+    let panel: Panel | null = null;
     let arcball: THREE.Group | null = null;
     let rings: THREE.Mesh[] = []; // [X, Y, Z]
 
-    // ----- engage / rotation state -----
+    // ----- engage / rotation state (quaternion only; never Euler) -----
     let engaged = false;
     const Q_START_INV = new THREE.Quaternion(); // (Q_start)⁻¹
     const R_START = new THREE.Quaternion();      // mesh rotation at engage
     const Q_CURRENT = new THREE.Quaternion();    // this frame's hand orientation
 
-    // ----- axis lock state -----
-    let lockedRing: 0 | 1 | 2 | null = null;
-    let gunMs = 0;          // how long a gun pose has been held this episode
-    let gunConsumed = false; // prevents repeat toggles within one continuous gun hold
-
-    // ----- basis scratch (module-owned; zero per-frame alloc, §12.2) -----
+    // ----- basis scratch (module-owned; zero per-frame alloc, §6.2) -----
     const wrist = new THREE.Vector3();
-    const idxMcp = new THREE.Vector3();
-    const pnkMcp = new THREE.Vector3();
-    const idxTip = new THREE.Vector3();
-    const xHand = new THREE.Vector3();
-    const yHand = new THREE.Vector3();
-    const zHand = new THREE.Vector3();
+    const idx_mcp = new THREE.Vector3();
+    const pnk_mcp = new THREE.Vector3();
+    const x_hand = new THREE.Vector3();
+    const y_hand = new THREE.Vector3();
+    const z_hand = new THREE.Vector3();
     const basis = new THREE.Matrix4();
-    const aimDir = new THREE.Vector3();    // index direction, world
-    const twistAxisV = new THREE.Vector3();
-    const meshCenter = new THREE.Vector3();
-    const euler = new THREE.Euler();
+    const axis_vec = new THREE.Vector3();   // delta rotation axis, for ring highlight
+    const mesh_center = new THREE.Vector3();
+    const euler = new THREE.Euler();         // display-only; never feeds the math path
+
+    // The local X/Y/Z axes a delta rotation can be "closest to", paired with their ring
+    // index. Module constants — built once, never reallocated.
+    const LOCK_AXES: ReadonlyArray<{ axis: THREE.Vector3; ring: 0 | 1 | 2 }> = [
+        { axis: new THREE.Vector3(1, 0, 0), ring: 0 },
+        { axis: new THREE.Vector3(0, 1, 0), ring: 1 },
+        { axis: new THREE.Vector3(0, 0, 1), ring: 2 },
+    ];
 
     // Copy a world landmark into a Vector3 (MediaPipe metric space).
     function readWorld(hand: HandPose, i: number, out: THREE.Vector3): THREE.Vector3 {
@@ -110,60 +105,43 @@ export function createRotateMenu(): MenuModule {
         return out.set(w.x, w.y, w.z);
     }
 
-    // Build Q_current from the right-hand world landmarks. Returns false if the basis
-    // is degenerate (collapsed landmarks) so the caller can hold the last rotation.
+    // Build the hand-orientation quaternion from the right-hand world landmarks. Returns
+    // false if the basis is degenerate (collapsed landmarks) so the caller can hold the
+    // last rotation rather than snapping to garbage.
     function computeHandQuat(hand: HandPose, out: THREE.Quaternion): boolean {
         readWorld(hand, WRIST, wrist);
-        readWorld(hand, INDEX_MCP, idxMcp);
-        readWorld(hand, PINKY_MCP, pnkMcp);
+        readWorld(hand, INDEX_MCP, idx_mcp);
+        readWorld(hand, PINKY_MCP, pnk_mcp);
 
-        yHand.copy(idxMcp).sub(wrist);              // up the fingers
-        pnkMcp.sub(wrist);                          // across the palm (reused as scratch)
-        zHand.copy(yHand).cross(pnkMcp);            // palm normal
-        if (yHand.lengthSq() < 1e-10 || zHand.lengthSq() < 1e-10) return false;
-        yHand.normalize();
-        zHand.normalize();
-        xHand.copy(yHand).cross(zHand).normalize(); // re-orthogonalized right-handed x
-        basis.makeBasis(xHand, yHand, zHand);
+        y_hand.copy(idx_mcp).sub(wrist);            // up the fingers
+        pnk_mcp.sub(wrist);                         // across the palm (reused as scratch)
+        z_hand.copy(y_hand).cross(pnk_mcp);         // palm normal
+        if (y_hand.lengthSq() < 1e-10 || z_hand.lengthSq() < 1e-10) return false;
+        y_hand.normalize();
+        z_hand.normalize();
+        x_hand.copy(y_hand).cross(z_hand).normalize(); // re-orthogonalized right-handed x
+        basis.makeBasis(x_hand, y_hand, z_hand);
         out.setFromRotationMatrix(basis);
         return true;
     }
 
-    // World-space index pointing direction (indexMCP → indexTip).
-    function computeAimDir(hand: HandPose, out: THREE.Vector3): boolean {
-        readWorld(hand, INDEX_MCP, idxMcp);
-        readWorld(hand, INDEX_TIP, idxTip);
-        out.copy(idxTip).sub(idxMcp);
-        if (out.lengthSq() < 1e-10) return false;
-        out.normalize();
-        return true;
-    }
-
-    // Pick the arcball axis (world X/Y/Z) whose direction is closest (by |dot|) to the
-    // world-space index aim. Rotation is applied in the world-aligned parent frame and
-    // the rings are world-aligned, so the lock axis is chosen in world space too — the
-    // highlighted ring is exactly the axis the constrained twist turns about.
-    function nearestLockRing(worldAim: THREE.Vector3): 0 | 1 | 2 {
+    // The local axis (0=X,1=Y,2=Z) closest to a delta rotation's axis of rotation, used to
+    // light the matching arcball ring while rotating. Returns null near identity.
+    function dominantAxis(delta: THREE.Quaternion): 0 | 1 | 2 | null {
+        // A quaternion's rotation axis is the normalized vector part; near identity it is
+        // ill-defined, so we report "no axis" and dim every ring.
+        axis_vec.set(delta.x, delta.y, delta.z);
+        if (axis_vec.lengthSq() < AXIS_EPS_SQ) return null;
         let best: 0 | 1 | 2 = 0;
-        let bestDot = -1;
+        let best_dot = -1;
         for (const entry of LOCK_AXES) {
-            const dot = Math.abs(worldAim.dot(entry.axis));
-            if (dot > bestDot) { bestDot = dot; best = entry.ring; }
+            const dot = Math.abs(axis_vec.dot(entry.axis));
+            if (dot > best_dot) { best_dot = dot; best = entry.ring; }
         }
         return best;
     }
 
-    // Swing-twist: constrain a full delta rotation to its twist component about a unit
-    // axis k, so axis-locked rotation only turns about that one axis (no gimbal lock).
-    function constrainToAxis(delta: THREE.Quaternion, k: THREE.Vector3, out: THREE.Quaternion): void {
-        twistAxisV.set(delta.x, delta.y, delta.z);
-        const dot = twistAxisV.dot(k);
-        out.set(k.x * dot, k.y * dot, k.z * dot, delta.w);
-        if (out.lengthSq() < 1e-12) { out.identity(); return; } // 180° edge case
-        out.normalize();
-    }
-
-    // Highlight one ring (or none) by axis index; others fade to dim.
+    // Highlight one ring (or none) by axis index; others fade to dim. Opacity-only update.
     function highlightRing(active: 0 | 1 | 2 | null): void {
         for (let i = 0; i < rings.length; i++) {
             const mat = rings[i].material as THREE.MeshBasicMaterial;
@@ -171,51 +149,14 @@ export function createRotateMenu(): MenuModule {
         }
     }
 
-    // Repaint the panel: title, live Euler (degrees), and the lock state.
-    function paintPanel(active: 0 | 1 | 2 | null): void {
-        if (!panel) return;
-        euler.setFromQuaternion(panelQuat, "XYZ"); // display-only; never feeds the math
-        const deg = (r: number) => (r * 180 / Math.PI).toFixed(0).padStart(4, " ");
-        const lockLabel = lockedRing === null
-            ? "FREE"
-            : `LOCK ${AXIS_NAMES[lockedRing]}`;
-        const axisLabel = active === null ? "--" : AXIS_NAMES[active];
-        panel.draw((g, w, h) => {
-            g.fillStyle = accent;
-            g.font = 'bold 30px "JetBrains Mono", monospace';
-            g.fillText("ROTATE", 24, 26);
-
-            g.font = '18px "JetBrains Mono", monospace';
-            g.fillStyle = "rgba(255,255,255,0.55)";
-            g.fillText(engaged ? "// grabbing" : "// pinch to grab", 24, 70);
-
-            g.font = '26px "JetBrains Mono", monospace';
-            g.fillStyle = "#FFFFFF";
-            g.fillText(`X ${deg(euler.x)}°`, 24, 120);
-            g.fillText(`Y ${deg(euler.y)}°`, 24, 158);
-            g.fillText(`Z ${deg(euler.z)}°`, 24, 196);
-
-            // Lock + active-axis chips along the bottom.
-            g.font = 'bold 22px "JetBrains Mono", monospace';
-            g.fillStyle = lockedRing === null ? "rgba(255,255,255,0.45)" : accent;
-            g.fillText(lockLabel, 24, 300);
-            g.fillStyle = "rgba(255,255,255,0.45)";
-            g.fillText(`turn ${axisLabel}`, w - 200, 300);
-
-            // Lock hint.
-            g.font = '15px "JetBrains Mono", monospace';
-            g.fillStyle = "rgba(255,255,255,0.35)";
-            g.fillText('"gun" pose = lock axis', 24, 340);
-
-            // Operate hints sit in the open band above the lock/turn chips (y=300).
-            drawPanelHints(g, w, h, MENU_HINTS[MenuId.ROTATE], accent, 100);
-        });
+    // Index fingertip → world via the shared unprojection (§12). Writes ctx.scratch.v1 and
+    // returns it; reuses ctx.scratch.ray / .plane as documented in fingertipToWorld.
+    function fingertipWorld(ctx: SceneContext, hand: HandPose): THREE.Vector3 {
+        return fingertipToWorld(
+            hand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
+            ctx.scratch.ray, ctx.scratch.plane, ctx.scratch.v1,
+        );
     }
-
-    // The quaternion the panel reads for its Euler display: the mesh rotation. Kept as
-    // a field so paintPanel can read it without re-querying the mesh.
-    const panelQuat = new THREE.Quaternion();
-    const AXIS_NAMES = ["X", "Y", "Z"] as const;
 
     function makeRing(color: number, orient: 0 | 1 | 2): THREE.Mesh {
         const geo = new THREE.TorusGeometry(
@@ -225,17 +166,38 @@ export function createRotateMenu(): MenuModule {
             color,
             transparent: true,
             opacity: RING_DIM,
-            depthWrite: false,
             toneMapped: false,
         });
         const ring = new THREE.Mesh(geo, mat);
-        // A TorusGeometry lies in its local XY plane (hole axis = local Z). Orient each
-        // ring so its hole axis aligns with world X / Y / Z respectively.
-        if (orient === 0) ring.rotation.y = Math.PI / 2;   // hole axis → X
+        // A TorusGeometry lies in its local XY plane (hole axis = local Z). Orient each ring
+        // so its hole axis aligns with world X / Y / Z respectively.
+        if (orient === 0) ring.rotation.y = Math.PI / 2;      // hole axis → X
         else if (orient === 1) ring.rotation.x = Math.PI / 2; // hole axis → Y
         // orient === 2: default, hole axis → Z
-        ring.renderOrder = 9;
         return ring;
+    }
+
+    // Repaint the panel body: title, status, and the display-only Euler (degrees). The
+    // Euler is derived from the mesh quaternion purely for the readout — it never feeds the
+    // rotation math (which stays quaternion-only, §5.4).
+    function paintPanel(mesh: THREE.Mesh, active: 0 | 1 | 2 | null): void {
+        if (!panel) return;
+        euler.setFromQuaternion(mesh.quaternion, "XYZ");
+        const deg = (r: number) => (r * 180 / Math.PI).toFixed(0);
+        const axis_label = active === null ? "—" : AXIS_NAMES[active];
+        const status = engaged ? "grabbing" : "pinch to grab";
+        panel.setBody(
+            `<div style="font-size:11px;letter-spacing:0.06em;color:rgba(255,255,255,0.55);` +
+                `text-transform:uppercase;margin-bottom:14px;">// ${status}</div>` +
+            `<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;` +
+                `font-size:22px;font-variant-numeric:tabular-nums;">` +
+                `<span style="color:#ff4d4d;">X</span><span>${deg(euler.x)}°</span>` +
+                `<span style="color:#4dff7a;">Y</span><span>${deg(euler.y)}°</span>` +
+                `<span style="color:#4d8cff;">Z</span><span>${deg(euler.z)}°</span>` +
+            `</div>` +
+            `<div style="margin-top:16px;font-size:11px;letter-spacing:0.06em;` +
+                `text-transform:uppercase;color:${ACCENT};">turn axis ${axis_label}</div>`,
+        );
     }
 
     return {
@@ -243,112 +205,82 @@ export function createRotateMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             engaged = false;
-            lockedRing = null;
-            gunMs = 0;
-            gunConsumed = false;
+
+            // World is empty until ADD SHAPES (§5.1): with no mesh there is nothing to
+            // rotate, so build no affordances and open no panel.
+            if (!ctx.mesh) return;
 
             arcball = new THREE.Group();
-            const ringX = makeRing(AXIS_COLOR_X, 0);
-            const ringY = makeRing(AXIS_COLOR_Y, 1);
-            const ringZ = makeRing(AXIS_COLOR_Z, 2);
-            rings = [ringX, ringY, ringZ];
-            arcball.add(ringX, ringY, ringZ);
+            const ring_x = makeRing(AXIS_COLOR_X, 0);
+            const ring_y = makeRing(AXIS_COLOR_Y, 1);
+            const ring_z = makeRing(AXIS_COLOR_Z, 2);
+            rings = [ring_x, ring_y, ring_z];
+            arcball.add(ring_x, ring_y, ring_z);
+            // HARD RULE (§4.3): arcball is menu geometry — renderOrder=1, depthTest=false,
+            // depthWrite=false, applied to the group and every ring.
+            asMenuLayer(arcball);
             ctx.scene.add(arcball);
 
-            panel = new SpatialPanel(accent);
-            ctx.scene.add(panel.object);
-
-            // Initial paint reflects the mesh's current rotation.
-            panelQuat.copy(ctx.mesh.quaternion);
-            paintPanel(null);
+            panel = new Panel({ title: "Rotate", accent: ACCENT });
+            panel.setInstructions("Right pinch near object · twist to rotate · release to latch");
+            paintPanel(ctx.mesh, null);
+            panel.show();
         },
 
-        update(ctx: SceneContext, right: HandPose | null, _left: HandPose | null, dt: number): void {
-            if (!arcball || !panel) return;
+        update(ctx: SceneContext, right: HandPose | null, _left: HandPose | null, _dt: number): void {
+            // No mesh (empty world) or affordances never built: nothing to do.
+            const mesh = ctx.mesh;
+            if (!mesh || !arcball) return;
 
-            // Keep the arcball centered on the mesh in world space (the mesh lives in
-            // tilt/spin groups, so its world position can differ from origin).
-            ctx.mesh.updateWorldMatrix(true, false);
-            ctx.mesh.getWorldPosition(meshCenter);
-            arcball.position.copy(meshCenter);
-            panel.placeBeside(meshCenter, ctx.camera);
-
-            let activeAxis: 0 | 1 | 2 | null = lockedRing;
+            // Keep the arcball centered on the mesh in world space (the mesh may sit inside
+            // tilt/spin parent groups, so its world position can differ from the origin).
+            mesh.updateWorldMatrix(true, false);
+            mesh.getWorldPosition(mesh_center);
+            arcball.position.copy(mesh_center);
 
             if (!right) {
-                // No hand: release any grab, hold the mesh where it is.
+                // Hand lost: release any grab and hold the mesh where it is.
                 engaged = false;
-                gunMs = 0;
-                gunConsumed = false;
-                highlightRing(activeAxis);
-                panelQuat.copy(ctx.mesh.quaternion);
-                paintPanel(activeAxis);
+                highlightRing(null);
+                paintPanel(mesh, null);
                 return;
             }
 
             const lm = right.landmarks;
-            const gesture = classify(lm);
-            const pinch = pinchAmount(lm);
-
-            // --- axis-lock toggle on a held "gun" pose (§6.4) ---
-            if (gesture.name === "gun") {
-                gunMs += dt * 1000;
-                if (gunMs >= GUN_HOLD_MS && !gunConsumed) {
-                    if (computeAimDir(right, aimDir)) {
-                        const ring = nearestLockRing(aimDir);
-                        // Toggle: same axis again clears the lock.
-                        lockedRing = lockedRing === ring ? null : ring;
-                        activeAxis = lockedRing;
-                    }
-                    gunConsumed = true; // one toggle per continuous hold
-                }
-            } else {
-                gunMs = 0;
-                gunConsumed = false;
-            }
+            const s = handScale(right.world);
 
             // --- engage / release with hysteresis ---
-            // Engage requires the fingertip near the object (world-space proximity).
             if (!engaged) {
-                if (pinch >= PINCH_ENGAGE) {
-                    // Index fingertip in world space via the shared unprojection.
-                    const tipWorld = fingertipWorld(ctx, lm);
-                    if (tipWorld.distanceTo(meshCenter) <= ENGAGE_RADIUS) {
-                        if (computeHandQuat(right, Q_CURRENT)) {
-                            Q_START_INV.copy(Q_CURRENT).invert();
-                            R_START.copy(ctx.mesh.quaternion);
-                            engaged = true;
-                        }
+                // Engage requires a firm pinch AND the index fingertip near the object.
+                if (isPinching(lm, s) && pinchAmount(lm, s) >= PINCH_ENGAGE) {
+                    const tip_world = fingertipWorld(ctx, right);
+                    if (tip_world.distanceTo(mesh_center) <= ENGAGE_RADIUS &&
+                        computeHandQuat(right, Q_CURRENT)) {
+                        // Snapshot the reference: deltaQ is measured against this from now.
+                        Q_START_INV.copy(Q_CURRENT).invert();
+                        R_START.copy(mesh.quaternion);
+                        engaged = true;
                     }
                 }
-            } else if (pinch <= PINCH_RELEASE) {
-                // Release: latch the current rotation (already written to the mesh).
+            } else if (pinchAmount(lm, s) <= PINCH_RELEASE) {
+                // Release: latch the rotation already written to the mesh.
                 engaged = false;
             }
 
             // --- apply rotation while engaged ---
+            let active: 0 | 1 | 2 | null = null;
             if (engaged && computeHandQuat(right, Q_CURRENT)) {
-                // deltaQ = Q_current · Q_start⁻¹  → scratch.q1 (§13.4).
+                // deltaQ = Q_current · Q_start⁻¹  → scratch.q1 (§5.4). Quaternion only.
                 ctx.scratch.q1.multiplyQuaternions(Q_CURRENT, Q_START_INV);
-
-                if (lockedRing !== null) {
-                    // Constrain the delta to a single mesh-local axis (swing-twist).
-                    constrainToAxis(ctx.scratch.q1, LOCK_AXES[lockedRing].axis, ctx.scratch.q1);
-                    activeAxis = lockedRing;
-                } else {
-                    // Free rotate: highlight the ring whose axis the hand is most
-                    // turning about (the delta's dominant rotation axis, mesh-local).
-                    activeAxis = dominantAxis(ctx.scratch.q1);
-                }
-
-                // mesh.quaternion = deltaQ · R_start (premultiply applies delta in the
-                // parent frame; no incremental accumulation, so it stays drift-free).
-                ctx.mesh.quaternion.copy(R_START).premultiply(ctx.scratch.q1);
+                active = dominantAxis(ctx.scratch.q1);
+                // mesh.quaternion = deltaQ · R_start: premultiply applies the delta in the
+                // parent frame against the engage-time snapshot, so there is no incremental
+                // accumulation and the rotation stays drift-free.
+                mesh.quaternion.copy(R_START).premultiply(ctx.scratch.q1);
             }
 
-            highlightRing(activeAxis);
-            panelQuat.copy(ctx.mesh.quaternion);
-            paintPanel(activeAxis);
+            highlightRing(active);
+            paintPanel(mesh, active);
         },
 
         exit(ctx: SceneContext): void {
@@ -362,40 +294,11 @@ export function createRotateMenu(): MenuModule {
                 arcball = null;
             }
             if (panel) {
-                ctx.scene.remove(panel.object);
-                panel.dispose();
+                panel.hide();
+                panel.destroy();
                 panel = null;
             }
             engaged = false;
-            lockedRing = null;
         },
     };
-
-    // ----- helpers that need module scratch but no per-instance state -----
-
-    // Index fingertip → world via the shared unprojection (§13.2). Writes ctx.scratch.v1
-    // and returns it; uses ctx.scratch.ray / plane as documented in coords.fingertipToWorld.
-    function fingertipWorld(ctx: SceneContext, lm: HandPose["landmarks"]): THREE.Vector3 {
-        return fingertipToWorld(
-            lm[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
-            ctx.scratch.ray, ctx.scratch.plane, ctx.scratch.v1,
-        );
-    }
-
-    // The mesh-local axis (0=X,1=Y,2=Z) closest to a delta rotation's axis of rotation,
-    // used to light the matching arcball ring during free rotate.
-    function dominantAxis(delta: THREE.Quaternion): 0 | 1 | 2 {
-        // The rotation axis is the normalized vector part of the quaternion; near
-        // identity it is ill-defined, so fall back to no strong axis (default X but
-        // dim — the magnitude is tiny anyway).
-        twistAxisV.set(delta.x, delta.y, delta.z);
-        if (twistAxisV.lengthSq() < 1e-8) return lockedRing ?? 0;
-        let best: 0 | 1 | 2 = 0;
-        let bestDot = -1;
-        for (const entry of LOCK_AXES) {
-            const dot = Math.abs(twistAxisV.dot(entry.axis));
-            if (dot > bestDot) { bestDot = dot; best = entry.ring; }
-        }
-        return best;
-    }
 }

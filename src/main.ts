@@ -1,63 +1,111 @@
-// DAEDALUS bootstrap (P3). Wires the whole pipeline:
-//   webcam -> HandLandmarker (One Euro) -> PoseStore -> gesture/menu state machine
-//   (nav hand drives the radial ring + router.select; exec hand drives the active
-//   menu) -> scene + post composer + CSS3D chat layer + webcam overlay -> HUD.
+// DAEDALUS v5 bootstrap (SPEC §2, §10.3, §13). Wires the whole pipeline:
 //
-// Rendering starts immediately so the sphere is visible in <3s even before the
-// camera resolves; tracking attaches when ready. A window.DAEDALUS debug API drives
-// every demo beat without a camera (used for headless verification + the safety mode).
+//   InputSource (live MediaPipe | mock mouse/keyboard, picked by ?mock=1)
+//     -> PoseStore (latest-value, last-write-wins — render never awaits inference)
+//     -> nav (Left) hand drives the tool carousel: gun opens, flick navigates,
+//        pinch selects -> router.select; fist dismisses
+//     -> exec (Right) hand drives the active menu module
+//     -> parting-curtains (both open palms sweeping apart) toggles scene <-> AR
+//     -> Three.js scene + EffectComposer (NEVER CSS3D) + webcam corner overlay + HUD
+//
+// Rendering starts IMMEDIATELY so the empty scene is visible in <3s before the
+// camera resolves; tracking attaches when ready. The world starts EMPTY: ctx.mesh
+// is null until ADD SHAPES spawns the first mesh — every access is guarded here.
+//
+// The Director is the forward-only flow source of truth; we pull its milestones from
+// the observable ctx (mesh added -> SPHERE, morphT -> DONUT, decorated -> DECORATED).
+//
+// A window.DAEDALUS debug API drives every beat headlessly (used by the mock input,
+// headless verification, and the safety-mode operator).
 import "./styles.css";
 import * as THREE from "three";
 
+import { pickSourceKind } from "./tracking/inputSource";
+import { LiveInputSource } from "./tracking/liveInput";
+import { MockInputSource } from "./tracking/mockInput";
 import { startWebcam } from "./capture/webcam";
-import { HandLandmarkerEngine } from "./tracking/handLandmarker";
-import { Calibration, profileToOneEuroParams, type RitualFrame } from "./tracking/calibration";
-import { classify, pinchAmount, handScale } from "./gesture/predicates";
+
 import { PoseStore } from "./core/store";
 import { startLoop } from "./core/loop";
 import { Director } from "./core/director";
+
 import { makeContext } from "./render/scene";
 import { makeComposer } from "./render/post";
 import { drawOverlay } from "./render/overlay";
-import { Chrome } from "./ui/chrome";
-import { CalibrationUI } from "./ui/calibrationUI";
-import { MenuRouter } from "./menu/menuRouter";
-import { RadialRing } from "./menu/radialRing";
-import { fingertipToWorld } from "./math/coords";
-import { MenuId, MENU_ORDER, type Handedness, type HandPose, type PoseFrame } from "./types";
+import { ViewModeController } from "./render/viewMode";
 
+import { Carousel } from "./menu/carousel";
+import { MenuRouter } from "./menu/menuRouter";
+import { createAddShapesMenu } from "./menu/addShapes";
 import { createTranslateMenu } from "./menu/translate";
 import { createDilateMenu } from "./menu/dilate";
 import { createRotateMenu } from "./menu/rotate";
 import { createMorphMenu } from "./menu/morph";
-import { createAddShapesMenu } from "./menu/addShapes";
-import { createInteractMenu } from "./menu/interact";
-import { createDestroyMenu } from "./menu/destroy";
 import { createDecorateMenu } from "./decorate/chatPanel";
 
-const EMPTY_FRAME: PoseFrame = { Left: null, Right: null, count: 0, tMs: 0 };
+import { classify, GestureDebouncer } from "./gesture/detect";
+import { handScale } from "./gesture/predicates";
+
+import { Chrome } from "./ui/chrome";
+import { DevOverlay } from "./ui/devOverlay";
+import { InstructionsPopout } from "./ui/instructionsPopout";
+
+import { sfx } from "./audio/sfx";
+
+import { fingertipToWorld } from "./math/coords";
+import { MenuId, MENU_ORDER } from "./types";
+import type { Handedness, HandPose, InputSource, PoseFrame, SceneContext } from "./types";
+
+// MediaPipe index of the navigation index fingertip (carousel aim, §4.1, §12).
+const INDEX_TIP = 8;
+
+// An empty frame held before any pose arrives, so the loop never sees undefined.
+const EMPTY_FRAME: PoseFrame = { Left: null, Right: null, count: 0, tMs: 0, source: "mock" };
+
+// ---- dev URL params (§10.3) ------------------------------------------------
+const PARAMS = new URLSearchParams(location.search);
+const PARAM_TOOL = PARAMS.get("tool");           // ?tool=MORPH — start in a tool
+const PARAM_FPS = PARAMS.get("fps") === "1";     // ?fps=1 — show the mock dev overlay
+const SINGLE_HAND = PARAMS.get("singlehand") === "1"; // ?singlehand=1 — one hand drives both roles
+const IS_MOCK = pickSourceKind() === "mock";     // ?mock=1 — mouse/keyboard input
 
 // ---- core singletons -------------------------------------------------------
-const ctx = makeContext();
-const director = new Director("guided");
+const ctx: SceneContext = makeContext();
 const store = new PoseStore();
+const director = new Director("freeplay");
 const router = new MenuRouter();
-const ring = new RadialRing();
-ctx.scene.add(ring.object);
-const { composer } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
-const chrome = new Chrome();
 
-// register all 8 menus (router is a registry; it never imports them itself)
+// Register all six tool modules (§5.1–§5.6). The router is a registry; it never
+// imports the modules itself, so the module-boundary rule (talk only through
+// SceneContext) is preserved.
 router.register(createAddShapesMenu());
 router.register(createTranslateMenu());
 router.register(createDilateMenu());
 router.register(createRotateMenu());
-router.register(createInteractMenu());
 router.register(createMorphMenu());
 router.register(createDecorateMenu());
-router.register(createDestroyMenu());
 
-// ---- preview canvas / overlay ----------------------------------------------
+// Tool carousel (§4.1). Parented to the camera so it stays pinned at top-center; the
+// nav fingertip is transformed world -> camera-local before being handed to update().
+const carousel = new Carousel();
+carousel.object.position.set(0, 1.55, -3.2); // top-center, in front of the camera
+ctx.camera.add(carousel.object);
+ctx.scene.add(ctx.camera);
+carousel.onSelect = (id) => {
+    sfx.ping();
+    router.select(ctx, id);
+};
+
+// Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
+const { composer } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
+
+// HUD chrome (§14.3) + the always-on ❓ gesture guide (§4.4) + the mock dev overlay.
+const chrome = new Chrome();
+const instructions = new InstructionsPopout();
+instructions.mount();
+const devOverlay = new DevOverlay(IS_MOCK || PARAM_FPS);
+
+// ---- preview canvas / banner -----------------------------------------------
 const previewCanvas = document.getElementById("preview") as HTMLCanvasElement | null;
 const previewCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
 const banner = document.getElementById("banner");
@@ -71,179 +119,222 @@ function hideBanner(): void {
     banner?.classList.add("hidden");
 }
 
-// ---- tracking (best-effort; never blocks rendering) ------------------------
-let landmarker: HandLandmarkerEngine | null = null;
+// ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
+const viewMode = new ViewModeController(ctx.scene, () => video);
+
+// ---- input source (best-effort; NEVER blocks rendering) --------------------
+// The render loop starts immediately on the empty scene. The input source — live
+// camera or mock — initializes asynchronously; until ready, the store holds the
+// last (empty) frame and the loop renders the empty world.
+let source: InputSource | null = null;
 let video: HTMLVideoElement | null = null;
 
-async function initTracking(): Promise<void> {
-    if (!previewCanvas) return;
+async function initInput(): Promise<void> {
     try {
+        if (IS_MOCK) {
+            source = new MockInputSource();
+            await source.init();
+            hideBanner();
+            return;
+        }
         video = await startWebcam();
-        landmarker = new HandLandmarkerEngine(previewCanvas, video);
-        await landmarker.init();
+        source = new LiveInputSource(video);
+        await source.init();
         hideBanner();
     } catch (err) {
         const e = err as Error;
-        showBanner(`camera unavailable: ${e?.message ?? err} — keyboard + DAEDALUS debug still work`);
+        showBanner(
+            `camera unavailable: ${e?.message ?? err} — append ?mock=1 for mouse/keyboard, or use the window.DAEDALUS API`,
+        );
     }
 }
 
-// ---- calibration ritual (skippable; non-blocking render behind it) ---------
-const calibration = new Calibration();
-let calibrationActive = true;
-const calUI = new CalibrationUI(calibration, {
-    onComplete: applyProfile,
-    onSkip: applyProfile,
-});
+// ---- carousel navigation (nav / Left hand) ---------------------------------
+// Reused scratch — zero per-frame allocation in the carousel-drive path.
+const navTipWorld = new THREE.Vector3();
+const navTipLocal = new THREE.Vector3();
+const navGate = new GestureDebouncer();   // debounce nav-hand discrete poses (§12)
+let navPrevLm: HandPose["landmarks"] | null = null; // prev nav landmarks for flick vx
+let navGestureName = "none";              // last committed nav gesture (for the dev overlay)
 
-function applyProfile(): void {
-    ctx.calibration = calibration.profile;
-    calibrationActive = false;
-    if (landmarker) {
-        const { minCutoff, beta } = profileToOneEuroParams(calibration.profile);
-        landmarker.setFilterParams(minCutoff, beta);
-    }
-}
-
-// dev/demo affordance: "?nocal" skips the calibration ritual straight to the scene.
-if (new URLSearchParams(location.search).has("nocal")) {
-    calibration.skip();
-    applyProfile();
-    calUI.close();
-}
-
-// Build a coarse RitualFrame from the nav hand so the ritual can advance when a
-// hand is held up. Per-step pose discrimination is intentionally light — the Skip
-// button (DEFAULT_CALIBRATION) is the primary path; this is the "real hand" path.
-function ritualFrameFrom(nav: HandPose | null): RitualFrame {
+function driveCarousel(nav: HandPose | null, dtSeconds: number): void {
     if (!nav) {
-        return { poseHeld: false, restValue: 0, pinchFraction: 0.9, depthZ: 0, velocity: 0, handScaleMeters: 0.09 };
+        navPrevLm = null;
+        navGestureName = "none";
+        // Still advance the carousel's own animation (fade/close) with a null gesture.
+        carousel.update(navTipLocal, { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 }, dtSeconds);
+        return;
     }
-    const s = handScale(nav.landmarks);
-    const pinch_frac = Math.hypot(nav.landmarks[4].x - nav.landmarks[8].x, nav.landmarks[4].y - nav.landmarks[8].y) / s;
-    return {
-        poseHeld: true,
-        restValue: nav.landmarks[8].x,
-        pinchFraction: pinch_frac,
-        depthZ: nav.world[8]?.z ?? 0,
-        velocity: 0,
-        handScaleMeters: nav.handScale,
-    };
-}
 
-// ---- radial-ring navigation (nav hand) -------------------------------------
-const navTip = new THREE.Vector3();
-const navMcp = new THREE.Vector3();
-const navAim = new THREE.Vector3();
-const navRay = new THREE.Ray();
-const navPlane = new THREE.Plane();
+    const g = classify(nav.landmarks, nav.world, navPrevLm);
+    navPrevLm = nav.landmarks;
+    const committed = navGate.push(g.name);
+    navGestureName = committed;
 
-function driveNav(nav: HandPose | null): void {
-    if (!nav) return;
-    const g = classify(nav.landmarks);
-    fingertipToWorld(nav.landmarks[8], ctx.camera, ctx.interactionPlaneZ, navRay, navPlane, navTip);
-    fingertipToWorld(nav.landmarks[5], ctx.camera, ctx.interactionPlaneZ, navRay, navPlane, navMcp);
-    navAim.subVectors(navTip, navMcp).normalize();
-
-    if (g.name === "gun" && !ring.isOpen) {
-        ring.open(navTip);
-        router.select(ctx, null); // opening the wheel deactivates the current menu (#3)
+    // Finger gun opens the wheel. Opening tears down the active menu/panel (§4.2) so a
+    // panel and the wheel are never on screen together.
+    if (committed === "gun" && !carousel.isOpen) {
+        carousel.open(navTipLocal);
+        router.select(ctx, null);
+        sfx.hum();
     }
-    if (g.name === "fist" && ring.isOpen) ring.close();
-
-    if (ring.isOpen) {
-        ring.update(navTip, navAim, ctx.camera);
-        const picked = ring.pickOnPinch(g.pinch);
-        if (picked) {
-            router.select(ctx, picked);
-            ring.close();
-        }
+    // Fist dismisses the wheel with no selection.
+    if (committed === "fist" && carousel.isOpen) {
+        carousel.close();
     }
+
+    // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
+    fingertipToWorld(
+        nav.landmarks[INDEX_TIP],
+        ctx.camera,
+        ctx.interactionPlaneZ,
+        ctx.scratch.ray,
+        ctx.scratch.plane,
+        navTipWorld,
+    );
+    ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
+
+    carousel.update(navTipLocal, g, dtSeconds);
 }
 
-// ---- per-frame update ------------------------------------------------------
-let injected: PoseFrame | null = null;
+// ---- role assignment (§3.2; ?singlehand collapses both roles onto one hand) -
+const NAV_LABEL: Handedness = "Left";
+const EXEC_LABEL: Handedness = "Right";
 
-function navLabel(): Handedness {
-    return ctx.calibration.handedness;
+function navHand(frame: PoseFrame): HandPose | null {
+    if (SINGLE_HAND) return frame.Right ?? frame.Left;
+    return frame[NAV_LABEL];
 }
-function execLabel(): Handedness {
-    return navLabel() === "Left" ? "Right" : "Left";
+function execHand(frame: PoseFrame): HandPose | null {
+    if (SINGLE_HAND) return frame.Right ?? frame.Left;
+    return frame[EXEC_LABEL];
 }
 
-startLoop((dt) => {
+// ---- director milestones pulled from observable ctx (§13) -------------------
+// The Director never moves backward; we feed it the observable signals each frame.
+let meshSeen = false;
+let decoratedFired = false;
+
+function syncDirector(): void {
+    // ADD SHAPES created the first mesh: EMPTY -> SPHERE.
+    if (!meshSeen && ctx.mesh !== null) {
+        meshSeen = true;
+        director.onShapeAdded();
+    } else if (meshSeen && ctx.mesh === null) {
+        // World was cleared back to empty (e.g. a fresh spawn replaced nothing yet).
+        meshSeen = false;
+    }
+    // MORPH progress: SPHERE -> DONUT once the donut blend completes (t > 0.95).
+    director.onMorph(ctx.morphT);
+    // DECORATE applied icing/sprinkles: -> DECORATED. Modules write ctx.stage when the
+    // decoration fires; the active DECORATE tool also counts.
+    if (!decoratedFired && (ctx.stage === "DECORATED" || router.activeId === MenuId.DECORATE)) {
+        decoratedFired = true;
+        director.onDecorated();
+    }
+    // The Director is the authority on the displayed stage; sync it back into ctx so the
+    // HUD and any observer read a single consistent value.
+    ctx.stage = director.stage;
+    ctx.viewMode = viewMode.mode;
+}
+
+// ---- master loop -----------------------------------------------------------
+let injected: PoseFrame | null = null; // window.DAEDALUS pose injection (headless)
+
+startLoop((dtMs) => {
     chrome.begin();
+    const dtSeconds = dtMs / 1000;
 
-    // 1) latest pose: injected (debug) wins, else live inference, else last stored
+    // 1) Latest pose: injected (debug) wins, else live pump, else last stored frame.
     let frame: PoseFrame;
     if (injected) {
         frame = injected;
-    } else if (landmarker && landmarker.ready) {
-        frame = landmarker.pump(dt);
+    } else if (source && source.ready) {
+        frame = source.pump(dtMs);
         store.set(frame);
     } else {
         frame = store.get() ?? EMPTY_FRAME;
     }
 
-    const nav = frame[navLabel()];
-    const exec = frame[execLabel()];
+    const nav = navHand(frame);
+    const exec = execHand(frame);
 
-    // 2) calibration first; the scene renders behind the overlay
-    if (calibrationActive && !calibration.done) {
-        calibration.update(ritualFrameFrom(nav));
-        calUI.update();
-    } else {
-        // 3) nav hand drives the ring + selection; exec hand drives the active menu
-        driveNav(nav);
-        router.update(ctx, exec, nav, dt);
-    }
+    // 2) View-mode toggle (§0.7): parting curtains. Uses the true Left/Right hands
+    //    (bilateral gesture) regardless of single-hand role collapsing.
+    viewMode.detectPartingCurtains(frame.Left, frame.Right, dtMs);
+    viewMode.update(dtMs);
 
-    // 4) director milestones + stage label. The director is the forward-only source
-    //    of truth; pull it forward from observable milestones, then sync the label.
-    //    Modules also signal later stages by writing ctx.stage (decorate -> DECORATED,
-    //    destroy -> CONSUMED on dissolve complete), which we honor here before the sync
-    //    overwrites it.
-    director.onMorph(ctx.morphT);
-    if (router.activeId === MenuId.DECORATE || ctx.stage === "DECORATED") director.onChatOpened();
-    if (ctx.stage === "CONSUMED") director.onDissolveDone();
-    ctx.stage = director.stage;
+    // 3) Nav hand drives the carousel + selection; exec hand drives the active menu.
+    driveCarousel(nav, dtSeconds);
+    router.update(ctx, exec, nav, dtMs);
 
-    // 5) render: composited scene + CSS3D chat layer + webcam overlay + HUD
+    // 4) Director milestones from observable ctx, then sync the displayed stage.
+    syncDirector();
+
+    // 5) Render: composited scene (NEVER css3d) + webcam corner overlay + HUD.
     composer.render();
-    ctx.css3d.render(ctx.scene, ctx.camera);
     if (previewCtx && video) drawOverlay(previewCtx, video, frame.Left, frame.Right);
-    chrome.update({ stage: director.stage, activeMenu: router.activeId });
+
+    chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });
+    devOverlay.update({
+        frame,
+        gesture: navGestureName,
+        tool: router.activeId,
+        morphT: ctx.morphT,
+        fps: dtMs > 0 ? 1000 / dtMs : 0,
+    });
 
     chrome.end();
 });
 
-// ---- keyboard fallbacks (stage safety + quick menu select) -----------------
+// ---- ?tool=MORPH — start in a specific tool (§10.3) ------------------------
+function selectByName(name: string | null): void {
+    if (name === null) {
+        router.select(ctx, null);
+        return;
+    }
+    const key = name.toUpperCase() as keyof typeof MenuId;
+    const id = MenuId[key];
+    if (id) router.select(ctx, id);
+}
+if (PARAM_TOOL) selectByName(PARAM_TOOL);
+
+// ---- keyboard fallbacks (stage safety + quick tool select) -----------------
 addEventListener("keydown", (e) => {
-    if (e.key === " ") { director.advanceManual(); return; }
+    if (e.key === " ") { director.advanceSafety(); return; }
+    if (e.key === "Escape") { router.select(ctx, null); return; }
     const n = Number(e.key);
-    if (n >= 1 && n <= 8) router.select(ctx, MENU_ORDER[n - 1]);
-    if (e.key === "Escape") router.select(ctx, null);
+    if (Number.isInteger(n) && n >= 1 && n <= MENU_ORDER.length) {
+        router.select(ctx, MENU_ORDER[n - 1]);
+    }
 });
 
-// ---- window.DAEDALUS debug API (drives every beat without a camera) ---------
+// Unlock the WebAudio context on the first user gesture (no autoplay errors).
+addEventListener("pointerdown", () => sfx.resume(), { once: true });
+
+// ---- window.DAEDALUS debug API (drives every beat headlessly) --------------
 function setMorphT(t: number): void {
     const v = Math.min(1, Math.max(0, t));
     ctx.morphT = v;
-    if (ctx.mesh.morphTargetInfluences) ctx.mesh.morphTargetInfluences[0] = v;
+    if (ctx.mesh && ctx.mesh.morphTargetInfluences && ctx.mesh.morphTargetInfluences.length > 0) {
+        ctx.mesh.morphTargetInfluences[0] = v;
+    }
     director.onMorph(v);
 }
 
 interface DaedalusDebug {
-    ctx: typeof ctx;
+    ctx: SceneContext;
     director: Director;
     router: MenuRouter;
-    ring: RadialRing;
-    selectMenu(id: keyof typeof MenuId | null): void;
+    carousel: Carousel;
+    viewMode: ViewModeController;
+    selectMenu(id: keyof typeof MenuId | string | null): void;
     setMorphT(t: number): void;
     injectPose(frame: PoseFrame | null): void;
     clearPose(): void;
-    skipCalibration(): void;
+    toggleView(): void;
     advance(): void;
+    handScaleOf(pose: HandPose): number;
     MenuId: typeof MenuId;
 }
 
@@ -251,21 +342,23 @@ const debug: DaedalusDebug = {
     ctx,
     director,
     router,
-    ring,
+    carousel,
+    viewMode,
     selectMenu(id) {
-        router.select(ctx, id === null ? null : MenuId[id]);
+        selectByName(id === null ? null : String(id));
     },
     setMorphT,
     injectPose(frame) { injected = frame; },
     clearPose() { injected = null; },
-    skipCalibration() { calibration.skip(); applyProfile(); calUI.close(); },
-    advance() { director.advanceManual(); },
+    toggleView() { viewMode.toggle(); },
+    advance() { director.advanceSafety(); },
+    handScaleOf(pose) { return handScale(pose.world); },
     MenuId,
 };
 (window as unknown as { DAEDALUS: DaedalusDebug }).DAEDALUS = debug;
 
-// kick off tracking without blocking the already-running render loop
-void initTracking();
+// Kick off input acquisition without blocking the already-running render loop.
+void initInput();
 
-// surface unexpected runtime errors on the banner instead of failing silently
+// Surface unexpected runtime errors on the banner instead of failing silently.
 addEventListener("error", (e) => showBanner(`error: ${e.message}`));

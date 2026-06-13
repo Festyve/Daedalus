@@ -1,344 +1,276 @@
-// §6.1 ADD SHAPES — paradigm: shape-pick + place.
+// §5.1 ADD SHAPES — the always-first tool. The world starts EMPTY (ctx.mesh === null),
+// and this is the only module that creates the first sculptable mesh.
 //
-// The SHAPES panel shows a 2x3 thumbnail grid of primitive types (sphere, cube,
-// cylinder, cone, torus, icosahedron). The right hand does everything here:
-//   - point + dwell: INDEX_TIP (landmark 8) aimed at a thumbnail for ~600ms highlights it.
-//   - pinch: spawns the highlighted primitive at the right hand's world position into
-//     ctx.extraMeshes + ctx.scene (MeshMatcapMaterial reusing the mesh's matcap).
-//   - drag: while still pinched, the freshly spawned mesh follows the right INDEX_TIP
-//     world position until the pinch releases (placed).
+// Paradigm (SPEC §5.1):
+//   - Right-side DOM panel shows a mini horizontal carousel: Cube · Sphere · Tetrahedron.
+//   - FLICK (fast horizontal index-tip velocity) cycles the highlighted shape, wrapping.
+//   - PINCH (right hand) spawns the highlighted shape at the right-hand world position;
+//     the spawned shape immediately becomes the active sculpt target, replacing whatever
+//     was there (the previous ctx.mesh is removed + disposed first).
 //
-// Picking which thumbnail is aimed at: cast a ray from the camera through the
-// INDEX_TIP NDC, intersect the panel's billboarded world plane, convert the hit into
-// panel-local UV, then map UV → grid cell. The same grid layout drives the canvas
-// paint and the hit-test so the highlight always matches what is drawn.
+// The right hand is the executor (`exec`); the left hand (`nav`) drives the global
+// carousel elsewhere and is unused here. Zero per-frame allocation in update(): the
+// fingertip unprojection reuses ctx.scratch, and the prev-frame landmark snapshot is a
+// pre-allocated, reused array of plain Vec3 objects.
 import * as THREE from "three";
-import type { MenuModule, SceneContext, HandPose } from "../types";
+import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
-import { SpatialPanel, drawPanelHints } from "./spatialPanel";
-import { MENU_HINTS } from "../ui/gestureGuide";
-import { toNDC } from "../math/coords";
-import { pinchAmount } from "../gesture/predicates";
+import { Panel } from "./panel";
+import { makeShape } from "../render/geometry";
+import { attachMesh } from "../render/scene";
+import { fingertipToWorld } from "../math/coords";
+import { handScale, pinchAmount } from "../gesture/predicates";
+import { classify } from "../gesture/detect";
 
-// MediaPipe right INDEX_TIP landmark index.
+// Right INDEX_TIP landmark index (MediaPipe Hands), the spawn-origin fingertip (§12).
 const INDEX_TIP = 8;
 
-// Dwell time (ms) the INDEX_TIP must stay aimed at one thumbnail to select it (§6.1).
-const DWELL_MS = 600;
+// The three primitives offered, in carousel order (SPEC §5.1).
+type ShapeKind = "cube" | "sphere" | "tetra";
+const SHAPES: ReadonlyArray<{ kind: ShapeKind; label: string; glyph: string }> = [
+    { kind: "cube", label: "CUBE", glyph: "◼" },
+    { kind: "sphere", label: "SPHERE", glyph: "●" },
+    { kind: "tetra", label: "TETRA", glyph: "▲" },
+];
 
-// Pinch closure (0..1) above which a pinch is "closed" — gates spawning (§6.1).
+// Pinch closure (0..1) above which a pinch is "closed" — gates the spawn rising edge.
 const PINCH_ON = 0.7;
 
-// Panel world-space plane size, mirrored from spatialPanel.ts so local hit coords map
-// back to UV. These MUST track the PLANE_W / PLANE_H constants there.
-const PANEL_W = 1.6;
-const PANEL_H = 1.2;
+// Min frames between flick-driven cycles so one physical swipe steps exactly one slot
+// (the flick channel stays hot for several frames while the hand decelerates).
+const FLICK_COOLDOWN_FRAMES = 8;
 
-// Thumbnail grid layout on the card (canvas fractions). Header band on top, then a
-// 2-row x 3-col cell area. Fractions are of the full canvas (top-left origin), shared
-// by paint() and the hit-test.
-const GRID_COLS = 3;
-const GRID_ROWS = 2;
-const GRID_TOP = 0.26;     // below the title band
-const GRID_BOTTOM = 0.96;
-const GRID_LEFT = 0.04;
-const GRID_RIGHT = 0.96;
+// |g.vx| (units of S/frame) that commits a flick — matches §12 and the global carousel.
+// Gating on vx (not g.name) so an OPEN hand swiped sideways still cycles: classify()
+// returns name="open" for a spread hand, which would otherwise mask the flick entirely.
+const FLICK_VX = 0.4;
 
-// Spawned primitive base size (metres). Tuned to read as a small object beside the
-// unit-radius mesh without overlapping the panel.
-const SHAPE_SIZE = 0.45;
+// Spawn scale-in: a freshly spawned shape grows 0→1 so it "arrives" rather than popping
+// in (§14.4 motion language — precise, immediate). Fast (220ms) and deliberate, with a
+// restrained ease-out-back settle: just enough overshoot to read as "snapping into place"
+// without being bouncy. SPAWN_BACK is the overshoot constant (standard back-ease uses
+// ~1.70158, which reads springy; ~0.7 gives a tasteful ~3% settle that honours "arrive").
+const SPAWN_MS = 220;
+const SPAWN_BACK = 0.7;
 
-type ShapeKind = "sphere" | "cube" | "cylinder" | "cone" | "torus" | "icosahedron";
-const SHAPES: ShapeKind[] = ["sphere", "cube", "cylinder", "cone", "torus", "icosahedron"];
-
-// Build the geometry for a primitive kind at the shared base size. Constructors and
-// argument orders are the three.js r160 signatures (Context7-confirmed).
-function makeShapeGeometry(kind: ShapeKind): THREE.BufferGeometry {
-    const s = SHAPE_SIZE;
-    switch (kind) {
-        case "sphere": return new THREE.SphereGeometry(s, 32, 24);
-        case "cube": return new THREE.BoxGeometry(s * 1.6, s * 1.6, s * 1.6);
-        case "cylinder": return new THREE.CylinderGeometry(s, s, s * 2, 32);
-        case "cone": return new THREE.ConeGeometry(s, s * 2, 32);
-        case "torus": return new THREE.TorusGeometry(s, s * 0.4, 16, 48);
-        case "icosahedron": return new THREE.IcosahedronGeometry(s, 0);
-    }
+// Ease-out-back: starts fast, overshoots 1 slightly, settles back. Overshoot magnitude is
+// governed by SPAWN_BACK; the curve always passes through (0,0) and (1,1).
+function easeOutBack(t: number): number {
+    const c1 = SPAWN_BACK;
+    const c3 = c1 + 1;
+    const u = t - 1;
+    return 1 + c3 * u * u * u + c1 * u * u;
 }
 
-// Draw a small wireframe-style glyph for each primitive into a grid cell so the user
-// can tell the thumbnails apart. Origin is the cell centre; r is half the cell's
-// smaller dimension. Pure 2D canvas — cheap, only repainted when the highlight changes.
-function drawThumb(g: CanvasRenderingContext2D, kind: ShapeKind, cx: number, cy: number, r: number): void {
-    g.beginPath();
-    switch (kind) {
-        case "sphere": {
-            g.arc(cx, cy, r, 0, Math.PI * 2);
-            g.moveTo(cx + r, cy);
-            g.ellipse(cx, cy, r, r * 0.42, 0, 0, Math.PI * 2);
-            break;
-        }
-        case "cube": {
-            const o = r * 0.42;
-            g.rect(cx - r, cy - r * 0.6, r * 1.4, r * 1.4);
-            g.moveTo(cx - r + o, cy - r * 0.6 - o);
-            g.lineTo(cx + r * 0.4 + o, cy - r * 0.6 - o);
-            g.lineTo(cx + r * 0.4 + o, cy + r * 0.8 - o);
-            g.moveTo(cx + r * 0.4, cy - r * 0.6);
-            g.lineTo(cx + r * 0.4 + o, cy - r * 0.6 - o);
-            g.moveTo(cx + r * 0.4, cy + r * 0.8);
-            g.lineTo(cx + r * 0.4 + o, cy + r * 0.8 - o);
-            break;
-        }
-        case "cylinder": {
-            g.ellipse(cx, cy - r * 0.7, r * 0.8, r * 0.3, 0, 0, Math.PI * 2);
-            g.moveTo(cx - r * 0.8, cy - r * 0.7);
-            g.lineTo(cx - r * 0.8, cy + r * 0.7);
-            g.moveTo(cx + r * 0.8, cy - r * 0.7);
-            g.lineTo(cx + r * 0.8, cy + r * 0.7);
-            g.moveTo(cx + r * 0.8, cy + r * 0.7);
-            g.ellipse(cx, cy + r * 0.7, r * 0.8, r * 0.3, 0, 0, Math.PI);
-            break;
-        }
-        case "cone": {
-            g.moveTo(cx, cy - r);
-            g.lineTo(cx - r * 0.8, cy + r * 0.7);
-            g.lineTo(cx + r * 0.8, cy + r * 0.7);
-            g.closePath();
-            g.moveTo(cx + r * 0.8, cy + r * 0.7);
-            g.ellipse(cx, cy + r * 0.7, r * 0.8, r * 0.28, 0, 0, Math.PI * 2);
-            break;
-        }
-        case "torus": {
-            g.ellipse(cx, cy, r, r * 0.55, 0, 0, Math.PI * 2);
-            g.moveTo(cx + r * 0.5, cy);
-            g.ellipse(cx, cy, r * 0.5, r * 0.26, 0, 0, Math.PI * 2);
-            break;
-        }
-        case "icosahedron": {
-            for (let i = 0; i < 6; i++) {
-                const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-                const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-                if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-            }
-            g.closePath();
-            for (let i = 0; i < 6; i++) {
-                const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-                g.moveTo(cx, cy);
-                g.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-            }
-            break;
-        }
-    }
-    g.stroke();
+// Compact gesture strip shown at the bottom of the panel (SPEC §4.2).
+const PANEL_INSTRUCTIONS =
+    "<b>FLICK</b> cycle shape &nbsp;·&nbsp; <b>PINCH</b> spawn at hand";
+
+// Build the right-side carousel markup. The highlighted slot is full-accent and scaled;
+// neighbours dim to 40% (matching the global carousel's adjacent-opacity feel, §4.1).
+function carouselHtml(selected: number, accent: string): string {
+    const slots = SHAPES.map((s, i) => {
+        const on = i === selected;
+        const opacity = on ? "1" : "0.4";
+        const color = on ? accent : "rgba(255,255,255,0.85)";
+        const border = on ? accent : "rgba(255,255,255,0.18)";
+        const glow = on ? "box-shadow:0 0 14px " + accent + ";" : "";
+        const scale = on ? "scale(1.08)" : "scale(0.92)";
+        return (
+            '<div style="' +
+            "flex:1 1 0;display:flex;flex-direction:column;align-items:center;gap:6px;" +
+            "padding:14px 4px;border:0.5px solid " + border + ";border-radius:8px;" +
+            "opacity:" + opacity + ";transform:" + scale + ";transition:all 100ms ease-out;" +
+            glow +
+            '">' +
+            '<div style="font-size:30px;line-height:1;color:' + color + '">' + s.glyph + "</div>" +
+            '<div style="font-size:10.5px;letter-spacing:0.08em;color:' + color + '">' + s.label + "</div>" +
+            "</div>"
+        );
+    }).join("");
+
+    return (
+        '<div style="display:flex;gap:8px;align-items:stretch;margin-bottom:14px">' +
+        slots +
+        "</div>" +
+        '<div style="font-size:11px;color:rgba(255,255,255,0.55);line-height:1.5">' +
+        "Right-hand <b>pinch</b> spawns the selected shape at your hand and makes it the " +
+        "active sculpt target." +
+        "</div>"
+    );
+}
+
+// One reusable Vec3 (plain object, not THREE.Vector3 — landmarks are bare Vec3).
+function blankVec(): Vec3 {
+    return { x: 0, y: 0, z: 0 };
 }
 
 export function createAddShapesMenu(): MenuModule {
     const accent = MENU_META[MenuId.ADD_SHAPES].accent;
     const label = MENU_META[MenuId.ADD_SHAPES].label;
 
-    // Live state, all module-local. No per-frame allocation: scratch comes from ctx
-    // plus a few fixed vectors created once here.
-    let panel: SpatialPanel | null = null;
-    let hovered = -1;          // grid index currently aimed at, -1 = none
-    let dwellMs = 0;           // accumulated dwell on `hovered`
-    let armed = -1;            // index whose dwell completed → ready to spawn on pinch
-    let lastPainted = -2;      // last (hovered|armed) state painted, avoids redundant repaints
-    let wasPinched = false;    // pinch edge tracking
-    let dragging: THREE.Mesh | null = null; // mesh following the hand until pinch releases
+    // Module-local live state.
+    let panel: Panel | null = null;
+    let selected = 0;             // index into SHAPES of the highlighted primitive
+    let was_pinched = false;      // pinch edge tracking (rising edge spawns)
+    let flick_cooldown = 0;       // frames remaining before another flick may cycle
+    let has_prev = false;         // whether prev_landmarks holds a valid previous frame
 
-    // Fixed scratch owned by this module (created once).
-    const ray = new THREE.Ray();
-    const plane = new THREE.Plane();
-    const planeNormal = new THREE.Vector3();
-    const panelPos = new THREE.Vector3();
-    const hit = new THREE.Vector3();
-    const local = new THREE.Vector3();
+    // Spawn scale-in animation state. spawn_mesh is the mesh currently growing 0→1;
+    // spawn_t is elapsed ms into the scale-in. spawn_mesh is null when no shape is
+    // arriving (steady state). No per-frame allocation — both are scalars/refs.
+    let spawn_mesh: THREE.Mesh | null = null;
+    let spawn_t = 0;
 
-    // Repaint the card: title band + 2x3 thumbnail grid; the armed/hovered cell gets a
-    // filled accent background, others a thin accent outline.
-    function repaint(): void {
+    // Pre-allocated previous-frame landmark snapshot (21 Vec3). classify() needs the
+    // prior frame's image-space landmarks to compute index-tip horizontal velocity (vx)
+    // for the flick. Reused every frame — no per-frame allocation.
+    const prev_landmarks: Vec3[] = Array.from({ length: 21 }, blankVec);
+
+    // Spawn origin reused across frames (no per-frame alloc).
+    const spawn_world = new THREE.Vector3();
+
+    function paint(): void {
         if (!panel) return;
-        const highlight = armed >= 0 ? armed : hovered;
-        panel.draw((g, w, h) => {
-            // Title band.
-            g.fillStyle = accent;
-            g.font = 'bold 30px "JetBrains Mono", monospace';
-            g.textBaseline = "top";
-            g.fillText(label, 20, 16);
-            // Operating instructions in the title band (the grid fills the lower
-            // panel). bottomPad = h-98 anchors the two lines at y≈58/82, under the
-            // title and above the grid (GRID_TOP).
-            drawPanelHints(g, w, h, MENU_HINTS[MenuId.ADD_SHAPES], accent, h - 98);
-
-            const gx0 = GRID_LEFT * w, gx1 = GRID_RIGHT * w;
-            const gy0 = GRID_TOP * h, gy1 = GRID_BOTTOM * h;
-            const cw = (gx1 - gx0) / GRID_COLS, ch = (gy1 - gy0) / GRID_ROWS;
-            for (let i = 0; i < SHAPES.length; i++) {
-                const col = i % GRID_COLS, row = (i / GRID_COLS) | 0;
-                const x = gx0 + col * cw, y = gy0 + row * ch;
-                const pad = 6;
-                if (i === highlight) {
-                    g.fillStyle = accent;
-                    g.globalAlpha = 0.22;
-                    g.fillRect(x + pad, y + pad, cw - pad * 2, ch - pad * 2);
-                    g.globalAlpha = 1;
-                    g.lineWidth = 3;
-                } else {
-                    g.lineWidth = 1.5;
-                }
-                g.strokeStyle = accent;
-                g.strokeRect(x + pad, y + pad, cw - pad * 2, ch - pad * 2);
-
-                const cx = x + cw / 2, cy = y + ch / 2 - 6;
-                const rr = Math.min(cw, ch) * 0.26;
-                drawThumb(g, SHAPES[i], cx, cy, rr);
-
-                g.fillStyle = i === highlight ? accent : "rgba(255,255,255,0.55)";
-                g.font = '13px "JetBrains Mono", monospace';
-                g.textAlign = "center";
-                g.fillText(SHAPES[i].toUpperCase(), cx, y + ch - 22);
-                g.textAlign = "left";
-            }
-        });
-        lastPainted = highlight;
+        panel.setBody(carouselHtml(selected, accent));
     }
 
-    // Which grid cell (or -1) the right INDEX_TIP is aiming at. Ray from camera through
-    // the tip NDC → panel world plane → panel-local → UV → cell. Returns -1 on a miss
-    // (ray parallel to / behind the plane, or hit outside the grid).
-    function pickCell(right: HandPose, ctx: SceneContext): number {
-        if (!panel) return -1;
-        const tip = right.landmarks[INDEX_TIP];
-        const ndc = toNDC(tip);
-
-        // World ray from the camera through the fingertip NDC.
-        ray.origin.setFromMatrixPosition(ctx.camera.matrixWorld);
-        ray.direction.set(ndc.x, ndc.y, 0.5).unproject(ctx.camera).sub(ray.origin).normalize();
-
-        // Panel world plane: local +Z transformed to world, anchored at panel position.
-        panel.object.updateWorldMatrix(true, false);
-        panel.object.getWorldPosition(panelPos);
-        planeNormal.set(0, 0, 1).transformDirection(panel.object.matrixWorld).normalize();
-        plane.setFromNormalAndCoplanarPoint(planeNormal, panelPos);
-
-        if (!ray.intersectPlane(plane, hit)) return -1;
-
-        // World hit → panel-local. Local plane spans [-W/2,W/2] x [-H/2,H/2] on x,y.
-        local.copy(hit);
-        panel.object.worldToLocal(local);
-        const u = local.x / PANEL_W + 0.5;       // 0 left .. 1 right
-        const v = 0.5 - local.y / PANEL_H;       // 0 top .. 1 bottom (canvas convention)
-        if (u < GRID_LEFT || u > GRID_RIGHT || v < GRID_TOP || v > GRID_BOTTOM) return -1;
-
-        const col = Math.floor(((u - GRID_LEFT) / (GRID_RIGHT - GRID_LEFT)) * GRID_COLS);
-        const row = Math.floor(((v - GRID_TOP) / (GRID_BOTTOM - GRID_TOP)) * GRID_ROWS);
-        const idx = row * GRID_COLS + col;
-        return idx >= 0 && idx < SHAPES.length ? idx : -1;
+    // Copy this frame's 21 landmarks into the reused prev buffer for next frame's vx.
+    function snapshotLandmarks(lm: Vec3[]): void {
+        const n = Math.min(lm.length, prev_landmarks.length);
+        for (let i = 0; i < n; i++) {
+            prev_landmarks[i].x = lm[i].x;
+            prev_landmarks[i].y = lm[i].y;
+            prev_landmarks[i].z = lm[i].z;
+        }
+        has_prev = true;
     }
 
-    // Spawn the primitive of `kind` at the right hand's world position, parented to the
-    // scene (NOT the spinning rig — extra meshes live in world space), registered in
-    // ctx.extraMeshes, and returned so it can be dragged until the pinch releases.
-    function spawnShape(kind: ShapeKind, ctx: SceneContext, worldPos: THREE.Vector3): THREE.Mesh {
-        const base = ctx.mesh.material as THREE.MeshMatcapMaterial;
-        const material = new THREE.MeshMatcapMaterial({ matcap: base.matcap });
-        const mesh = new THREE.Mesh(makeShapeGeometry(kind), material);
-        mesh.position.copy(worldPos);
-        ctx.scene.add(mesh);
-        ctx.extraMeshes.push(mesh);
-        return mesh;
+    // Replace the active sculpt target with a freshly spawned primitive (§5.1). The old
+    // mesh (if any) is removed from the scene and disposed first so it does not linger;
+    // attachMesh then builds the new mesh + BVH and points ctx.mesh / ctx.bvh at it.
+    function spawnShape(kind: ShapeKind, ctx: SceneContext, at: THREE.Vector3): void {
+        const old = ctx.mesh;
+        if (old) {
+            ctx.scene.remove(old);
+            old.geometry.dispose();
+            const mat = old.material;
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat.dispose();
+            ctx.bvh = null;
+        }
+
+        const mesh = attachMesh(ctx, makeShape(kind));
+        mesh.position.copy(at);
+
+        // Begin the scale-in: the shape starts near-zero and grows to 1 so it "arrives"
+        // at the hand rather than popping in. Seed a tiny non-zero scale so the first
+        // rendered frame already shows a sliver (a true 0 reads as a one-frame gap).
+        spawn_mesh = mesh;
+        spawn_t = 0;
+        mesh.scale.setScalar(0.0001);
+    }
+
+    // Advance the spawn scale-in by dt (ms), driving the active shape's scale 0→1 along
+    // an ease-out-back curve. Runs every frame regardless of hand state so the animation
+    // never stalls when the executor hand drops mid-arrival. No-op once settled.
+    function advanceSpawn(dt: number): void {
+        if (!spawn_mesh) return;
+        spawn_t += dt;
+        const t = spawn_t / SPAWN_MS;
+        if (t >= 1) {
+            spawn_mesh.scale.setScalar(1);
+            spawn_mesh = null;
+            return;
+        }
+        spawn_mesh.scale.setScalar(easeOutBack(t));
     }
 
     return {
         id: MenuId.ADD_SHAPES,
 
-        enter(ctx) {
-            panel = new SpatialPanel(accent);
-            ctx.scene.add(panel.object);
-            hovered = -1; dwellMs = 0; armed = -1; lastPainted = -2;
-            wasPinched = false; dragging = null;
-
-            // Place the card beside the mesh immediately so it reads on the first frame.
-            ctx.mesh.updateWorldMatrix(true, false);
-            ctx.mesh.getWorldPosition(panelPos);
-            panel.placeBeside(panelPos, ctx.camera);
-            repaint();
+        enter(ctx: SceneContext): void {
+            panel = new Panel({ title: label, accent });
+            panel.setInstructions(PANEL_INSTRUCTIONS);
+            selected = 0;
+            was_pinched = false;
+            flick_cooldown = 0;
+            has_prev = false;
+            spawn_mesh = null;
+            spawn_t = 0;
+            paint();
+            panel.show();
+            // Silence unused-parameter lint without changing the contract signature.
+            void ctx;
         },
 
-        update(ctx, right, _left, dt) {
+        update(ctx: SceneContext, exec: HandPose | null, _nav: HandPose | null, _dt: number): void {
             if (!panel) return;
 
-            // Keep the card pinned beside the mesh every frame (mesh may move/morph).
-            ctx.mesh.updateWorldMatrix(true, false);
-            ctx.mesh.getWorldPosition(panelPos);
-            panel.placeBeside(panelPos, ctx.camera);
+            // Advance any in-flight spawn scale-in first, before the no-hand early return,
+            // so an arriving shape keeps growing even if the hand momentarily drops.
+            advanceSpawn(_dt);
 
-            // Right INDEX_TIP world position, reused for both spawn origin and drag.
-            // (Computed only when a right hand is present.)
-            if (right) {
-                ctx.scratch.ray.origin.setFromMatrixPosition(ctx.camera.matrixWorld);
-                const ndc = toNDC(right.landmarks[INDEX_TIP]);
-                ctx.scratch.plane.set(new THREE.Vector3(0, 0, 1), -ctx.interactionPlaneZ);
-                ctx.scratch.ray.direction
-                    .set(ndc.x, ndc.y, 0.5).unproject(ctx.camera)
-                    .sub(ctx.scratch.ray.origin).normalize();
-                ctx.scratch.ray.intersectPlane(ctx.scratch.plane, ctx.scratch.v1);
-            }
+            if (flick_cooldown > 0) flick_cooldown--;
 
-            const pinch = right ? pinchAmount(right.landmarks) : 0;
-            const pinchedNow = pinch > PINCH_ON;
-
-            // While dragging a freshly spawned mesh, glue it to the fingertip world
-            // position until the pinch releases.
-            if (dragging) {
-                if (right && pinchedNow) {
-                    dragging.position.copy(ctx.scratch.v1);
-                } else {
-                    dragging = null; // placed
-                }
-                wasPinched = pinchedNow;
+            // No executor hand → idle; drop the previous-frame velocity reference so a
+            // re-acquired hand does not register a phantom flick across the gap.
+            if (!exec) {
+                was_pinched = false;
+                has_prev = false;
                 return;
             }
 
-            // No drag in progress: run dwell-aim on the panel.
-            const cell = right ? pickCell(right, ctx) : -1;
+            const lm = exec.landmarks;
+            const s = handScale(exec.world);
 
-            if (cell !== hovered) {
-                hovered = cell;
-                dwellMs = 0;
-                if (armed !== -1 && armed !== cell) armed = -1; // moved away → disarm
-            } else if (hovered >= 0 && armed !== hovered) {
-                dwellMs += dt * 1000;
-                if (dwellMs >= DWELL_MS) armed = hovered; // dwell complete → armed
+            // FLICK → cycle the highlighted shape (wrapping), one step per swipe. Gate on the
+            // vx channel, not g.name: a flick can ride any pose, and a spread hand classifies
+            // as "open", which would otherwise mask it (same pattern as the global carousel).
+            const g = classify(lm, exec.world, has_prev ? prev_landmarks : null);
+            if (Math.abs(g.vx) > FLICK_VX && flick_cooldown === 0) {
+                const dir = g.vx > 0 ? 1 : -1; // mirrored image space: +vx = rightward
+                selected = (selected + dir + SHAPES.length) % SHAPES.length;
+                flick_cooldown = FLICK_COOLDOWN_FRAMES;
+                paint();
             }
 
-            // Pinch rising edge while armed on a cell → spawn + begin drag.
-            if (pinchedNow && !wasPinched && right && armed >= 0) {
-                dragging = spawnShape(SHAPES[armed], ctx, ctx.scratch.v1);
-                armed = -1;
-                hovered = -1;
-                dwellMs = 0;
+            // PINCH rising edge → spawn the selected shape at the fingertip world position
+            // and make it the active sculpt target (§5.1).
+            const pinch = pinchAmount(lm, s);
+            const pinched_now = pinch > PINCH_ON;
+            if (pinched_now && !was_pinched) {
+                fingertipToWorld(
+                    lm[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
+                    ctx.scratch.ray, ctx.scratch.plane, spawn_world,
+                );
+                spawnShape(SHAPES[selected].kind, ctx, spawn_world);
             }
-            wasPinched = pinchedNow;
+            was_pinched = pinched_now;
 
-            // Repaint only when the highlighted cell changed (avoids per-frame texture
-            // re-upload). `armed` and `hovered` both drive the highlight.
-            const highlight = armed >= 0 ? armed : hovered;
-            if (highlight !== lastPainted) repaint();
+            snapshotLandmarks(lm);
         },
 
-        exit(ctx) {
+        exit(ctx: SceneContext): void {
             if (panel) {
-                ctx.scene.remove(panel.object);
-                panel.dispose();
+                panel.hide();
+                panel.destroy();
                 panel = null;
             }
-            // Spawned meshes are intentionally left in ctx.extraMeshes + scene: they are
-            // user creations owned by the scene, not this menu's affordances. Only an
-            // in-progress drag handle is dropped.
-            dragging = null;
-            hovered = -1; armed = -1; dwellMs = 0; wasPinched = false;
+            was_pinched = false;
+            flick_cooldown = 0;
+            has_prev = false;
+            // If a shape was still arriving when the tool switched away, snap it to full
+            // scale so the retained mesh is never left mid-scale-in for the next tool.
+            if (spawn_mesh) {
+                spawn_mesh.scale.setScalar(1);
+                spawn_mesh = null;
+            }
+            spawn_t = 0;
+            // Spawned mesh is intentionally retained as ctx.mesh — it is the user's
+            // creation and the active target for every later tool.
+            void ctx;
         },
     };
 }

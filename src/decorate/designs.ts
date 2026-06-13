@@ -1,19 +1,25 @@
-// Authored accessory designs (SPEC §9.3).
+// Authored decoration constants (SPEC §8.2).
 //
-// Verbatim sprinkle + icing presets, typed by the frozen contracts in
+// Verbatim icing + sprinkle presets, typed by the frozen contracts in
 // src/types.ts. The chat-driven path (DecorationAction.design) and the
-// direct-hand path both look designs up by key from these records.
-import type { SprinkleDesign, IcingDesign } from "../types";
+// direct-hand path both resolve designs by key from these records.
+//
+// Source of truth: SPEC §8.2.
+//   ICING.jam       → color #8B0000, gloss 0.8, dripStyle "smooth"
+//   SPRINKLES.rainbow → capsule, palette below, length 0.04, radius 0.008
+import type { IcingDesign, SprinkleDesign } from "../types";
 
-// Sprinkle geometry presets.
-export const SPRINKLE_DESIGNS: Record<string, SprinkleDesign> = {
-    "rainbow":      { geometry: "capsule", palette: ["#FF3E9A", "#FFE642", "#42CFFF", "#8BFF42"], length: 0.04, radius: 0.008, sizeJitter: 0.3, orientation: "random" },
-    "star-silver":  { geometry: "star", palette: ["#C0C8D4", "#E8EEF4"], length: 0.035, radius: 0.01, sizeJitter: 0.2, orientation: "normal" },
-    "extra-rainbow": { geometry: "capsule", palette: ["#FF3E9A", "#FFE642", "#42CFFF", "#8BFF42", "#FF6B42"], length: 0.04, radius: 0.008, sizeJitter: 0.5, orientation: "random" },
+// Icing / glaze material presets (SPEC §8.2, §8.3).
+export const ICING: { jam: IcingDesign } = {
+    jam: { color: "#8B0000", gloss: 0.8, dripStyle: "smooth" },
 };
 
-// Icing / glaze material presets.
-export const ICING_DESIGNS: Record<string, IcingDesign> = {
-    "pink":          { color: "#FF3E9A", gloss: 0.7, dripStyle: "smooth", edgeNoise: 0.15, sugarDusting: false },
-    "galaxy-purple": { color: "#8B3EFF", gloss: 0.9, dripStyle: "thick", edgeNoise: 0.2, sugarDusting: true },
+// Sprinkle geometry presets (SPEC §8.2, §8.4).
+export const SPRINKLES: { rainbow: SprinkleDesign } = {
+    rainbow: {
+        geometry: "capsule",
+        palette: ["#FF3E9A", "#FFE642", "#42CFFF", "#8BFF42", "#FF6B42"],
+        length: 0.04,
+        radius: 0.008,
+    },
 };

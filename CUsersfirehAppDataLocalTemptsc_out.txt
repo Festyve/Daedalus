@@ -1,0 +1,5 @@
+src/tracking/handLandmarker.ts(94,13): error TS2741: Property 'source' is missing in type '{ Left: null; Right: null; count: number; tMs: number; }' but required in type 'PoseFrame'.
+src/tracking/handLandmarker.ts(113,15): error TS2741: Property 'source' is missing in type '{ Left: null; Right: null; count: number; tMs: number; }' but required in type 'PoseFrame'.
+src/tracking/handLandmarker.ts(148,9): error TS2741: Property 'timestamp' is missing in type '{ handedness: Handedness; landmarks: Vec3[]; world: Vec3[]; confidence: number; handScale: number; }' but required in type 'HandPose'.
+src/ui/gestureGuide.ts(27,13): error TS2339: Property 'INTERACT' does not exist on type 'typeof MenuId'.
+src/ui/gestureGuide.ts(30,13): error TS2339: Property 'DESTROY' does not exist on type 'typeof MenuId'.

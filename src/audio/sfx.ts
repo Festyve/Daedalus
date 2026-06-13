@@ -1,106 +1,118 @@
-// §10.4 — WebAudio SFX. Preloads /sfx/{crunch,poof,ding}.wav when present; if a
-// file is missing it synthesizes a short tone so play(name) always produces sound.
+// §1.2 — JARVIS sound design. WebAudio SFX synthesized procedurally (no wav files):
+//   ping  — soft harmonic tone on carousel select
+//   hum   — low hum on panel open
+//   ding  — crystalline bell on donut complete (morph t > 0.95)
+//
+// The AudioContext is created lazily on first use and stays suspended until a user
+// gesture calls resume() — so there are never autoplay errors. Every node is short-
+// lived and self-disconnects on end; nothing is retained between plays.
 
-export type SfxName = "crunch" | "poof" | "ding";
+type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
-const SFX_NAMES: SfxName[] = ["crunch", "poof", "ding"];
-const SFX_URL: Record<SfxName, string> = {
-    crunch: "/sfx/crunch.wav",
-    poof: "/sfx/poof.wav",
-    ding: "/sfx/ding.wav",
-};
+let AUDIO_CTX: AudioContext | null = null;
 
-export class Sfx {
-    private ctx: AudioContext;
-    private buffers: Partial<Record<SfxName, AudioBuffer>> = {};
+// Master gain keeps the whole bus comfortably below clipping regardless of overlap.
+const MASTER_GAIN = 0.5;
+let master: GainNode | null = null;
 
-    constructor() {
-        const Ctor: typeof AudioContext =
-            window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        this.ctx = new Ctor();
+/** Lazily build (or return) the shared AudioContext + master bus. */
+function ensureContext(): AudioContext | null {
+    if (AUDIO_CTX) return AUDIO_CTX;
+    const Ctor = window.AudioContext ?? (window as WebkitWindow).webkitAudioContext;
+    if (!Ctor) return null;
+    try {
+        AUDIO_CTX = new Ctor();
+        master = AUDIO_CTX.createGain();
+        master.gain.value = MASTER_GAIN;
+        master.connect(AUDIO_CTX.destination);
+    } catch {
+        // Some environments forbid construction outside a gesture; fail silent.
+        AUDIO_CTX = null;
+        master = null;
+        return null;
     }
-
-    // Best-effort preload. A missing/failed file is fine — play() falls back to a tone.
-    async preload(): Promise<void> {
-        await Promise.all(
-            SFX_NAMES.map(async (name) => {
-                try {
-                    const res = await fetch(SFX_URL[name]);
-                    if (!res.ok) return;
-                    const data = await res.arrayBuffer();
-                    this.buffers[name] = await this.ctx.decodeAudioData(data);
-                } catch {
-                    // leave unloaded; synthesized fallback covers it
-                }
-            }),
-        );
-    }
-
-    play(name: SfxName): void {
-        // A user gesture is required before audio can start; resume if suspended.
-        if (this.ctx.state === "suspended") void this.ctx.resume();
-        const buffer = this.buffers[name];
-        if (buffer) {
-            this.playBuffer(buffer);
-        } else {
-            this.playTone(name);
-        }
-    }
-
-    private playBuffer(buffer: AudioBuffer): void {
-        const src = this.ctx.createBufferSource();
-        src.buffer = buffer;
-        src.connect(this.ctx.destination);
-        src.start();
-    }
-
-    // Distinct synthesized fallbacks: crunch = noise burst, poof = downward sweep,
-    // ding = clean bell.
-    private playTone(name: SfxName): void {
-        if (name === "crunch") {
-            this.playNoise(0.18);
-            return;
-        }
-        const now = this.ctx.currentTime;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        if (name === "poof") {
-            osc.type = "sine";
-            osc.frequency.setValueAtTime(420, now);
-            osc.frequency.exponentialRampToValueAtTime(80, now + 0.3);
-            gain.gain.setValueAtTime(0.25, now);
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
-            osc.start(now);
-            osc.stop(now + 0.32);
-        } else {
-            // ding
-            osc.type = "sine";
-            osc.frequency.setValueAtTime(1320, now);
-            gain.gain.setValueAtTime(0.0001, now);
-            gain.gain.exponentialRampToValueAtTime(0.3, now + 0.01);
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
-            osc.start(now);
-            osc.stop(now + 0.52);
-        }
-    }
-
-    private playNoise(duration: number): void {
-        const now = this.ctx.currentTime;
-        const frames = Math.floor(this.ctx.sampleRate * duration);
-        const buffer = this.ctx.createBuffer(1, frames, this.ctx.sampleRate);
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
-
-        const src = this.ctx.createBufferSource();
-        src.buffer = buffer;
-        const gain = this.ctx.createGain();
-        src.connect(gain);
-        gain.connect(this.ctx.destination);
-        gain.gain.setValueAtTime(0.3, now);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-        src.start(now);
-    }
+    return AUDIO_CTX;
 }
+
+/** One enveloped sine partial. Self-disconnects when it finishes ringing. */
+function tone(
+    ctx: AudioContext,
+    bus: GainNode,
+    freq: number,
+    start: number,
+    attack: number,
+    duration: number,
+    peak: number,
+    type: OscillatorType = "sine",
+): void {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, start);
+
+    // Exponential ramps need a strictly-positive floor.
+    const FLOOR = 0.0001;
+    gain.gain.setValueAtTime(FLOOR, start);
+    gain.gain.exponentialRampToValueAtTime(Math.max(peak, FLOOR), start + attack);
+    gain.gain.exponentialRampToValueAtTime(FLOOR, start + attack + duration);
+
+    osc.connect(gain);
+    gain.connect(bus);
+
+    const stop = start + attack + duration + 0.02;
+    osc.start(start);
+    osc.stop(stop);
+    osc.onended = () => {
+        osc.disconnect();
+        gain.disconnect();
+    };
+}
+
+/** Resume a suspended context (always safe to call); no-op until a gesture lands. */
+function resumeContext(ctx: AudioContext): void {
+    if (ctx.state === "suspended") void ctx.resume();
+}
+
+export const sfx = {
+    /** Soft harmonic ping — carousel selection. Fundamental + fifth + octave, brief. */
+    ping(): void {
+        const ctx = ensureContext();
+        if (!ctx || !master) return;
+        resumeContext(ctx);
+        const now = ctx.currentTime;
+        tone(ctx, master, 880, now, 0.004, 0.18, 0.30);
+        tone(ctx, master, 1320, now, 0.004, 0.14, 0.14);
+        tone(ctx, master, 1760, now, 0.006, 0.10, 0.07);
+    },
+
+    /** Low hum — panel open. Detuned pair, slow swell, gentle low presence. */
+    hum(): void {
+        const ctx = ensureContext();
+        if (!ctx || !master) return;
+        resumeContext(ctx);
+        const now = ctx.currentTime;
+        tone(ctx, master, 110, now, 0.08, 0.42, 0.22, "sine");
+        tone(ctx, master, 110.6, now, 0.08, 0.42, 0.18, "sine"); // beat-detune for warmth
+        tone(ctx, master, 220, now, 0.10, 0.36, 0.06, "sine");   // faint octave body
+    },
+
+    /** Crystalline ding — donut complete. Bell-like inharmonic partials, long ring. */
+    ding(): void {
+        const ctx = ensureContext();
+        if (!ctx || !master) return;
+        resumeContext(ctx);
+        const now = ctx.currentTime;
+        // Inharmonic partials (≈ a small struck bell) give the "crystal" timbre.
+        tone(ctx, master, 1568, now, 0.003, 0.90, 0.28);
+        tone(ctx, master, 2349, now, 0.003, 0.70, 0.12);
+        tone(ctx, master, 3136, now, 0.004, 0.55, 0.07);
+        tone(ctx, master, 4080, now, 0.004, 0.40, 0.04);
+    },
+
+    /** Call from the first user gesture (click / pinch) to unlock audio playback. */
+    resume(): void {
+        const ctx = ensureContext();
+        if (!ctx) return;
+        resumeContext(ctx);
+    },
+};
