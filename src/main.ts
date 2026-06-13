@@ -195,8 +195,14 @@ startLoop((dt) => {
         router.update(ctx, exec, nav, dt);
     }
 
-    // 4) director milestones + stage label
+    // 4) director milestones + stage label. The director is the forward-only source
+    //    of truth; pull it forward from observable milestones, then sync the label.
+    //    Modules also signal later stages by writing ctx.stage (decorate -> DECORATED,
+    //    destroy -> CONSUMED on dissolve complete), which we honor here before the sync
+    //    overwrites it.
     director.onMorph(ctx.morphT);
+    if (router.activeId === MenuId.DECORATE || ctx.stage === "DECORATED") director.onChatOpened();
+    if (ctx.stage === "CONSUMED") director.onDissolveDone();
     ctx.stage = director.stage;
 
     // 5) render: composited scene + CSS3D chat layer + webcam overlay + HUD

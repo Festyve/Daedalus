@@ -12,9 +12,14 @@ import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import { Brush, Evaluator, SUBTRACTION } from "three-bvh-csg";
 import type { SceneContext } from "../types";
 
-// §18 risk fallback: flip to false if booleans produce non-manifold artifacts in
-// rehearsal — biteAt then becomes an immediate no-op and the finale dissolves only.
-const BITES_ENABLED = true;
+// §18 risk fallback: bites are OFF — the donut is a blend-shape morph carrying a
+// vertex `color` (icing) attribute and no `uv`, while the cutter sphere has `uv` and
+// no `color`; three-bvh-csg requires matching attribute sets across brushes, so the
+// boolean throws. Per §18 ("three-bvh-csg artifacts → cut booleans; dissolve-only
+// finale") biteAt is an immediate no-op and the finale dissolves only — which already
+// consumes the morphed donut correctly in-shader. Flip to true only with a manifold,
+// attribute-matched geometry.
+const BITES_ENABLED = false;
 
 // At most 2–3 bites (§10.3); further calls are ignored so a held fist can't grind
 // the whole donut away through CSG.

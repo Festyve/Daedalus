@@ -23,9 +23,10 @@ const PLANE_H = 1.2;
 const BG_HEX = "#0A0A0A";
 const FONT_FAMILY = '"JetBrains Mono", monospace';
 
-// Horizontal gap from the object's centre to the near edge of the card (metres),
-// placed to the object's right from the camera's point of view.
-const SIDE_OFFSET = 1.9;
+// Horizontal gap from the object's centre to the card's centre (metres), placed to
+// the object's right from the camera's point of view. Far enough that the card clears
+// the donut (outer radius ~1.4) while the card stays comfortably on screen.
+const SIDE_OFFSET = 2.2;
 
 export class SpatialPanel {
     readonly object: THREE.Object3D;
