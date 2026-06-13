@@ -21,17 +21,22 @@ html, body {
 /* the WebGL canvas is appended by the renderer with id="webgl" */
 canvas#webgl { position: fixed; inset: 0; z-index: 0; display: block; }
 
-/* desaturated webcam, bottom-right (§15.3) */
-#preview {
+/* full-screen transparent green hand-skeleton overlay, above the webgl canvas */
+#overlay { position: fixed; inset: 0; z-index: 2; display: block; pointer-events: none; }
+
+/* cyan-framed box around the bottom-right black-scene preview (the objects on #000814
+   are rendered into this region of the webgl canvas via a GL scissor; this is just the
+   border/glow). Geometry matches main.ts: 22vw wide, 22vh tall, 16px margin. */
+#preview-frame {
     position: fixed;
     right: 16px;
     bottom: 16px;
     z-index: 3;
-    width: 260px;
-    height: auto;
-    border: 1px solid var(--line);
-    background: #000;
-    filter: saturate(0.35) brightness(0.92);
+    width: 22vw;
+    height: 22vh;
+    border: 1px solid rgba(0, 255, 209, 0.45);
+    box-shadow: 0 0 12px rgba(0, 255, 209, 0.2);
+    pointer-events: none;
 }
 
 /* HUD overlay layer (chrome.ts paints into this) */

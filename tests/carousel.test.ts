@@ -208,30 +208,30 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             drive(c, gesture(), 10);
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
 
-            // One fast rightward swipe commits exactly one forward step…
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
+            // One fast LEFTWARD swipe (vx<0, finger moves screen-left) commits one forward step…
+            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
             // …and holding the same fast velocity does NOT keep stepping (latch not re-armed).
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 5);
+            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 5);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
             // Drop below the re-arm threshold, then swipe again → a second step lands.
             drive(c, gesture({ name: "point", vx: REARM_VX * 0.5 }), 1);
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
+            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[2]);
         } finally {
             c.dispose();
         }
     });
 
-    it("a leftward flick from the first tool wraps to the last (1→6)", () => {
+    it("a rightward flick from the first tool wraps to the last (1→6)", () => {
         const c = new Carousel();
         try {
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10);
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[MENU_ORDER.length - 1]);
         } finally {
             c.dispose();
@@ -246,10 +246,10 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10); // finish open fade
 
-            // Flick to the third tool so the selection target is non-trivial.
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
+            // Swipe (leftward = forward) to the third tool so the selection target is non-trivial.
+            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
             drive(c, gesture({ name: "point", vx: 0 }), 1); // re-arm + let snap settle
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
+            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
             const target = centeredId(c);
             expect(target).toBe(MENU_ORDER[2]);
 

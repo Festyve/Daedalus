@@ -1,9 +1,8 @@
-// Webcam corner overlay (SPEC §9.5, §14.3): a small desaturated, raised-contrast
-// mirror of the camera feed with a green hand skeleton drawn on top (drawConnectors
-// style). In scene mode this lives in a corner canvas; in AR mode the same feed backs
-// the scene. Fed by the tracking layer's filtered HandPose — landmarks are already in
-// normalized, mirrored (selfie) image space, so the skeleton maps 1:1 onto the
-// mirrored feed with no extra flip.
+// Hand-skeleton overlay (SPEC §9.5, §14.3): green hand skeletons (drawConnectors style)
+// drawn over the MAIN view, where the full-colour webcam already backs the scene. Fed by
+// the tracking layer's filtered HandPose — landmarks are in the camera's NATIVE
+// (un-mirrored) normalized image space, matching the un-mirrored feed, so the skeleton
+// maps 1:1 onto the feed with no extra flip.
 import type { HandPose } from "../types";
 
 // Skeleton edges: pairs of MediaPipe hand-landmark indices forming the hand graph.
@@ -30,9 +29,6 @@ const JOINT_HALO = "rgba(57,255,106,0.35)";
 const CONNECTOR_WIDTH = 2;
 const JOINT_RADIUS = 3;
 const HALO_RADIUS = 5;
-
-// Desaturate + raise contrast so the green skeleton pops against the feed (§9.5).
-const FEED_FILTER = "grayscale(1) brightness(0.72) contrast(1.18)";
 
 // Draw one hand's green skeleton onto ctx. Landmarks are normalized [0,1] image-space
 // coordinates, so they scale by the canvas dimensions. No-op when the pose is null
@@ -73,13 +69,11 @@ function drawSkeleton(ctx: CanvasRenderingContext2D, pose: HandPose | null): voi
     }
 }
 
-// Render the full overlay for a frame: the desaturated, mirrored video frame plus
-// both hands' skeletons. The video source is flipped horizontally (selfie) to match
-// the mirrored detection space; the filter desaturates and raises contrast so the
-// green skeleton reads clearly on top.
-export function drawOverlay(
+// Clear the transparent overlay canvas and draw both hands' green skeletons over the
+// MAIN view. The webcam already backs the scene (un-mirrored), so the landmarks map
+// directly onto the feed with no flip. Called every frame; no-op for missing hands.
+export function drawSkeletons(
     ctx2d: CanvasRenderingContext2D,
-    video: HTMLVideoElement,
     left: HandPose | null,
     right: HandPose | null,
 ): void {
@@ -87,22 +81,7 @@ export function drawOverlay(
     const h = ctx2d.canvas.height;
     if (w === 0 || h === 0) return;
 
-    // Mirrored, desaturated feed. Only the draw is mirrored; the filter resets when
-    // the save/restore pair closes, so the skeleton below draws unfiltered.
-    ctx2d.save();
-    ctx2d.filter = FEED_FILTER;
-    ctx2d.translate(w, 0);
-    ctx2d.scale(-1, 1);
-    if (video.readyState >= 2 /* HAVE_CURRENT_DATA */) {
-        ctx2d.drawImage(video, 0, 0, w, h);
-    } else {
-        // No frame yet: clear to a transparent canvas so stale pixels don't linger.
-        ctx2d.clearRect(0, 0, w, h);
-    }
-    ctx2d.restore();
-
-    // Skeletons map directly onto the already-mirrored feed (landmarks are in mirrored
-    // image space), so no additional flip is applied here.
+    ctx2d.clearRect(0, 0, w, h);
     drawSkeleton(ctx2d, left);
     drawSkeleton(ctx2d, right);
 }

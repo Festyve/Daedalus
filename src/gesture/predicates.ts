@@ -18,11 +18,11 @@ const FINGER_TIPS = [8, 12, 16, 20];
 const FINGER_PIPS = [6, 10, 14, 18];
 
 // §12 thresholds (fractions of S unless noted).
-const PINCH_RATIO = 0.30;        // pinch:   ‖tip4−tip8‖/S < 0.30
+const PINCH_RATIO = 0.45;        // pinch:   ‖tip4−tip8‖/S < 0.45 (touching ≈ depth/landmark noise)
 const FIST_SEPARATION = 0.6;     // fist:    ‖tip4−tip8‖/S > 0.6 (plus all curled)
 const OPEN_SPREAD = 0.4;         // open:    spread > 0.4·S
 const THUMB_UP_RATIO = 0.5;      // gun:     thumb tip raised away from index MCP region
-const PINCH_RELEASE = 0.9;       // pinchAmount maps [PINCH_RATIO, RELEASE] → [1, 0]
+const PINCH_RELEASE = 0.62;      // pinchAmount maps [PINCH_RATIO, RELEASE] → [1, 0]
 const EPS = 1e-6;
 
 /** Euclidean distance between two 3D landmarks. */
@@ -50,7 +50,7 @@ export function pinchAmount(lm: Vec3[], s: number): number {
     return Math.min(1, Math.max(0, t));
 }
 
-/** Pinch: ‖tip4−tip8‖/S < 0.30 (§12). */
+/** Pinch: ‖tip4−tip8‖/S < 0.45 (§12). */
 export function isPinching(lm: Vec3[], s: number): boolean {
     const denom = Math.max(s, EPS);
     return dist(lm[THUMB_TIP], lm[INDEX_TIP]) / denom < PINCH_RATIO;

@@ -1,11 +1,11 @@
 // Rendering scene (SPEC §9.2, §9.6). Owns the WebGL2 renderer, the fixed-framing
 // camera with a slight idle parallax, the reusable scratch-math pool, and the
-// matcap material. The world starts EMPTY: ctx.mesh / ctx.bvh are null until ADD
+// wireframe material. The world starts EMPTY: ctx.mesh / ctx.bvh are null until ADD
 // SHAPES calls attachMesh() to build the first sculptable object.
 //
 // Exports (the v5 contract — callers compile against these exactly):
 //   makeContext():SceneContext
-//   makeMatcapMaterial():THREE.MeshMatcapMaterial
+//   makeMatcapMaterial():THREE.MeshBasicMaterial
 //   attachMesh(ctx, geometry):THREE.Mesh
 import * as THREE from "three";
 import {
@@ -35,15 +35,6 @@ const PARALLAX_Y = 0.07;
 const PARALLAX_SPEED_X = 0.00021; // rad/ms
 const PARALLAX_SPEED_Y = 0.00033; // rad/ms
 
-// ---- matcap (§9.2: blue-steel luminous matcap) ------------------------------
-const MATCAP_URL = "/matcaps/blue-steel.png";
-const MATCAP_FALLBACK_SIZE = 256;
-// §9.3 cold Fresnel rim — cyan (T.rimColor), not white. Higher power = tighter edge.
-// Tighter power keeps the glow on the true silhouette; intensity pushes the cyan
-// edge above the UnrealBloom threshold (§9.4) so it reads as a luminous JARVIS rim.
-const RIM_POWER = 3.0;
-const RIM_INTENSITY = 1.35;
-
 // Patch three.js prototypes exactly once so geometry.computeBoundsTree() and
 // accelerated raycasting are available. Idempotent and shared with SculptEngine /
 // icing (which reuse geometry.boundsTree set here rather than rebuilding).
@@ -57,136 +48,19 @@ function patchPrototypes(): void {
 }
 
 /**
- * Procedural blue-steel gradient matcap (§9.2), generated as a DataTexture so the
- * build runs fully offline when /matcaps/blue-steel.png is absent. A matcap encodes
- * the lit sphere in screen space: the disc centre faces the camera (bright cold
- * steel), the rim faces away (dark blue silhouette). Outside the disc is the dark
- * background. A cool key highlight sits upper-left for the brushed-steel sheen.
+ * Holographic wireframe material for the sculptable mesh (§9.2). A bright cyan
+ * (T.cyan) wire mesh, unlit and toneMapped:false so the wire stays at full
+ * intensity — the UnrealBloom pass (§9.4) then blooms the bright edges into a
+ * glowing JARVIS hologram. vertexColors:true so the per-vertex icing buffer
+ * (§8.3) tints the wires.
  */
-function generateBlueSteelMatcap(size: number = MATCAP_FALLBACK_SIZE): THREE.DataTexture {
-    const data = new Uint8Array(size * size * 4);
-    const r = size / 2;
-
-    // Cold blue-steel ramp, centre (camera-facing) → silhouette.
-    const centre = [0x7a, 0x9a, 0xc4]; // luminous steel-blue
-    const mid    = [0x33, 0x4a, 0x66];
-    const edge   = [0x0a, 0x12, 0x22]; // near-black blue silhouette
-    const bg     = [0x04, 0x06, 0x0e]; // outside the lit disc (matches T.bg tone)
-    // Cool key highlight, offset upper-left.
-    const hiX = size * 0.34;
-    const hiY = size * 0.30;
-    const hiR = size * 0.42;
-
-    const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
-    const ramp = (a: number[], b: number[], t: number, ch: number): number => lerp(a[ch], b[ch], t);
-
-    for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
-            const i = (y * size + x) * 4;
-            const dx = x - r;
-            const dy = y - r;
-            const dist = Math.hypot(dx, dy) / r; // 0 centre → 1 rim of disc
-
-            let cr: number, cg: number, cb: number;
-            if (dist >= 1) {
-                cr = bg[0]; cg = bg[1]; cb = bg[2];
-            } else {
-                // Two-segment ramp: centre→mid (inner 55%), mid→edge (outer).
-                if (dist < 0.55) {
-                    const t = dist / 0.55;
-                    cr = ramp(centre, mid, t, 0);
-                    cg = ramp(centre, mid, t, 1);
-                    cb = ramp(centre, mid, t, 2);
-                } else {
-                    const t = (dist - 0.55) / 0.45;
-                    cr = ramp(mid, edge, t, 0);
-                    cg = ramp(mid, edge, t, 1);
-                    cb = ramp(mid, edge, t, 2);
-                }
-                // Additive cool highlight (brushed-steel sheen), additive + clamped.
-                const hd = Math.hypot(x - hiX, y - hiY) / hiR;
-                if (hd < 1) {
-                    const k = (1 - hd) * (1 - hd) * 150;
-                    cr = Math.min(255, cr + k * 0.92);
-                    cg = Math.min(255, cg + k * 0.98);
-                    cb = Math.min(255, cb + k);
-                }
-            }
-
-            data[i] = cr;
-            data[i + 1] = cg;
-            data[i + 2] = cb;
-            data[i + 3] = 255;
-        }
-    }
-
-    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    return tex;
-}
-
-/**
- * Inject the cold cyan Fresnel rim into the matcap shader (§9.3):
- *   outgoingLight += uRimColor * uRimIntensity * pow(1 - dot(n, viewDir), uRimPower)
- * The matcap fragment shader exposes `normal` and `vViewPosition`; vViewPosition
- * points from the fragment toward the camera in view space, so its normalized
- * value is the view direction. Uniforms are allocated once at compile time.
- * uRimIntensity drives the cyan edge above the bloom threshold (§9.4) so the
- * silhouette glows like a JARVIS hologram rather than a flat outline.
- */
-function injectRim(material: THREE.MeshMatcapMaterial): void {
-    const rim_color = new THREE.Color(T.rimColor);
-    material.onBeforeCompile = (shader) => {
-        shader.uniforms.uRimPower = { value: RIM_POWER };
-        shader.uniforms.uRimColor = { value: rim_color };
-        shader.uniforms.uRimIntensity = { value: RIM_INTENSITY };
-        shader.fragmentShader = shader.fragmentShader
-            .replace(
-                "#include <common>",
-                `#include <common>
-                uniform float uRimPower;
-                uniform vec3 uRimColor;
-                uniform float uRimIntensity;`,
-            )
-            .replace(
-                "#include <aomap_fragment>",
-                `#include <aomap_fragment>
-                vec3 rimViewDir = normalize( vViewPosition );
-                float rimFresnel = pow( 1.0 - clamp( dot( normal, rimViewDir ), 0.0, 1.0 ), uRimPower );
-                outgoingLight += uRimColor * ( rimFresnel * uRimIntensity );`,
-            );
-    };
-}
-
-/**
- * Blue-steel matcap material for the sculptable mesh (§9.2). Starts on the
- * procedural fallback (always valid, offline-safe), then upgrades in place to the
- * vendored /matcaps/blue-steel.png if it loads and decodes to a real image. Any
- * network/asset failure simply keeps the procedural matcap. vertexColors:true so
- * the per-vertex icing buffer (§8.3) overlays the steel.
- */
-export function makeMatcapMaterial(): THREE.MeshMatcapMaterial {
-    const matcap = generateBlueSteelMatcap();
-    const material = new THREE.MeshMatcapMaterial({ matcap, vertexColors: true });
-    injectRim(material);
-
-    new THREE.TextureLoader().load(
-        MATCAP_URL,
-        (real) => {
-            if (!real.image || real.image.width <= 1) return;
-            real.colorSpace = THREE.SRGBColorSpace;
-            material.matcap = real;
-            material.needsUpdate = true;
-            matcap.dispose(); // procedural fallback no longer referenced
-        },
-        undefined,
-        () => { /* keep the procedural matcap — offline-safe */ },
-    );
-
-    return material;
+export function makeMatcapMaterial(): THREE.MeshBasicMaterial {
+    return new THREE.MeshBasicMaterial({
+        wireframe: true,
+        color: new THREE.Color(T.cyan),
+        vertexColors: true,
+        toneMapped: false,
+    });
 }
 
 // Allocate the reused scratch-math pool once (§6.2, §11): zero per-frame
@@ -257,7 +131,7 @@ function startIdleParallax(camera: THREE.PerspectiveCamera): void {
 /**
  * Construct the single shared-state channel every module reads/writes (§3.4).
  * The world starts EMPTY (§5.1): mesh and bvh are null until ADD SHAPES calls
- * attachMesh(). No lights are added — MeshMatcapMaterial is unlit.
+ * attachMesh(). No lights are added — the wireframe material is unlit.
  */
 export function makeContext(): SceneContext {
     const renderer = makeRenderer();
@@ -294,7 +168,7 @@ export function makeContext(): SceneContext {
  * wire it into the context (§5.1, §6.1). This is the ONLY path that creates the
  * first mesh — until it runs, ctx.mesh is null and every module no-ops.
  *
- * - Mesh uses the blue-steel matcap (vertexColors for icing).
+ * - Mesh uses the holographic wireframe material (vertexColors for icing).
  * - renderOrder=0, depthTest/Write=true (scene layer; menus stay above via §4.3).
  * - BVH built once and stored on both ctx.bvh and geometry.boundsTree so the
  *   SculptEngine / icing reuse it instead of rebuilding (dirty-region refit only).
@@ -315,7 +189,7 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     const mesh = new THREE.Mesh(geometry, makeMatcapMaterial());
     mesh.renderOrder = LAYER.SCENE;
 
-    const mat = mesh.material as THREE.MeshMatcapMaterial;
+    const mat = mesh.material as THREE.MeshBasicMaterial;
     mat.depthTest = true;
     mat.depthWrite = true;
 

@@ -5,11 +5,13 @@
 // fist dismisses with no selection.
 //
 // Visual model (§4.1, §14.4):
-//   - 6 tools in a horizontal strip. Active tool centered, full-brightness cyan. The two
-//     adjacent tools sit at 40% opacity; everything further out is hidden.
+//   - 6 tools in a horizontal strip. Active tool centered, full-brightness cyan. The wheel
+//     shows up to two neighbors each side, smaller and dimmer the further out (a depth-faded
+//     strip); everything past that is hidden.
 //   - The active tool's name + icon are drawn centered below the strip.
-//   - Flick (index-tip horizontal velocity ~0.4·S/frame, supplied as g.vx) slides to the
-//     next/prev tool. The index wraps (6→1, 1→6). The slide is a 100ms ease-out snap.
+//   - An index-finger swipe (index-tip horizontal velocity, supplied as g.vx) slides to the
+//     next/prev tool — swiping left drags the strip left so the tool on the right slides to
+//     center. The index wraps (6→1, 1→6). The slide is a 100ms ease-out snap.
 //   - Pinch fires onSelect(id) then closes the carousel with an 80ms fade.
 //   - Fist closes the carousel with no selection.
 //   - Idle (non-active) items breathe on a slow 2s sine pulse; the active item also gets a
@@ -32,12 +34,13 @@ const ITEM_SIZE = 0.34;        // edge length of each square tool tile
 const LABEL_W = 1.4;           // width of the name+icon label plane below the strip
 const LABEL_H = 0.34;          // height of the label plane
 const LABEL_DROP = 0.42;       // vertical offset of the label below the strip center
-const VISIBLE_RADIUS = 1;      // how many neighbors each side are rendered (1 = adjacent)
+const VISIBLE_RADIUS = 2;      // how many neighbors each side are rendered (2 = up to 5 tiles)
 
-// ---- Opacity / brightness (§4.1) ----
-const ACTIVE_OPACITY = 1.0;    // centered tool: full brightness
-const ADJACENT_OPACITY = 0.4;  // immediate neighbors: 40%
-const HIDDEN_OPACITY = 0.0;    // further tools: not rendered
+// ---- Depth fade (§4.1) — opacity + scale by wheel-distance from the active tile, indexed
+//      0 / 1 / 2. Tiles read as a depth-faded strip: smaller and dimmer the further out;
+//      anything past VISIBLE_RADIUS is hidden. Opacity here is multiplied by the open fade.
+const DIST_OPACITY = [1.0, 0.5, 0.22];   // centered / one out / two out
+const DIST_SCALE = [1.15, 0.85, 0.62];   // centered / one out / two out
 
 // ---- Motion (§14.4) ----
 const SNAP_MS = 100;           // ease-out slide between tools
@@ -46,9 +49,11 @@ const PULSE_PERIOD_MS = 2000;  // ambient idle pulse: slow 2s sine on emission
 const PULSE_DEPTH = 0.18;      // peak-to-trough amplitude of the idle pulse
 const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow ramps in
 
-// ---- Flick gesture (§4.1) ----
-const FLICK_VX = 0.4;          // |g.vx| (units of S/frame) that commits a flick
-const FLICK_REARM_VX = 0.15;   // |g.vx| must drop below this before another flick arms
+// ---- Index swipe (§4.1) — swiping the index fingertip horizontally steps the wheel one
+//      tool per swipe. Commits once |g.vx| crosses FLICK_VX; won't fire again until the
+//      finger slows below FLICK_REARM_VX, so one swipe = one step and jitter can't repeat.
+const FLICK_VX = 0.3;          // |g.vx| (units of S/frame) that commits a swipe — forgiving
+const FLICK_REARM_VX = 0.12;   // |g.vx| must drop below this before another swipe arms
 
 // ---- Texture resolution for the per-tool icon tiles + the label strip ----
 const TILE_PX = 128;
@@ -382,10 +387,12 @@ export class Carousel {
                     this.pinchLatched = false;
                 }
 
-                // Flick → navigate one tool per fast horizontal swipe (re-armed on slowdown).
+                // Index swipe → one tool per swipe (re-armed once the finger slows). Feed is
+                // un-mirrored: g.vx > 0 is rightward. Swiping LEFT (vx < 0) drags the strip
+                // left so the tool on the right slides to center → step +1; rightward → -1.
                 const speed = Math.abs(g.vx);
                 if (this.flickArmed && speed >= FLICK_VX) {
-                    this.step(g.vx > 0 ? 1 : -1);
+                    this.step(g.vx > 0 ? -1 : 1);
                     this.flickArmed = false;
                 } else if (speed < FLICK_REARM_VX) {
                     this.flickArmed = true;
@@ -414,18 +421,22 @@ export class Carousel {
         this.pulseMs = (this.pulseMs + dtMs) % PULSE_PERIOD_MS;
         const pulse = Math.sin((this.pulseMs / PULSE_PERIOD_MS) * Math.PI * 2);
 
-        // ---- Per-item opacity + brightness ----
-        for (let i = 0; i < this.items.length; i++) {
+        // ---- Per-item opacity + brightness + depth fade ----
+        const n = this.items.length;
+        for (let i = 0; i < n; i++) {
             const item = this.items[i];
-            const offset = i - this.active;
-            const dist = Math.abs(offset);
+            // Shortest signed distance to the active tile around the 6-item wheel, so the
+            // wrap neighbors (e.g. tile 6 when tile 1 is active) read as adjacent rather than
+            // far away. wo ∈ [-n/2, n/2]; the diametric tile (|wo| = 3) is always hidden.
+            let wo = ((i - this.active) % n + n) % n;
+            if (wo > n / 2) wo -= n;
+            const dist = Math.abs(wo);
 
-            let targetOpacity: number;
-            if (dist === 0) targetOpacity = ACTIVE_OPACITY;
-            else if (dist <= VISIBLE_RADIUS) targetOpacity = ADJACENT_OPACITY;
-            else targetOpacity = HIDDEN_OPACITY;
+            // Re-slot wrap neighbors to their near side. Anchored to the active tile's base x
+            // (active*spacing) so the snap, which targets -active*spacing, still centers it.
+            item.mesh.position.x = (this.active + wo) * ITEM_SPACING;
 
-            const visible = targetOpacity > 0;
+            const visible = dist <= VISIBLE_RADIUS;
             item.mesh.visible = visible;
             if (!visible) {
                 item.material.opacity = 0;
@@ -438,16 +449,15 @@ export class Carousel {
             if (dist === 0) {
                 const lift = 1 + this.glow * 0.35;
                 this.tmpColor.multiplyScalar(lift);
-                item.material.opacity = targetOpacity * this.fade;
             } else {
                 const breathe = 1 + pulse * PULSE_DEPTH;
                 this.tmpColor.multiplyScalar(0.7 * breathe);
-                item.material.opacity = targetOpacity * this.fade;
             }
             item.material.color.copy(this.tmpColor);
+            item.material.opacity = DIST_OPACITY[dist] * this.fade;
 
-            // Bring the active tile slightly forward and scale it up for a centered emphasis.
-            const scale = dist === 0 ? 1.15 + this.glow * 0.06 : 0.9;
+            // Shrink with distance for a depth-faded strip; the active tile takes the glow lift.
+            const scale = DIST_SCALE[dist] + (dist === 0 ? this.glow * 0.06 : 0);
             item.mesh.scale.setScalar(scale);
         }
 

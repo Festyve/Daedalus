@@ -12,8 +12,11 @@
     />
 </head>
 <body>
-    <!-- desaturated webcam preview + green skeleton overlay (§11.6, §15.3) -->
-    <canvas id="preview"></canvas>
+    <!-- full-screen transparent green hand-skeleton overlay above the webgl canvas -->
+    <canvas id="overlay"></canvas>
+
+    <!-- cyan frame around the bottom-right black-scene preview (rendered into webgl) -->
+    <div id="preview-frame"></div>
 
     <!-- HUD root: stage label, active-menu, FPS (filled by ui/chrome.ts) -->
     <div id="chrome"></div>

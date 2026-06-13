@@ -46,13 +46,15 @@ const EDGE_SMOOTH_ITERS = 3;
 // Decoration visibility (aspect #59). The material is MeshMatcapMaterial with
 // vertexColors:true, which MULTIPLIES the (dark blue-steel) matcap by the vertex
 // color — so jam #8B0000 reads near-black on the steel. We write a pre-compensated
-// DISPLAY color that is a VIVID, SATURATED jam: the dominant channel is rescaled up
-// to JAM_VALUE while the others stay near zero, so the multiply yields a luminous
-// red — NOT a wash toward grey/white (which desaturates to pink). The wet/glassy
-// sheen is added per-pixel in the matcap shader (render/scene.ts), not by whitening
-// the base color here, so the hue stays rich and the highlight stays specular.
-const JAM_VALUE = 0.95;   // brightness of the dominant channel after the rescale
-const JAM_FLOOR = 0.07;   // small floor on the minor channels so shadows aren't dead-black
+// DISPLAY color that is a VIVID, SATURATED jam: computeDisplayColor() pushes the hue
+// off grey (SATURATE), screen-lifts the darks toward the hue (SCREEN_LIFT), then adds
+// a gloss-scaled specular sheen toward white (GLOSS_SPEC), so the multiply yields a
+// luminous red — NOT a wash toward grey/white (which desaturates to pink). The
+// wet/glassy sheen is added per-pixel in the matcap shader (render/scene.ts) too, so
+// the hue stays rich and the highlight stays specular.
+const SATURATE = 0.6;     // push channels away from their mean (richer, less grey)
+const SCREEN_LIFT = 0.35; // screen-style lift of darks toward the hue, not toward grey
+const GLOSS_SPEC = 0.5;   // max specular sheen toward white, scaled by design.gloss
 // A vertex straddles the boundary when its mask differs from a neighbour's by more
 // than this — those verts (plus their 1-ring) form the band we smooth.
 const BOUNDARY_DELTA = 0.05;

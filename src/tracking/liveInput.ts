@@ -157,6 +157,13 @@ export class LiveInputSource implements InputSource {
         // HandFilterBank.filter derives its own dt from the absolute timestamp;
         // dtMs is accepted for API parity but the bank smooths on tMs.
         void dtMs;
+        // Landmarks are kept in the camera's NATIVE (un-mirrored) image space, and the
+        // feed is displayed un-mirrored to match (viewMode.ts AR plane + overlay.ts) —
+        // so a hand at a screen spot controls things at that spot. The feed display and
+        // the landmarks MUST share the same orientation; to switch to a mirrored/selfie
+        // view you would flip x in BOTH places (here and viewMode.ts). World landmarks
+        // are metric and only feed distance-based predicates (§12), so they are left
+        // untouched. Pass the raw normalized landmarks straight through the filter.
         const { landmarks, world } = this.banks[label].filter(
             lm as Vec3[],
             world_lm as Vec3[],
@@ -174,15 +181,20 @@ export class LiveInputSource implements InputSource {
     }
 }
 
-// Map MediaPipe's per-hand handedness category to our Left/Right label. When the
-// label is missing, fall back so the first detection is Right (execution hand,
-// §3.2) and the second is Left.
+// Map MediaPipe's per-hand handedness category to our Left/Right label. MediaPipe
+// determines handedness ASSUMING the input image is mirrored (selfie); we feed it the
+// RAW, non-mirrored camera frame (landmarks stay native — see buildPose), so its
+// reported label is inverted relative to the user's actual hands — swap it so Left =
+// the user's left hand (nav) and Right = the user's right hand (exec), per §3.2. When
+// the label is missing, fall back so the first detection is Right (execution hand) and
+// the second is Left.
 function labelFor(handedness: Category[][] | undefined, i: number): Handedness {
     const name =
         handedness && handedness[i] && handedness[i][0]
             ? handedness[i][0].categoryName
             : "";
-    if (name === "Left" || name === "Right") return name;
+    if (name === "Left") return "Right";
+    if (name === "Right") return "Left";
     return i === 0 ? "Right" : "Left";
 }
 

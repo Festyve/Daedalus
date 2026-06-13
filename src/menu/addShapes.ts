@@ -106,6 +106,23 @@ function blankVec(): Vec3 {
     return { x: 0, y: 0, z: 0 };
 }
 
+// Keep a freshly spawned shape fully on screen (§5.1). The unprojected fingertip can
+// land anywhere on the interaction plane — including past the frame edge when the hand
+// is near the edge of view — which would drop the new shape (partly) off-frame. Clamp
+// the spawn point to the camera frustum at the spawn depth, leaving a margin for the
+// shape's own radius. The camera always looks at the origin (a slight idle parallax
+// keeps the origin centred), so the view centre on the spawn plane is ~(0,0) and
+// clamping around 0 stays correct frame-to-frame. Mutates `at` in place; no allocation.
+function clampSpawnToView(at: THREE.Vector3, camera: THREE.PerspectiveCamera, radius: number): void {
+    const dist = Math.max(0.001, Math.abs(camera.position.z - at.z));
+    const halfH = Math.tan((camera.fov * Math.PI) / 360) * dist; // fov/2 in radians
+    const halfW = halfH * camera.aspect;
+    const limX = Math.max(0, halfW - radius);
+    const limY = Math.max(0, halfH - radius);
+    at.x = Math.min(limX, Math.max(-limX, at.x));
+    at.y = Math.min(limY, Math.max(-limY, at.y));
+}
+
 export function createAddShapesMenu(): MenuModule {
     const accent = MENU_META[MenuId.ADD_SHAPES].accent;
     const label = MENU_META[MenuId.ADD_SHAPES].label;
@@ -162,6 +179,7 @@ export function createAddShapesMenu(): MenuModule {
         }
 
         const mesh = attachMesh(ctx, makeShape(kind));
+        clampSpawnToView(at, ctx.camera, mesh.geometry.boundingSphere?.radius ?? 1.5);
         mesh.position.copy(at);
 
         // Begin the scale-in: the shape starts near-zero and grows to 1 so it "arrives"

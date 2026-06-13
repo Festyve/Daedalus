@@ -31,7 +31,7 @@ import { Director } from "./core/director";
 
 import { makeContext } from "./render/scene";
 import { makeComposer } from "./render/post";
-import { drawOverlay } from "./render/overlay";
+import { drawSkeletons } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
 
 import { Carousel } from "./menu/carousel";
@@ -88,7 +88,11 @@ router.register(createDecorateMenu());
 // Tool carousel (§4.1). Parented to the camera so it stays pinned at top-center; the
 // nav fingertip is transformed world -> camera-local before being handed to update().
 const carousel = new Carousel();
-carousel.object.position.set(0, 1.55, -3.2); // top-center, in front of the camera
+// Top-center, in front of the camera. At local z=-3.2 the visible half-height is
+// 3.2·tan(fov/2) ≈ 1.33, so y must stay below that (with margin for the ring/label
+// above the center) or the tiles sit off the top edge (§4.1). y≈0.9 keeps the whole
+// wheel — ring, tiles, and the label that drops below — fully on screen.
+carousel.object.position.set(0, 0.9, -3.2);
 ctx.camera.add(carousel.object);
 ctx.scene.add(ctx.camera);
 carousel.onSelect = (id) => {
@@ -105,9 +109,21 @@ const instructions = new InstructionsPopout();
 instructions.mount();
 const devOverlay = new DevOverlay(IS_MOCK || PARAM_FPS);
 
-// ---- preview canvas / banner -----------------------------------------------
-const previewCanvas = document.getElementById("preview") as HTMLCanvasElement | null;
-const previewCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
+// ---- skeleton overlay canvas / banner --------------------------------------
+// Full-screen transparent 2D canvas above the webgl canvas. The webcam now backs the
+// MAIN scene (un-mirrored), so the green skeletons drawn here land directly on the user's
+// real hands in the feed. Sized in CSS pixels (landmarks are normalized) and kept in
+// sync with the window.
+const overlayCanvas = document.getElementById("overlay") as HTMLCanvasElement | null;
+const overlayCtx = overlayCanvas ? overlayCanvas.getContext("2d") : null;
+function sizeOverlay(): void {
+    if (!overlayCanvas) return;
+    overlayCanvas.width = window.innerWidth;
+    overlayCanvas.height = window.innerHeight;
+}
+sizeOverlay();
+window.addEventListener("resize", sizeOverlay);
+
 const banner = document.getElementById("banner");
 
 function showBanner(msg: string): void {
@@ -120,7 +136,9 @@ function hideBanner(): void {
 }
 
 // ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
-const viewMode = new ViewModeController(ctx.scene, () => video);
+// The AR webcam plane parents to the camera (so it always fills the frame); the camera
+// was already added to the scene above (alongside the carousel).
+const viewMode = new ViewModeController(ctx.camera, () => video);
 
 // ---- input source (best-effort; NEVER blocks rendering) --------------------
 // The render loop starts immediately on the empty scene. The input source — live
@@ -271,9 +289,39 @@ startLoop((dtMs) => {
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
 
-    // 5) Render: composited scene (NEVER css3d) + webcam corner overlay + HUD.
+    // 5) Render: the MAIN view (camera feed + composited objects, NEVER css3d), then a
+    //    bottom-right black-scene preview (the same objects on #000814, camera bg hidden),
+    //    then the green hand skeletons over the feed + HUD.
     composer.render();
-    if (previewCtx && video) drawOverlay(previewCtx, video, frame.Left, frame.Right);
+
+    // Corner black-scene preview: re-render the scene with the AR background plane hidden
+    // into a scissored bottom-right box of the MAIN webgl canvas. setViewport/setScissor
+    // take CSS (logical) pixels — three.js applies the renderer pixelRatio internally, so
+    // we must NOT pre-multiply by dpr. GL viewport origin is BOTTOM-left, so vy = margin
+    // puts the box in the bottom-right corner (matching the #preview-frame border). Reset
+    // scissor test + full viewport afterward so the NEXT frame's composer.render() (which
+    // manages its own clear) draws the full canvas unaffected.
+    const W = window.innerWidth, H = window.innerHeight;
+    const cw = Math.round(W * 0.22), ch = Math.round(cw * H / W);
+    const margin = 16;
+    const vx = W - cw - margin;
+    const vy = margin;
+    viewMode.setBackgroundVisible(false);
+    const r = ctx.renderer;
+    r.setRenderTarget(null);
+    r.setScissorTest(true);
+    r.setViewport(vx, vy, cw, ch);
+    r.setScissor(vx, vy, cw, ch);
+    r.setClearColor(0x000814, 1);
+    r.clear();
+    r.render(ctx.scene, ctx.camera);
+    r.setScissorTest(false);
+    r.setViewport(0, 0, W, H);
+    // Restore the camera background for the MAIN view (only when AR mode owns it).
+    viewMode.setBackgroundVisible(viewMode.mode === "ar");
+
+    // Green hand skeletons over the MAIN feed (landmarks are un-mirrored, so they align).
+    if (overlayCtx) drawSkeletons(overlayCtx, frame.Left, frame.Right);
 
     chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });
     devOverlay.update({

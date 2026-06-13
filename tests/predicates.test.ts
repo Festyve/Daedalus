@@ -101,40 +101,40 @@ describe("handScale", () => {
 });
 
 describe("isPinching", () => {
-    it("is true when ‖tip4 − tip8‖ / S < 0.30", () => {
-        // index tip at (0, 0.9); place thumb tip 0.06 away → ratio 0.06/0.3 = 0.20 < 0.30.
+    it("is true when ‖tip4 − tip8‖ / S < 0.45", () => {
+        // index tip at (0, 0.9); place thumb tip 0.06 away → ratio 0.06/0.3 = 0.20 < 0.45.
         const lm = syntheticHand({ extend: true, thumbTip: { x: 0.06, y: 0.9, z: 0 } });
         expect(isPinching(lm, handScale(lm))).toBe(true);
     });
 
     it("is false when the tips are far apart", () => {
-        // ratio 0.25/0.3 ≈ 0.83 ≫ 0.30.
+        // ratio 0.25/0.3 ≈ 0.83 ≫ 0.45.
         const lm = syntheticHand({ extend: true, thumbTip: { x: 0.25, y: 0.9, z: 0 } });
         expect(isPinching(lm, handScale(lm))).toBe(false);
     });
 
-    it("is false exactly at the 0.30 boundary (strict <)", () => {
-        // ratio = 0.09/0.3 = 0.30 exactly → not pinching.
-        const lm = syntheticHand({ extend: true, thumbTip: { x: 0.09, y: 0.9, z: 0 } });
+    it("is false exactly at the 0.45 boundary (strict <)", () => {
+        // ratio = 0.135/0.3 = 0.45 exactly → not pinching.
+        const lm = syntheticHand({ extend: true, thumbTip: { x: 0.135, y: 0.9, z: 0 } });
         expect(isPinching(lm, handScale(lm))).toBe(false);
     });
 });
 
 describe("pinchAmount", () => {
-    it("clamps to 1 at or below the pinch threshold (r ≤ 0.30)", () => {
+    it("clamps to 1 at or below the pinch threshold (r ≤ 0.45)", () => {
         const lm = syntheticHand({ extend: true, thumbTip: { x: 0.0, y: 0.9, z: 0 } });
         expect(pinchAmount(lm, handScale(lm))).toBe(1);
     });
 
-    it("clamps to 0 at or beyond the release threshold (r ≥ 0.90)", () => {
-        // ratio 0.30/0.3 = 1.0 ≥ 0.90 → 0.
+    it("clamps to 0 at or beyond the release threshold (r ≥ 0.62)", () => {
+        // ratio 0.30/0.3 = 1.0 ≥ 0.62 → 0.
         const lm = syntheticHand({ extend: true, thumbTip: { x: 0.30, y: 0.9, z: 0 } });
         expect(pinchAmount(lm, handScale(lm))).toBe(0);
     });
 
     it("interpolates linearly between the thresholds", () => {
-        // ratio 0.18/0.3 = 0.60, midway in [0.30, 0.90] → 0.5.
-        const lm = syntheticHand({ extend: true, thumbTip: { x: 0.18, y: 0.9, z: 0 } });
+        // ratio 0.1605/0.3 = 0.535, midway in [0.45, 0.62] → 0.5.
+        const lm = syntheticHand({ extend: true, thumbTip: { x: 0.1605, y: 0.9, z: 0 } });
         expect(pinchAmount(lm, handScale(lm))).toBeCloseTo(0.5, 6);
     });
 
