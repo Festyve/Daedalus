@@ -153,7 +153,7 @@ export const BRUSH_KERNELS: Readonly<Partial<Record<BrushVerb, BrushKernel>>> = 
 // Each iteration runs a positive Laplacian step (λ) followed by a negative
 // un-shrink step (μ, |μ| > λ). The two opposing umbrella passes form a band-pass
 // filter that removes high-frequency noise WITHOUT the volume loss of plain
-// Laplacian smoothing — mandatory so the donut tube does not deflate and so a
+// Laplacian smoothing — mandatory so the torus tube does not deflate and so a
 // unit sphere drifts <5% in volume over 10 iterations.
 //
 // Allocation policy: zero per-call allocation beyond one-time setup. Three

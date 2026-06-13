@@ -13,7 +13,7 @@ import { T, TOOL_ACCENT, FONT } from "../render/tokens";
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
 const MENU_INSTRUCTION: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: "point to aim · pinch to spawn",
-    [MenuId.SELECT]: "swipe to switch the selected shape",
+    [MenuId.SELECT]: "swipe to move the cursor · pinch to add / remove",
     [MenuId.TRANSLATE]: "pinch an arrow · drag along its axis",
     [MenuId.DILATE]: "pinch both hands · apart / together to scale",
     [MenuId.ROTATE]: "pinch the ball · twist to rotate",
@@ -43,6 +43,7 @@ const GESTURE_VERB: Record<GestureName, string> = {
 export class Chrome {
     private readonly root: HTMLElement;
     private readonly stage_el: HTMLDivElement;
+    private readonly count_el: HTMLDivElement;
     private readonly tool_el: HTMLDivElement;
     private readonly hint_el: HTMLDivElement;
     private readonly stats: Stats;
@@ -60,6 +61,17 @@ export class Chrome {
         this.stage_el.style.letterSpacing = "0.24em";
         this.stage_el.style.textTransform = "uppercase";
 
+        // Top-center: live selection counter ("N shapes selected"). Hidden when nothing is
+        // selected so the HUD stays quiet until a selection exists (§14.3, item 7).
+        this.count_el = this.makeLabel({ top: "18px" });
+        this.count_el.style.left = "50%";
+        this.count_el.style.transform = "translateX(-50%)";
+        this.count_el.style.color = T.toolSelect;
+        this.count_el.style.fontSize = "12px";
+        this.count_el.style.fontWeight = "600";
+        this.count_el.style.letterSpacing = "0.16em";
+        this.count_el.style.textTransform = "uppercase";
+
         // Bottom-left: active tool label (accent-tinted) stacked above its
         // instruction line (dimmed). Lowercase HUD per §14.2.
         this.tool_el = this.makeLabel({ left: "20px", bottom: "34px" });
@@ -69,7 +81,8 @@ export class Chrome {
         this.tool_el.style.letterSpacing = "0.14em";
 
         this.hint_el = this.makeLabel({ left: "20px", bottom: "16px" });
-        this.hint_el.style.color = T.textDim;
+        // Brighter than T.textDim so the hint stays readable over the busy camera feed.
+        this.hint_el.style.color = "rgba(255,255,255,0.78)";
         this.hint_el.style.fontSize = "11px";
         this.hint_el.style.letterSpacing = "0.08em";
 
@@ -95,6 +108,8 @@ export class Chrome {
         el.style.fontFamily = FONT;
         el.style.whiteSpace = "nowrap";
         el.style.pointerEvents = "none";
+        // Dark halo so HUD text stays legible over the live camera feed (§14.3).
+        el.style.textShadow = "0 0 6px rgba(0,0,0,0.92), 0 0 2px rgba(0,0,0,0.92)";
         if (pos.left !== undefined) el.style.left = pos.left;
         if (pos.right !== undefined) el.style.right = pos.right;
         if (pos.top !== undefined) el.style.top = pos.top;
@@ -105,8 +120,12 @@ export class Chrome {
 
     // Refresh the text content for a new HUD state. Cheap string assignment only;
     // safe to call every frame (no allocation, no layout thrash beyond text set).
-    private render(state: { stage: Stage; activeMenu: MenuId | null; gesture?: GestureName }): void {
+    private render(state: { stage: Stage; activeMenu: MenuId | null; gesture?: GestureName; selectedCount?: number }): void {
         this.stage_el.textContent = `DAEDALUS // ${state.stage}`;
+
+        // Selection counter: shown only when at least one shape is selected.
+        const n = state.selectedCount ?? 0;
+        this.count_el.textContent = n > 0 ? `${n} shape${n === 1 ? "" : "s"} selected` : "";
 
         const base = state.activeMenu !== null ? MENU_INSTRUCTION[state.activeMenu] : IDLE_INSTRUCTION;
         if (state.activeMenu !== null) {
@@ -128,7 +147,7 @@ export class Chrome {
     // chrome contract; it is accepted here (optional) so this compiles against both
     // the current and rewritten main.ts. The FPS meter and the three text regions
     // read identically in scene and AR mode, so it currently drives no branch.
-    update(s: { stage: Stage; activeMenu: MenuId | null; viewMode?: ViewMode; gesture?: GestureName }): void {
+    update(s: { stage: Stage; activeMenu: MenuId | null; viewMode?: ViewMode; gesture?: GestureName; selectedCount?: number }): void {
         void s.viewMode;
         this.render(s);
     }

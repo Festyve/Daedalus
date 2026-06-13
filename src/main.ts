@@ -13,7 +13,7 @@
 // is null until ADD SHAPES spawns the first mesh — every access is guarded here.
 //
 // The Director is the forward-only flow source of truth; we pull its milestones from
-// the observable ctx (mesh added -> SPHERE, morphT -> DONUT, decorated -> DECORATED).
+// the observable ctx (mesh added -> SPHERE, morphT -> TORUS, decorated -> DECORATED).
 //
 // A window.DAEDALUS debug API drives every beat headlessly (used by the mock input,
 // headless verification, and the safety-mode operator).
@@ -48,6 +48,8 @@ import { createDestroyMenu } from "./menu/destroy";
 
 import { classify, GestureDebouncer } from "./gesture/detect";
 import { handScale } from "./gesture/predicates";
+import { selectedCount } from "./core/shapes";
+import { eligibleTools } from "./render/tokens";
 
 import { Chrome } from "./ui/chrome";
 import { DevOverlay } from "./ui/devOverlay";
@@ -103,7 +105,7 @@ ctx.camera.add(carousel.object);
 ctx.scene.add(ctx.camera);
 carousel.onSelect = (id) => {
     sfx.ping();
-    router.select(ctx, id);
+    router.select(ctx, id as MenuId);
 };
 
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
@@ -141,17 +143,18 @@ function hideBanner(): void {
     banner?.classList.add("hidden");
 }
 
-// ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
-// The AR webcam plane parents to the camera (so it always fills the frame); the camera
-// was already added to the scene above (alongside the carousel).
-const viewMode = new ViewModeController(ctx.camera, () => video);
-
-// ---- input source (best-effort; NEVER blocks rendering) --------------------
-// The render loop starts immediately on the empty scene. The input source — live
-// camera or mock — initializes asynchronously; until ready, the store holds the
-// last (empty) frame and the loop renders the empty world.
+// ---- input source handles (declared before the view-mode controller, whose constructor's
+//      getVideo() closure reads `video` immediately — keep them out of the TDZ). ----------
+// The render loop starts immediately on the empty scene. The input source — live camera or
+// mock — initializes asynchronously; until ready, the store holds the last (empty) frame.
 let source: InputSource | null = null;
 let video: HTMLVideoElement | null = null;
+
+// ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
+// The webcam feed is a DOM <video> (#camera) BEHIND a transparent canvas; the controller
+// flips the canvas clear between transparent (AR, feed shows through) and opaque #000814
+// (scene) and shows/hides the video.
+const viewMode = new ViewModeController(ctx.scene, ctx.camera, ctx.renderer, () => video);
 
 async function initInput(): Promise<void> {
     try {
@@ -196,9 +199,10 @@ function driveCarousel(nav: HandPose | null, dtSeconds: number): void {
     navGestureName = committed;
 
     // Finger gun opens the wheel. Opening tears down the active menu/panel (§4.2) so a
-    // panel and the wheel are never on screen together.
+    // panel and the wheel are never on screen together. The wheel shows only the tools that
+    // make sense for the current selection count (0 / 1 / 2+ → different variants, item 6).
     if (committed === "gun" && !carousel.isOpen) {
-        carousel.open(navTipLocal);
+        carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
         router.select(ctx, null);
         sfx.hum();
     }
@@ -248,7 +252,7 @@ function syncDirector(): void {
         // World was cleared back to empty (e.g. a fresh spawn replaced nothing yet).
         meshSeen = false;
     }
-    // MORPH progress: SPHERE -> DONUT once the donut blend completes (t > 0.95).
+    // MORPH progress: SPHERE -> TORUS once the torus blend completes (t > 0.95).
     director.onMorph(ctx.morphT);
     // DECORATE applied icing/sprinkles: -> DECORATED. Modules write ctx.stage when the
     // decoration fires; the active DECORATE tool also counts.
@@ -300,19 +304,17 @@ startLoop((dtMs) => {
     //    then the green hand skeletons over the feed + HUD.
     composer.render();
 
-    // Corner black-scene preview: re-render the scene with the AR background plane hidden
-    // into a scissored bottom-right box of the MAIN webgl canvas. setViewport/setScissor
-    // take CSS (logical) pixels — three.js applies the renderer pixelRatio internally, so
-    // we must NOT pre-multiply by dpr. GL viewport origin is BOTTOM-left, so vy = margin
-    // puts the box in the bottom-right corner (matching the #preview-frame border). Reset
-    // scissor test + full viewport afterward so the NEXT frame's composer.render() (which
-    // manages its own clear) draws the full canvas unaffected.
+    // Corner black-scene preview: re-render the objects on opaque #000814 into a scissored
+    // bottom-right box of the MAIN webgl canvas (the camera feed is a DOM layer untouched by
+    // this pass). setViewport/setScissor take CSS (logical) pixels — three.js applies the
+    // renderer pixelRatio internally, so we must NOT pre-multiply by dpr. GL viewport origin
+    // is BOTTOM-left, so vy = margin puts the box in the bottom-right corner (matching the
+    // #preview-frame border).
     const W = window.innerWidth, H = window.innerHeight;
     const cw = Math.round(W * 0.22), ch = Math.round(cw * H / W);
     const margin = 16;
     const vx = W - cw - margin;
     const vy = margin;
-    viewMode.setBackgroundVisible(false);
     const r = ctx.renderer;
     r.setRenderTarget(null);
     r.setScissorTest(true);
@@ -323,13 +325,20 @@ startLoop((dtMs) => {
     r.render(ctx.scene, ctx.camera);
     r.setScissorTest(false);
     r.setViewport(0, 0, W, H);
-    // Restore the camera background for the MAIN view (only when AR mode owns it).
-    viewMode.setBackgroundVisible(viewMode.mode === "ar");
+    // Restore the MAIN-view clear for the next frame's composer.render(): transparent in AR
+    // (so the #camera video shows through), opaque #000814 in scene mode. The preview pass
+    // above left an opaque clear colour set, so this MUST run every frame.
+    viewMode.syncClear();
 
     // Green hand skeletons over the MAIN feed (landmarks are un-mirrored, so they align).
     if (overlayCtx) drawSkeletons(overlayCtx, frame.Left, frame.Right);
 
-    chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });
+    chrome.update({
+        stage: director.stage,
+        activeMenu: router.activeId,
+        viewMode: viewMode.mode,
+        selectedCount: selectedCount(ctx),
+    });
     devOverlay.update({
         frame,
         gesture: navGestureName,

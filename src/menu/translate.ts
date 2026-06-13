@@ -30,6 +30,7 @@ import { T, FONT, TOOL_ACCENT } from "../render/tokens";
 import { Panel } from "./panel";
 import { fingertipToWorld } from "../math/coords";
 import { isOpenPalm, isFist } from "../gesture/predicates";
+import { selectedShapes } from "../core/shapes";
 
 // MediaPipe palm-center anchor: middle-finger MCP reads as the centre of the hand, so the
 // object tracks the palm rather than a wandering fingertip.
@@ -54,9 +55,12 @@ export function createTranslateMenu(): MenuModule {
     let open_frames = 0;
     let fist_frames = 0;
 
-    // Offset (parent space) captured at grab: meshLocalPos − handPointParent. Applying it
-    // each frame keeps the object's relative position to the hand fixed (no snap on grab).
-    const grab_offset = new THREE.Vector3();
+    // Per-selected-mesh offset (parent space) captured at grab: meshLocalPos − handPointParent.
+    // Applying each keeps every selected shape's position relative to the hand fixed, so the whole
+    // selection translates together by the hand's motion (relative spacing preserved). With one
+    // shape this is the original single-object grab.
+    const engagedMeshes: THREE.Mesh[] = [];
+    const grabOffsets: THREE.Vector3[] = [];
 
     // Module-owned scratch, created once (ctx.scratch is shared; these are private to the
     // hot loop and never reallocated).
@@ -139,45 +143,54 @@ export function createTranslateMenu(): MenuModule {
             fist_frames = fist_now ? fist_frames + 1 : 0;
 
             if (!grabbed && open_frames >= COMMIT_FRAMES) {
-                // Grab: latch the offset so the object stays where it is and follows from
-                // there (no teleport to the hand). Convert the palm world point into the
-                // mesh's parent space, then offset = currentMeshLocal − handParent.
+                // Grab: latch a per-mesh offset for every SELECTED shape so the whole selection
+                // stays where it is and follows the hand from there (no teleport). Convert the
+                // palm world point into each mesh's parent space, then offset = meshLocal −
+                // handParent.
                 fingertipToWorld(
                     exec.landmarks[PALM_ANCHOR], ctx.camera, ctx.interactionPlaneZ,
                     ctx.scratch.ray, ctx.scratch.plane, hand_world,
                 );
-                const parent = mesh.parent;
-                if (parent) {
-                    parent.updateWorldMatrix(true, false);
-                    hand_parent.copy(hand_world);
-                    parent.worldToLocal(hand_parent);
-                } else {
-                    hand_parent.copy(hand_world);
+                engagedMeshes.length = 0;
+                grabOffsets.length = 0;
+                for (const m of selectedShapes(ctx)) {
+                    const parent = m.parent;
+                    if (parent) {
+                        parent.updateWorldMatrix(true, false);
+                        hand_parent.copy(hand_world);
+                        parent.worldToLocal(hand_parent);
+                    } else {
+                        hand_parent.copy(hand_world);
+                    }
+                    engagedMeshes.push(m);
+                    grabOffsets.push(m.position.clone().sub(hand_parent));
                 }
-                grab_offset.copy(mesh.position).sub(hand_parent);
                 grabbed = true;
             } else if (grabbed && fist_frames >= COMMIT_FRAMES) {
-                // Fist → lock in place. The mesh keeps its current position untouched.
+                // Fist → lock in place. The meshes keep their current positions untouched.
                 grabbed = false;
             }
 
-            // While grabbed, the object tracks the hand: target = handPoint(parent)+offset,
-            // smoothed to soak up landmark jitter without lagging the motion.
+            // While grabbed, every selected shape tracks the hand: target = handPoint(parent) +
+            // offset, smoothed to soak up landmark jitter without lagging the motion.
             if (grabbed) {
                 fingertipToWorld(
                     exec.landmarks[PALM_ANCHOR], ctx.camera, ctx.interactionPlaneZ,
                     ctx.scratch.ray, ctx.scratch.plane, hand_world,
                 );
-                const parent = mesh.parent;
-                if (parent) {
-                    parent.updateWorldMatrix(true, false);
-                    hand_parent.copy(hand_world);
-                    parent.worldToLocal(hand_parent);
-                } else {
-                    hand_parent.copy(hand_world);
+                for (let i = 0; i < engagedMeshes.length; i++) {
+                    const m = engagedMeshes[i];
+                    const parent = m.parent;
+                    if (parent) {
+                        parent.updateWorldMatrix(true, false);
+                        hand_parent.copy(hand_world);
+                        parent.worldToLocal(hand_parent);
+                    } else {
+                        hand_parent.copy(hand_world);
+                    }
+                    target_local.copy(hand_parent).add(grabOffsets[i]);
+                    m.position.lerp(target_local, TRACK_LERP);
                 }
-                target_local.copy(hand_parent).add(grab_offset);
-                mesh.position.lerp(target_local, TRACK_LERP);
             }
 
             // Keep the panel readout live (mesh.position may also have changed elsewhere).

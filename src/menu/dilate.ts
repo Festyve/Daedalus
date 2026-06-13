@@ -16,11 +16,13 @@
 // World starts empty (§5.1): ctx.mesh may be null. Every access is guarded — with no mesh
 // this tool is a no-op and shows a placeholder readout.
 import { Box3, Box3Helper, Color, Vector3 } from "three";
+import type { Mesh } from "three";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
 import { asMenuLayer } from "../render/layers";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
+import { selectedShapes, selectedCount, selectionCenter } from "../core/shapes";
 
 // MediaPipe wrist landmark index (image space, mirrored [0,1]).
 const WRIST = 0;
@@ -28,6 +30,9 @@ const WRIST = 0;
 // Clamp the resulting object scale so a wild gesture can't invert or explode the mesh.
 const SCALE_MIN = 0.15;
 const SCALE_MAX = 6.0;
+// Clamp the raw spread factor too (applied to the group's positions about the centroid).
+const FACTOR_MIN = 0.1;
+const FACTOR_MAX = 8.0;
 
 // Floor for the engage distance so a momentary hand overlap can't divide by ~0.
 const MIN_DIST = 1e-3;
@@ -48,19 +53,27 @@ export function createDilateMenu(): MenuModule {
     let panel: Panel | null = null;
 
     // Wireframe cage + its backing Box3. The helper's geometry is a unit cube; we drive its
-    // world transform each frame from the mesh's live bounds, so it never needs rebuilding.
+    // world transform each frame from the SELECTION's live union bounds, so it never rebuilds.
     let box_helper: Box3Helper | null = null;
     const box3 = new Box3();
+    const tmp_box = new Box3();
 
-    // Engagement state.
+    // Engagement state. The whole SELECTION scales about its centroid: each mesh's distance from
+    // the centroid AND its own scale multiply by the spread factor (with one shape, the distance
+    // is 0 so it just scales in place).
     let engaged = false;
     let start_dist = MIN_DIST;              // ‖wristL − wristR‖ (image space) at engage
-    const start_scale = new Vector3(1, 1, 1); // mesh.scale at engage
     let factor = 1;                          // latest applied scale factor (for the readout)
+    const engageCenter = new Vector3();      // selection centroid at engage
+    const engagedMeshes: Mesh[] = [];        // selection snapshot at engage
+    const startScales: number[] = [];        // per-mesh uniform scale at engage
+    const startPositions: Vector3[] = [];    // per-mesh position at engage
 
     // Module-owned scratch (zero per-frame allocation beyond ctx.scratch).
     const wrist_l = new Vector3();
     const wrist_r = new Vector3();
+    const rel = new Vector3();               // scratch: mesh offset from centroid
+    const center = new Vector3();            // scratch: live centroid
 
     // Distance between the two wrists in normalized image space (§5.3). Floored so the ratio
     // stays finite when the hands momentarily coincide.
@@ -72,17 +85,33 @@ export function createDilateMenu(): MenuModule {
         return Math.max(wrist_r.distanceTo(wrist_l), MIN_DIST);
     }
 
-    // Fit the wireframe cage to the mesh's current world-space bounds. setFromObject walks
-    // the mesh's geometry under its full world matrix, so the cage tracks the object's live
-    // scale/position/rotation rig exactly. A small uniform pad lifts the cage off the surface.
+    // Fit the wireframe cage to the SELECTION's current world-space union bounds, so the cage
+    // frames every selected shape. A small uniform pad lifts the cage off the surfaces.
     function syncBox(ctx: SceneContext): void {
-        if (!box_helper || !ctx.mesh) return;
-        ctx.mesh.updateWorldMatrix(true, false);
-        box3.setFromObject(ctx.mesh);
+        if (!box_helper) return;
+        box3.makeEmpty();
+        for (const m of selectedShapes(ctx)) {
+            m.updateWorldMatrix(true, false);
+            tmp_box.setFromObject(m);
+            if (!tmp_box.isEmpty()) box3.union(tmp_box);
+        }
         if (box3.isEmpty()) return;
         box3.expandByScalar(BOX_PAD);
         box_helper.box.copy(box3);
         box_helper.updateMatrixWorld(true);
+    }
+
+    // Snapshot the selection's poses + centroid at the engage instant (factor reads 1.0).
+    function snapshotGroup(ctx: SceneContext): void {
+        selectionCenter(ctx, engageCenter);
+        engagedMeshes.length = 0;
+        startScales.length = 0;
+        startPositions.length = 0;
+        for (const m of selectedShapes(ctx)) {
+            engagedMeshes.push(m);
+            startScales.push(m.scale.x);
+            startPositions.push(m.position.clone());
+        }
     }
 
     function paintPanel(has_mesh: boolean): void {
@@ -113,28 +142,27 @@ export function createDilateMenu(): MenuModule {
             panel = new Panel({ title: "DILATE", accent });
             panel.setInstructions(INSTRUCTIONS);
 
-            // Build the wireframe cage on Layer 1. The mesh may be null (empty world); the
-            // cage is created regardless and simply tracks nothing until a mesh exists.
+            // Build the wireframe cage on Layer 1. With nothing selected the cage simply stays
+            // hidden until a selection exists.
             box3.makeEmpty();
             box_helper = new Box3Helper(box3, new Color(accent));
             (box_helper.material as { opacity: number }).opacity = BOX_OPACITY;
-            box_helper.visible = ctx.mesh !== null;
+            box_helper.visible = selectedCount(ctx) > 0;
             // HARD RULE (§4.3): menu geometry renders above the mesh — renderOrder=1,
             // depthTest=false, depthWrite=false, transparent. asMenuLayer applies all of it.
             asMenuLayer(box_helper);
             ctx.scene.add(box_helper);
 
-            if (ctx.mesh) start_scale.copy(ctx.mesh.scale);
             syncBox(ctx);
-            paintPanel(ctx.mesh !== null);
+            paintPanel(selectedCount(ctx) > 0);
             panel.show();
         },
 
         update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
             void dt;
 
-            // No object → no-op. Keep the cage hidden and the panel in its placeholder state.
-            if (!ctx.mesh) {
+            // Nothing selected → no-op. Keep the cage hidden and the panel in placeholder state.
+            if (selectedCount(ctx) === 0) {
                 if (engaged) engaged = false;
                 if (box_helper) box_helper.visible = false;
                 paintPanel(false);
@@ -147,21 +175,23 @@ export function createDilateMenu(): MenuModule {
             if (both) {
                 const cur = wristDist(exec!, nav!);
                 if (!engaged) {
-                    // Rising edge: latch the baseline distance and the object's scale so the
-                    // factor reads exactly 1.0 the instant both hands engage (§5.3).
+                    // Rising edge: latch the baseline distance + the group's poses so the factor
+                    // reads exactly 1.0 the instant both hands engage (§5.3).
                     engaged = true;
                     start_dist = cur;
-                    start_scale.copy(ctx.mesh.scale);
                     factor = 1;
+                    snapshotGroup(ctx);
                 } else {
-                    // factor = ‖wristL − wristR‖ / startDist, applied uniformly relative to the
-                    // scale captured at engage. Clamp so the mesh can't invert or explode.
-                    factor = cur / start_dist;
-                    const s = Math.min(
-                        SCALE_MAX,
-                        Math.max(SCALE_MIN, start_scale.x * factor),
-                    );
-                    ctx.mesh.scale.setScalar(s);
+                    // factor = ‖wristL − wristR‖ / startDist, applied about the engage centroid:
+                    // each mesh's offset from the centroid AND its own scale multiply by factor.
+                    factor = Math.min(FACTOR_MAX, Math.max(FACTOR_MIN, cur / start_dist));
+                    for (let i = 0; i < engagedMeshes.length; i++) {
+                        const m = engagedMeshes[i];
+                        rel.copy(startPositions[i]).sub(engageCenter).multiplyScalar(factor);
+                        m.position.copy(engageCenter).add(rel);
+                        const s = Math.min(SCALE_MAX, Math.max(SCALE_MIN, startScales[i] * factor));
+                        m.scale.setScalar(s);
+                    }
                 }
             } else if (engaged) {
                 // A hand was lost: latch the current scale and disengage (§3.6).

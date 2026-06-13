@@ -17,11 +17,13 @@ import { MenuId, MENU_ORDER } from "../src/types";
 import type { GestureState } from "../src/types";
 import { Carousel } from "../src/menu/carousel";
 
-// ---- Flick-velocity thresholds mirrored from menu/carousel.ts (kept local; the module
-//      keeps them private). A velocity at/above COMMIT_VX arms+fires a step; the carousel
-//      only re-arms once |vx| drops below REARM_VX, so one fast swipe == one step. ----
-const COMMIT_VX = 0.4;
-const REARM_VX = 0.15;
+// ---- Swipe driving for the headless carousel. The carousel now uses the shared
+//      SwipeDetector (gesture/swipe.ts), which integrates g.vx over a window: a single fast
+//      frame (SWIPE_VX) commits one step, a hard cooldown blocks the sweep's tail, and the
+//      accumulator must SETTLE (vx ≈ 0 for a stretch) before the next step arms. So the
+//      re-arm phase is driven with vx = 0, not a sustained sub-threshold velocity. ----
+const SWIPE_VX = 0.6;        // one frame at this vx commits a step (net ≥ detector distance)
+const SETTLE_FRAMES = 30;    // vx=0 frames to decay the accumulator + clear the cooldown
 
 // ---- Headless DOM canvas stub so the real Carousel constructor + label bake run in node.
 //      Every 2D-context method the carousel touches is a no-op; setters swallow writes. ----
@@ -200,7 +202,7 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
         }
     });
 
-    it("a committed flick steps the centered tool by one (re-arm gate = one swipe, one step)", () => {
+    it("a committed flick steps the centered tool by one (one swipe, one step)", () => {
         const c = new Carousel();
         try {
             c.open(new THREE.Vector3(0, 0, 0));
@@ -209,17 +211,17 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
 
             // One fast LEFTWARD swipe (vx<0, finger moves screen-left) commits one forward step…
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            drive(c, gesture({ name: "point", vx: -SWIPE_VX }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
-            // …and holding the same fast velocity does NOT keep stepping (latch not re-armed).
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 5);
+            // …and holding the same fast velocity does NOT keep stepping (cooldown blocks the tail).
+            drive(c, gesture({ name: "point", vx: -SWIPE_VX }), 5);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
-            // Drop below the re-arm threshold AND wait out the post-step cooldown (~220ms),
-            // then swipe again → a second step lands. (16 frames × 16ms = 256ms > cooldown.)
-            drive(c, gesture({ name: "point", vx: REARM_VX * 0.5 }), 16);
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            // Let the hand SETTLE (vx≈0) so the accumulator decays + the cooldown clears, then
+            // swipe again → a second step lands.
+            drive(c, gesture({ name: "point", vx: 0 }), SETTLE_FRAMES);
+            drive(c, gesture({ name: "point", vx: -SWIPE_VX }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[2]);
         } finally {
             c.dispose();
@@ -232,7 +234,7 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10);
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
+            drive(c, gesture({ name: "point", vx: SWIPE_VX }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[MENU_ORDER.length - 1]);
         } finally {
             c.dispose();
@@ -242,16 +244,16 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
     it("pinch fires onSelect exactly once with the centered MenuId, then closes", () => {
         const c = new Carousel();
         try {
-            const onSelect = vi.fn<[MenuId], void>();
+            const onSelect = vi.fn<[string], void>();
             c.onSelect = onSelect;
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10); // finish open fade
 
             // Swipe (leftward = forward) to the third tool so the selection target is non-trivial.
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
-            // Re-arm + wait out the ~220ms post-step cooldown before the next swipe.
-            drive(c, gesture({ name: "point", vx: 0 }), 16);
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            drive(c, gesture({ name: "point", vx: -SWIPE_VX }), 1);
+            // Settle (vx=0) so the accumulator decays + the cooldown clears, then swipe again.
+            drive(c, gesture({ name: "point", vx: 0 }), SETTLE_FRAMES);
+            drive(c, gesture({ name: "point", vx: -SWIPE_VX }), 1);
             const target = centeredId(c);
             expect(target).toBe(MENU_ORDER[2]);
 
@@ -270,7 +272,7 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
     it("fist dismisses with no selection (onSelect never fires)", () => {
         const c = new Carousel();
         try {
-            const onSelect = vi.fn<[MenuId], void>();
+            const onSelect = vi.fn<[string], void>();
             c.onSelect = onSelect;
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10);

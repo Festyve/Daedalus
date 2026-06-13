@@ -196,6 +196,8 @@ function makeCtx(withMesh: boolean): SceneContext {
         mesh,
         bvh: null,
         extraMeshes: [],
+        selected: mesh ? [mesh] : [],
+        focusIndex: 0,
         morphT: 0,
         stage: "EMPTY",
         viewMode: "scene",
@@ -295,6 +297,51 @@ describe("TRANSLATE grab + track", () => {
         expect(mesh.position.y).toBeGreaterThan(0);
         expect(mesh.position.x).toBeCloseTo(target_x, 3);
         expect(mesh.position.y).toBeCloseTo(target_y, 3);
+
+        tool.exit(ctx);
+    });
+});
+
+describe("TRANSLATE group — all selected shapes move together", () => {
+    // Two selected meshes; both should translate by the same hand delta, preserving spacing.
+    function makeGroupCtx(a: THREE.Mesh, b: THREE.Mesh): SceneContext {
+        const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 100);
+        camera.position.set(0, 0, 5);
+        camera.lookAt(0, 0, 0);
+        camera.updateMatrixWorld(true);
+        return {
+            scene: new THREE.Scene(), camera, renderer: null as any,
+            mesh: a, bvh: null, extraMeshes: [b], selected: [a, b], focusIndex: 0,
+            morphT: 0, stage: "EMPTY", viewMode: "scene", activeMenu: null,
+            scratch: makeScratch(), interactionPlaneZ: 0,
+        };
+    }
+
+    it("moves every selected shape by the same world delta (relative spacing preserved)", () => {
+        const a = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), new THREE.MeshBasicMaterial());
+        const b = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), new THREE.MeshBasicMaterial());
+        a.position.set(-1, 0, 0);
+        b.position.set(1, 0, 0);
+        const ctx = makeGroupCtx(a, b);
+        const tool = createTranslateMenu();
+        tool.enter(ctx);
+
+        // Grab both at image-center.
+        const open_center = makePose(openPalmWorld(), 0.5, 0.5);
+        for (let f = 0; f < COMMIT_FRAMES + 1; f++) tool.update(ctx, open_center, null, 16);
+        const startA = a.position.clone();
+        const startB = b.position.clone();
+
+        // Move the hand right and let tracking converge.
+        const open_right = makePose(openPalmWorld(), 0.75, 0.35);
+        for (let f = 0; f < 60; f++) tool.update(ctx, open_right, null, 16);
+
+        const dA = a.position.clone().sub(startA);
+        const dB = b.position.clone().sub(startB);
+        // Same delta for both → identical motion; and the inter-shape spacing is unchanged.
+        expect(dA.distanceTo(dB)).toBeLessThan(1e-6);
+        expect(dA.length()).toBeGreaterThan(1e-2);
+        expect(a.position.distanceTo(b.position)).toBeCloseTo(2, 5);
 
         tool.exit(ctx);
     });

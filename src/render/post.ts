@@ -11,11 +11,13 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
-// Bloom tuning: high threshold so the matte steel body stays dark and only bright
-// rim / affordance pixels (luminance > BLOOM_THRESHOLD) glow.
-const BLOOM_STRENGTH = 0.9;
+// Bloom tuning: high threshold so only the bright wireframe edges / affordance pixels
+// (luminance > BLOOM_THRESHOLD) glow, and a restrained strength so the hologram reads as a
+// crisp glow rather than a wash. (The webcam feed is no longer in this pipeline — it is a
+// DOM layer — so bloom only touches the 3D geometry now.)
+const BLOOM_STRENGTH = 0.55;
 const BLOOM_RADIUS = 0.4;
-const BLOOM_THRESHOLD = 0.7;
+const BLOOM_THRESHOLD = 0.9;
 
 // Subtle ground-truth ambient occlusion: small radius so creases darken without
 // washing the silhouette.

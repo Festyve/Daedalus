@@ -1,24 +1,36 @@
-// SELECT tool (multi-shape, §5 extended). When several shapes share the scene, this is
-// how you choose which one the edit tools act on: a horizontal SWIPE of the navigation
-// (left) index finger cycles the selection through the shape set. The selected shape is
-// drawn bright; the others are ghosted (see core/shapes.refreshHighlight). The selection
-// persists after you leave SELECT, so the next tool you pick edits the shape you chose.
+// SELECT tool (multi-selection, §5 extended). Builds the SELECTION SET that the edit tools act
+// on. A horizontal SWIPE of the navigation (left) index finger moves a FOCUS CURSOR through the
+// shapes; a PINCH toggles the focused shape in/out of the selection. The focused shape pulses so
+// you can see what a pinch will toggle; selected shapes are drawn bright, the rest ghosted (see
+// core/shapes.refreshHighlight). The selection persists after you leave SELECT, so the next tool
+// edits the shapes you chose, and the on-screen counter (ui/chrome) shows how many are selected.
 //
-// One swipe = one step: a committed swipe arms a short cooldown + the usual re-arm gate,
-// so a single physical sweep never double-cycles (same discipline as the tool carousel).
+// One swipe = one cursor step via the shared SwipeDetector (gesture/swipe.ts); one pinch = one
+// toggle via rising-edge latching.
+import * as THREE from "three";
 import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
 import { classify } from "../gesture/detect";
-import { allShapes, shapeCount, cycleSelection, refreshHighlight } from "../core/shapes";
+import { SwipeDetector } from "../gesture/swipe";
+import {
+    allShapes,
+    shapeCount,
+    selectedCount,
+    isSelected,
+    toggleSelect,
+    focusedShape,
+    moveFocus,
+    refreshHighlight,
+} from "../core/shapes";
 
-// |g.vx| (units of S/frame) that commits a selection swipe — matches the carousel feel.
-const SWIPE_VX = 0.3;
-// |g.vx| must drop below this before another swipe can arm (one sweep = one step).
-const REARM_VX = 0.12;
-// Lockout after a committed swipe (ms) so velocity wobble can't double-cycle.
-const SWIPE_COOLDOWN_MS = 220;
+// Rising-edge pinch closure that toggles the focused shape. Lowered (vs the old 0.7) so the
+// non-dominant nav hand commits a toggle as easily as the exec hand applies an edit.
+const PINCH_TOGGLE = 0.6;
+
+// Focus-cursor pulse colour (the shape a pinch would toggle shimmers toward white).
+const WHITE = new THREE.Color(0xffffff);
 
 // One reusable Vec3 (plain object — landmarks are bare Vec3, not THREE.Vector3).
 function blankVec(): Vec3 {
@@ -30,9 +42,10 @@ export function createSelectMenu(): MenuModule {
     const label = MENU_META[MenuId.SELECT].label;
 
     let panel: Panel | null = null;
-    let armed = true;            // re-arm gate so one sweep steps once
-    let cooldownMs = 0;          // post-step lockout
-    let hasPrev = false;         // whether prevLandmarks holds a valid previous frame
+    let hasPrev = false;          // whether prevLandmarks holds a valid previous frame
+    let wasPinched = false;       // pinch rising-edge latch
+    let pulseMs = 0;              // focus-cursor pulse phase
+    const swipe = new SwipeDetector();
 
     // Reused previous-frame nav landmarks for the swipe velocity (no per-frame alloc).
     const prevLandmarks: Vec3[] = Array.from({ length: 21 }, blankVec);
@@ -47,6 +60,17 @@ export function createSelectMenu(): MenuModule {
         hasPrev = true;
     }
 
+    // Make the focused shape shimmer toward white so the user can see what a pinch will toggle —
+    // even when it is currently unselected (then we also lift its opacity above the ghost floor).
+    function applyFocusPulse(ctx: SceneContext): void {
+        const f = focusedShape(ctx);
+        if (!f) return;
+        const mat = f.material as THREE.MeshBasicMaterial;
+        const pulse = 0.5 + 0.5 * Math.sin(pulseMs / 180);
+        mat.opacity = Math.max(mat.opacity, 0.5 + 0.4 * pulse);
+        mat.color.lerp(WHITE, 0.22 + 0.32 * pulse);
+    }
+
     function paint(ctx: SceneContext): void {
         if (!panel) return;
         const total = shapeCount(ctx);
@@ -57,16 +81,26 @@ export function createSelectMenu(): MenuModule {
             );
             return;
         }
-        const idx = ctx.mesh ? allShapes(ctx).indexOf(ctx.mesh) : -1;
-        const single = total === 1;
+        const fIdx = Math.min(Math.max(ctx.focusIndex, 0), total - 1);
+        const focused = focusedShape(ctx);
+        const onSel = focused ? isSelected(ctx, focused) : false;
+        const sel = selectedCount(ctx);
         panel.setBody(
-            `<div style="display:flex;flex-direction:column;gap:12px">` +
+            `<div style="display:flex;flex-direction:column;gap:14px">` +
+                // big selection counter
                 `<div style="font-size:30px;font-weight:700;color:${accent};text-shadow:0 0 12px ${accent}">` +
-                    `${idx + 1} <span style="color:rgba(255,255,255,0.4);font-size:18px">/ ${total}</span></div>` +
+                    `${sel} <span style="color:rgba(255,255,255,0.45);font-size:16px">selected</span></div>` +
+                // focus cursor readout
+                `<div style="font-size:13px;color:rgba(255,255,255,0.8)">` +
+                    `cursor on shape <b>${fIdx + 1}</b> / ${total} — ` +
+                    (onSel
+                        ? `<span style="color:${accent}">in selection</span>`
+                        : `<span style="color:rgba(255,255,255,0.55)">not selected</span>`) +
+                `</div>` +
                 `<div style="font-size:11px;color:rgba(255,255,255,0.55);line-height:1.5">` +
-                    (single
-                        ? "Spawn more shapes to switch between them."
-                        : "Swipe your nav (left) index finger left / right to switch the selected shape.") +
+                    (total === 1
+                        ? "Pinch to select / deselect this shape. Spawn more shapes to build a multi-selection."
+                        : "Swipe your nav (left) index finger to move the cursor · pinch to add / remove the cursor's shape.") +
                 `</div>` +
             `</div>`,
         );
@@ -77,10 +111,13 @@ export function createSelectMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
-            armed = true;
-            cooldownMs = 0;
             hasPrev = false;
-            refreshHighlight(ctx); // make sure the current selection reads clearly
+            wasPinched = false;
+            pulseMs = 0;
+            swipe.reset();
+            // Park the focus cursor on the primary selection if there is one.
+            if (ctx.mesh) ctx.focusIndex = Math.max(0, allShapes(ctx).indexOf(ctx.mesh));
+            refreshHighlight(ctx);
             paint(ctx);
             panel.show();
         },
@@ -88,36 +125,51 @@ export function createSelectMenu(): MenuModule {
         // The nav (left) hand drives selection here; the exec hand is unused.
         update(ctx: SceneContext, _exec: HandPose | null, nav: HandPose | null, dt: number): void {
             if (!panel) return;
-            if (cooldownMs > 0) cooldownMs = Math.max(0, cooldownMs - dt);
+            pulseMs += dt;
+
+            // Re-assert the tier highlight each frame, then shimmer the focused shape on top.
+            refreshHighlight(ctx);
+            applyFocusPulse(ctx);
 
             if (!nav) {
                 hasPrev = false;
+                wasPinched = false;
+                swipe.reset();
                 return;
             }
 
             const g = classify(nav.landmarks, nav.world, hasPrev ? prevLandmarks : null);
-            const speed = Math.abs(g.vx);
-            if (armed && cooldownMs <= 0 && speed >= SWIPE_VX) {
-                cycleSelection(ctx, g.vx > 0 ? 1 : -1); // swipe right → next, left → previous
-                armed = false;
-                cooldownMs = SWIPE_COOLDOWN_MS;
+
+            // Swipe → move the focus cursor one shape (g.vx > 0 = rightward → next).
+            const dir = swipe.update(g.vx, dt);
+            if (dir !== 0) {
+                moveFocus(ctx, dir > 0 ? 1 : -1);
                 paint(ctx);
-            } else if (speed < REARM_VX) {
-                armed = true;
             }
+
+            // Pinch (rising edge) → toggle the focused shape in/out of the selection.
+            const pinchedNow = g.pinch > PINCH_TOGGLE;
+            if (pinchedNow && !wasPinched) {
+                const f = focusedShape(ctx);
+                if (f) {
+                    toggleSelect(ctx, f);
+                    paint(ctx);
+                }
+            }
+            wasPinched = pinchedNow;
 
             snapshot(nav.landmarks);
         },
 
-        exit(_ctx: SceneContext): void {
+        exit(ctx: SceneContext): void {
             if (panel) {
                 panel.hide();
                 panel.destroy();
                 panel = null;
             }
             hasPrev = false;
-            // Highlight is intentionally left applied so the selected shape stays legible
-            // while the next (edit) tool operates on it.
+            // Restore the plain tier highlight (drop the focus shimmer) for the next tool.
+            refreshHighlight(ctx);
         },
     };
 }

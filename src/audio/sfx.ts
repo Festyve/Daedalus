@@ -1,7 +1,7 @@
 // §1.2 — JARVIS sound design. WebAudio SFX synthesized procedurally (no wav files):
 //   ping  — soft harmonic tone on carousel select
 //   hum   — low hum on panel open
-//   ding  — crystalline bell on donut complete (morph t > 0.95)
+//   ding  — crystalline bell on torus complete (morph t > 0.95)
 //
 // The AudioContext is created lazily on first use and stays suspended until a user
 // gesture calls resume() — so there are never autoplay errors. Every node is short-
@@ -96,7 +96,7 @@ export const sfx = {
         tone(ctx, master, 220, now, 0.10, 0.36, 0.06, "sine");   // faint octave body
     },
 
-    /** Crystalline ding — donut complete. Bell-like inharmonic partials, long ring. */
+    /** Crystalline ding — torus complete. Bell-like inharmonic partials, long ring. */
     ding(): void {
         const ctx = ensureContext();
         if (!ctx || !master) return;

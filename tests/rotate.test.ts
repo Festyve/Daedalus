@@ -111,6 +111,8 @@ function makeContext(mesh: THREE.Mesh | null): SceneContext {
         mesh,
         bvh: null,
         extraMeshes: [],
+        selected: mesh ? [mesh] : [],
+        focusIndex: 0,
         morphT: 0,
         stage: mesh ? "SPHERE" : "EMPTY",
         viewMode: "scene",
@@ -353,6 +355,49 @@ describe("ROTATE quaternion math (§5.4)", () => {
             // first post-reacquire frame must not jump the mesh.
             menu.update(ctx, makePose(palmRotated(axis, 0.4), true), null, 16);
             expect(mesh.quaternion.angleTo(held)).toBeLessThan(1e-3);
+            menu.exit(ctx);
+        });
+    });
+
+    describe("group rotation — multiple selected shapes orbit the shared centroid", () => {
+        // Build a ctx with two selected meshes straddling the origin so the selection centroid is
+        // (0,0,0): the engage fingertip (image-center → origin) is then within ENGAGE_RADIUS.
+        function makeGroupCtx(a: THREE.Mesh, b: THREE.Mesh): SceneContext {
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+            camera.position.set(0, 0, 6);
+            camera.lookAt(0, 0, 0);
+            camera.updateMatrixWorld(true);
+            scene.add(a, b);
+            return {
+                scene, camera, renderer: {} as THREE.WebGLRenderer,
+                mesh: a, bvh: null, extraMeshes: [b], selected: [a, b], focusIndex: 0,
+                morphT: 0, stage: "SPHERE", viewMode: "scene", activeMenu: MenuId.ROTATE,
+                scratch: makeScratch(), interactionPlaneZ: 0,
+            };
+        }
+
+        it("rotates the whole selection rigidly about the centroid (spacing + centroid preserved)", () => {
+            const a = makeMesh(); a.position.set(-1, 0, 0); a.updateMatrixWorld(true);
+            const b = makeMesh(); b.position.set(1, 0, 0); b.updateMatrixWorld(true);
+            const ctx = makeGroupCtx(a, b);
+            const menu = createRotateMenu();
+            menu.enter(ctx);
+
+            const axis = new THREE.Vector3(0, 1, 0);
+            menu.update(ctx, makePose(palmRotated(axis, 0.0), true), null, 16); // engage at centroid
+            menu.update(ctx, makePose(palmRotated(axis, 0.7), true), null, 16); // sweep about Y
+
+            // Rigid body: the inter-shape distance is unchanged and the centroid stays at origin.
+            expect(a.position.distanceTo(b.position)).toBeCloseTo(2, 5);
+            const centroid = a.position.clone().add(b.position).multiplyScalar(0.5);
+            expect(centroid.length()).toBeLessThan(1e-5);
+            // Both shapes actually orbited (moved off their start positions) and spun.
+            expect(a.position.distanceTo(new THREE.Vector3(-1, 0, 0))).toBeGreaterThan(1e-2);
+            expect(b.position.distanceTo(new THREE.Vector3(1, 0, 0))).toBeGreaterThan(1e-2);
+            expect(isNormalized(a.quaternion)).toBe(true);
+            expect(isNormalized(b.quaternion)).toBe(true);
+            expect(a.quaternion.angleTo(new THREE.Quaternion())).toBeGreaterThan(1e-3);
             menu.exit(ctx);
         });
     });

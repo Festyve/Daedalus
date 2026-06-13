@@ -1,7 +1,7 @@
-// INTERACT tool (multi-shape CSG, §5 extended). Combines the SELECTED shape (A) with the
-// next shape (B) using a boolean operation — union, subtract, or intersect — and shows a
-// LIVE PREVIEW of the result. A nav-hand swipe cycles the operation (recomputing the
-// preview); an exec-hand pinch APPLIES it: A and B are removed and replaced by the single
+// INTERACT tool (multi-shape CSG, §5 extended). Combines the two SELECTED shapes (A, B) using a
+// boolean operation — union, subtract, or intersect — and shows a LIVE PREVIEW of the result.
+// The operation is picked from a 3D CAROUSEL (item 5: the same wheel component) that the nav
+// hand SWIPES; an exec-hand pinch APPLIES it: A and B are removed and replaced by the single
 // resulting shape, which becomes the new selection.
 //
 // CSG runs through three-bvh-csg (built on the same three-mesh-bvh already vendored). It
@@ -10,26 +10,34 @@
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
-import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
+import type { GestureState, HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
+import { Carousel, type CarouselItem } from "./carousel";
 import { classify } from "../gesture/detect";
 import { attachMesh } from "../render/scene";
-import { allShapes, shapeCount, removeShape, refreshHighlight } from "../core/shapes";
+import { selectedShapes, selectedCount, removeShape, selectOnly } from "../core/shapes";
 import { sfx } from "../audio/sfx";
 
-// Boolean operations offered, in swipe order.
-const OPS: ReadonlyArray<{ key: number; label: string; verb: string }> = [
-    { key: ADDITION, label: "UNION", verb: "merge" },
-    { key: SUBTRACTION, label: "SUBTRACT", verb: "carve B out of A" },
-    { key: INTERSECTION, label: "INTERSECT", verb: "keep the overlap" },
+// Boolean operations offered, in carousel order.
+const OPS: ReadonlyArray<{ key: number; label: string; verb: string; icon: string }> = [
+    { key: ADDITION, label: "UNION", verb: "merge", icon: "∪" },
+    { key: SUBTRACTION, label: "SUBTRACT", verb: "carve B out of A", icon: "⊖" },
+    { key: INTERSECTION, label: "INTERSECT", verb: "keep the overlap", icon: "∩" },
 ];
 
-// Swipe thresholds (units of S/frame) — mirror SELECT / the carousel for a consistent feel.
-const SWIPE_VX = 0.3;
-const REARM_VX = 0.12;
-const SWIPE_COOLDOWN_MS = 220;
+// Carousel item per op (id = OPS index as a string). All share the INTERACT accent.
+const OP_ITEMS: CarouselItem[] = OPS.map((op, i) => ({
+    id: String(i),
+    icon: op.icon,
+    label: op.label,
+    accent: MENU_META[MenuId.INTERACT].accent,
+}));
+
+// Where the op sub-carousel sits in camera-local space (top-center, like the tool wheel).
+const CAROUSEL_POS = new THREE.Vector3(0, 0.9, -3.2);
+
 const PINCH_ON = 0.7;
 
 function blankVec(): Vec3 {
@@ -41,11 +49,15 @@ export function createInteractMenu(): MenuModule {
     const label = MENU_META[MenuId.INTERACT].label;
 
     let panel: Panel | null = null;
+    let carousel: Carousel | null = null;
     let opIndex = 0;
-    let armed = true;
-    let cooldownMs = 0;
     let hasPrev = false;
     let wasPinched = false;
+
+    // Sanitized gesture handed to the op carousel: only vx (swipe) is live; pinch/name zeroed so
+    // the wheel never pinch-selects or fist-closes (apply is the exec pinch, handled below).
+    const wheel_gesture: GestureState = { name: "point", extended: 1, pinch: 0, spread: 0, vx: 0 };
+    const FAR_TIP = new THREE.Vector3(10, 10, 0);
 
     // The two operands captured on enter, the live preview mesh, and a status message.
     let opA: THREE.Mesh | null = null;
@@ -158,11 +170,11 @@ export function createInteractMenu(): MenuModule {
 
     function paint(ctx: SceneContext): void {
         if (!panel) return;
-        if (shapeCount(ctx) < 2) {
+        if (selectedCount(ctx) < 2) {
             panel.setBody(
                 `<div style="font-size:12px;color:rgba(255,255,255,0.7);line-height:1.6">` +
-                `INTERACT needs <b>two shapes</b>. Add another shape, then come back to ` +
-                `combine it with the selected one.</div>`,
+                `INTERACT needs <b>two selected shapes</b>. Use SELECT to pinch a second shape ` +
+                `into the selection, then come back to combine them.</div>`,
             );
             return;
         }
@@ -186,16 +198,19 @@ export function createInteractMenu(): MenuModule {
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
             opIndex = 0;
-            armed = true;
-            cooldownMs = 0;
             hasPrev = false;
             wasPinched = false;
             status = "";
-            const shapes = allShapes(ctx);
-            if (shapes.length >= 2) {
-                opA = shapes[0]; // the selected shape
-                opB = shapes[1]; // the next shape
+            const sel = selectedShapes(ctx);
+            if (sel.length >= 2) {
+                opA = sel[0]; // primary selected
+                opB = sel[1]; // second selected
                 rebuildPreview(ctx);
+                // Op picker carousel (only meaningful with two operands).
+                carousel = new Carousel(OP_ITEMS);
+                carousel.object.position.copy(CAROUSEL_POS);
+                ctx.camera.add(carousel.object);
+                carousel.open(FAR_TIP);
             } else {
                 opA = null;
                 opB = null;
@@ -206,25 +221,25 @@ export function createInteractMenu(): MenuModule {
 
         update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
             if (!panel) return;
-            if (cooldownMs > 0) cooldownMs = Math.max(0, cooldownMs - dt);
-            if (!opA || !opB) return; // nothing to combine
+            if (!opA || !opB || !carousel) return; // nothing to combine
+            const dtSec = dt / 1000;
 
-            // Nav swipe cycles the operation (rebuilding the preview).
+            // Nav swipe spins the op carousel; when the centered op changes, rebuild the preview.
             if (nav) {
                 const g = classify(nav.landmarks, nav.world, hasPrev ? prevLandmarks : null);
-                const speed = Math.abs(g.vx);
-                if (armed && cooldownMs <= 0 && speed >= SWIPE_VX) {
-                    opIndex = (opIndex + (g.vx > 0 ? 1 : -1) + OPS.length) % OPS.length;
-                    armed = false;
-                    cooldownMs = SWIPE_COOLDOWN_MS;
+                wheel_gesture.vx = g.vx;
+                carousel.update(FAR_TIP, wheel_gesture, dtSec);
+                const centered = Number(carousel.current);
+                if (centered !== opIndex) {
+                    opIndex = centered;
                     rebuildPreview(ctx);
                     paint(ctx);
-                } else if (speed < REARM_VX) {
-                    armed = true;
                 }
                 snapshot(nav.landmarks);
             } else {
                 hasPrev = false;
+                wheel_gesture.vx = 0;
+                carousel.update(FAR_TIP, wheel_gesture, dtSec); // keep the fade/idle animation alive
             }
 
             // Exec pinch applies the operation: A and B become the single result shape.
@@ -239,9 +254,15 @@ export function createInteractMenu(): MenuModule {
                     if (geo && a && b) {
                         removeShape(ctx, a);
                         removeShape(ctx, b);
-                        attachMesh(ctx, geo); // result becomes ctx.mesh (standard wireframe material)
-                        refreshHighlight(ctx);
+                        const result = attachMesh(ctx, geo); // result becomes ctx.mesh
+                        selectOnly(ctx, result);             // and the sole selection (count = 1)
                         sfx.ding();
+                    }
+                    // The operands are gone — tear down the op wheel until the user re-enters.
+                    if (carousel) {
+                        ctx.camera.remove(carousel.object);
+                        carousel.dispose();
+                        carousel = null;
                     }
                     paint(ctx);
                 }
@@ -251,13 +272,18 @@ export function createInteractMenu(): MenuModule {
             }
         },
 
-        exit(_ctx: SceneContext): void {
+        exit(ctx: SceneContext): void {
             // Cancel any un-applied preview and restore the two operands.
             clearPreview(false);
             if (opA) opA.visible = true;
             if (opB) opB.visible = true;
             opA = null;
             opB = null;
+            if (carousel) {
+                ctx.camera.remove(carousel.object);
+                carousel.dispose();
+                carousel = null;
+            }
             if (panel) {
                 panel.hide();
                 panel.destroy();

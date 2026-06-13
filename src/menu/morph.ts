@@ -1,4 +1,4 @@
-// §5.5 + §7.2 — MORPH tool: the play-doh gesture (sphere → donut).
+// §5.5 + §7.2 — MORPH tool: the play-doh gesture (sphere → torus).
 //
 // Both hands curl into a grab pose around the object and jiggle. Direction does not
 // matter — any random motion advances the morph. Each grabbed frame we measure the
@@ -8,12 +8,12 @@
 //     t      = clamp(travel / FULL_MOTION, 0, 1)
 //     morphTargetInfluences[0] = smoothstep(t)
 //
-// The morph is monotonic: motion only adds, so once jiggled to a donut it stays there
+// The morph is monotonic: motion only adds, so once jiggled to a torus it stays there
 // (releasing the grab just parks progress until the next grab resumes). The object
 // never moves: only its blend shape changes.
 //
 // When t > 0.95 is sustained for > 500 ms, a one-shot ding fires and the panel label
-// snaps to `// DONUT`. Dropping back below the threshold re-arms both.
+// snaps to `// TORUS`. Dropping back below the threshold re-arms both.
 //
 // Real brush deformation runs ADDITIVELY on top of the morph: when both hands grab
 // (fist pose) the SculptEngine applies an Inflate stroke at the hands' midpoint. Because
@@ -33,13 +33,13 @@ import { sfx } from "../audio/sfx";
 // MediaPipe wrist landmark index (§3). The morph is driven by the two wrists.
 const WRIST = 0;
 
-// Donut-complete threshold + the dwell it must be sustained for before the milestone
+// Torus-complete threshold + the dwell it must be sustained for before the milestone
 // fires (SPEC §5.5: t > 0.95 for > 500 ms).
-const DONUT_T = 0.95;
-const DONUT_DWELL_MS = 500;
+const TORUS_T = 0.95;
+const TORUS_DWELL_MS = 500;
 
 // Total wrist travel (world units, summed across both hands) that maps to a full
-// sphere→donut morph. The icosphere is ~unit radius, so this is a few hand-scales of
+// sphere→torus morph. The icosphere is ~unit radius, so this is a few hand-scales of
 // jiggling — a modest random shake reaches t=1 quickly.
 const FULL_MOTION = 3.0;
 
@@ -53,7 +53,7 @@ const BRUSH_RADIUS = 0.45;
 const INFLATE_STRENGTH = 0.012 * BRUSH_RADIUS;
 
 // smoothstep(0..1) — quintic "smootherstep" ease applied to the linear angle ratio
-// so the donut emerges gently at the ends and crisply through the middle (SPEC §5.5).
+// so the torus emerges gently at the ends and crisply through the middle (SPEC §5.5).
 // Quintic (6t⁵−15t⁴+10t³) is C2: both first AND second derivatives vanish at t=0 and
 // t=1, so the blend has zero acceleration at the seams — the morph slides in and out
 // with no linear kink where motion starts or finishes (SPEC §14.4: eased, nothing
@@ -82,7 +82,7 @@ class MorphMenu implements MenuModule {
     private haveSample = false;
     private grabbing = false;
 
-    // Donut milestone dwell tracking + one-shot latch.
+    // Torus milestone dwell tracking + one-shot latch.
     private dwellMs = 0;
     private dingFired = false;
 
@@ -99,7 +99,7 @@ class MorphMenu implements MenuModule {
         this.grabbing = false;
         this.dwellMs = 0;
         // Don't re-ding if we re-enter already past the gate.
-        this.dingFired = ctx.morphT > DONUT_T;
+        this.dingFired = ctx.morphT > TORUS_T;
 
         this.card.show();
         this.paint(ctx);
@@ -173,13 +173,13 @@ class MorphMenu implements MenuModule {
         this.haveSample = true;
         this.grabbing = true;
 
-        // Map cumulative travel → t. Monotonic: travel only grows, so the donut is
+        // Map cumulative travel → t. Monotonic: travel only grows, so the torus is
         // reached fast and stays put.
         const t = Math.min(1, Math.max(0, this.travel / FULL_MOTION));
         this.applyMorph(ctx, t, dt);
     }
 
-    // Write t into the context and the blend shape, and fire the donut milestone once
+    // Write t into the context and the blend shape, and fire the torus milestone once
     // t > 0.95 has been sustained for > 500 ms. smoothstep shapes the influence; the raw
     // t (and its travel) stay linear (SPEC §5.5).
     private applyMorph(ctx: SceneContext, t: number, dt: number): void {
@@ -188,11 +188,11 @@ class MorphMenu implements MenuModule {
         const influences = ctx.mesh!.morphTargetInfluences;
         if (influences && influences.length > 0) influences[0] = smoothstep(t);
 
-        if (t > DONUT_T) {
+        if (t > TORUS_T) {
             this.dwellMs += dt;
-            if (!this.dingFired && this.dwellMs >= DONUT_DWELL_MS) {
+            if (!this.dingFired && this.dwellMs >= TORUS_DWELL_MS) {
                 this.dingFired = true;
-                ctx.stage = "DONUT"; // Director milestone (also derivable from ctx.morphT).
+                ctx.stage = "TORUS"; // Director milestone (also derivable from ctx.morphT).
                 sfx.ding();
             }
         } else {
@@ -269,17 +269,17 @@ class MorphMenu implements MenuModule {
     private paint(ctx: SceneContext): void {
         const accent = MENU_META[MenuId.MORPH].accent;
         const t = ctx.morphT;
-        const isDonut = this.dingFired;
+        const isTorus = this.dingFired;
         const pct = Math.round(t * 100);
-        const label = isDonut ? "// DONUT" : "// SPHERE";
-        const labelColor = isDonut ? accent : "rgba(255,255,255,0.45)";
+        const label = isTorus ? "// TORUS" : "// SPHERE";
+        const labelColor = isTorus ? accent : "rgba(255,255,255,0.45)";
         const stateColor = this.grabbing ? accent : "rgba(255,255,255,0.4)";
         const stateText = this.grabbing ? "MORPHING" : "IDLE";
 
         this.card.setBody(
             `<div style="display:flex;flex-direction:column;gap:14px">` +
                 `<div style="font-size:13px;color:${stateColor};letter-spacing:0.08em">${stateText}</div>` +
-                `<div style="font-size:26px;font-weight:700;color:${t > DONUT_T ? accent : "#fff"}">t = ${t.toFixed(2)}</div>` +
+                `<div style="font-size:26px;font-weight:700;color:${t > TORUS_T ? accent : "#fff"}">t = ${t.toFixed(2)}</div>` +
                 `<div style="height:14px;border:0.5px solid rgba(255,255,255,0.35);border-radius:7px;overflow:hidden">` +
                     `<div style="height:100%;width:${pct}%;background:${accent};box-shadow:0 0 10px ${accent}"></div>` +
                 `</div>` +

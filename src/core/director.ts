@@ -1,16 +1,16 @@
 // §13 — the Director: freeplay/safety flow controller.
 // Tracks the demo arc stage and advances it forward-only from observable milestones.
-// Stages: EMPTY → SPHERE → DONUT → DECORATED (monotonic; never moves backward).
+// Stages: EMPTY → SPHERE → TORUS → DECORATED (monotonic; never moves backward).
 //   - freeplay (default): real sculptor; milestones drive progression.
 //   - safety: tracking failed on stage; the operator steps through authored
 //     snapshots (§13.2) by keypress via advanceSafety().
 import type { DirectorMode, Stage } from "../types";
 
 // Forward-only stage order. The world begins EMPTY; ADD SHAPES yields the first
-// mesh (SPHERE), MORPH yields DONUT, DECORATE yields DECORATED.
-const STAGE_ORDER: Stage[] = ["EMPTY", "SPHERE", "DONUT", "DECORATED"];
+// mesh (SPHERE), MORPH yields TORUS, DECORATE yields DECORATED.
+const STAGE_ORDER: Stage[] = ["EMPTY", "SPHERE", "TORUS", "DECORATED"];
 
-// morphT past this counts the sphere as fully donut'd (mirrors menu/morph.ts).
+// morphT past this counts the sphere as fully morphed to a torus (mirrors menu/morph.ts).
 const MORPH_DONE = 0.95;
 
 // Authored safety snapshots (§13.2), one per stage, in forward order. In safety
@@ -18,7 +18,7 @@ const MORPH_DONE = 0.95;
 export const SAFETY_SNAPSHOTS: Record<Stage, string> = {
     EMPTY: "snapshot_empty.json",
     SPHERE: "snapshot_sphere.json",
-    DONUT: "snapshot_donut.json",
+    TORUS: "snapshot_torus.json",
     DECORATED: "snapshot_decorated.json",
 };
 
@@ -64,9 +64,9 @@ export class Director {
         this.advanceTo("SPHERE");
     }
 
-    /** MORPH progress: SPHERE → DONUT once the donut blend completes (t > 0.95). */
+    /** MORPH progress: SPHERE → TORUS once the torus blend completes (t > 0.95). */
     onMorph(t: number): void {
-        if (t > MORPH_DONE) this.advanceTo("DONUT");
+        if (t > MORPH_DONE) this.advanceTo("TORUS");
     }
 
     /** DECORATE applied icing/sprinkles: → DECORATED. */
