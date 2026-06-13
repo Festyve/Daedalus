@@ -119,7 +119,6 @@ const WASD_SPEED = 0.6;
 interface DaedalusGlobal {
     selectMenu?(id: string | null): void;
     nudgeBrushRadius?(delta: number): void;
-    setBrushRadius?(r: number): void;
 }
 
 // Tool order for number keys 1-6 (matches MENU_ORDER in types.ts; kept as plain

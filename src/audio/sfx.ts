@@ -70,7 +70,7 @@ function tone(
 
 /** Resume a suspended context (always safe to call); no-op until a gesture lands. */
 function resumeContext(ctx: AudioContext): void {
-    if (ctx.state === "suspended") void ctx.resume();
+    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
 }
 
 export const sfx = {

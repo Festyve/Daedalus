@@ -33,6 +33,14 @@ function dist(a: Vec3, b: Vec3): number {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+/** Squared Euclidean distance — avoids sqrt when only comparing magnitudes. */
+function distSq(a: Vec3, b: Vec3): number {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+}
+
 /** Hand scale S = ‖wrist(0) − middleMCP(9)‖ (§3.5). Floored to avoid divide-by-zero. */
 export function handScale(world: Vec3[]): number {
     return Math.max(dist(world[WRIST], world[MIDDLE_MCP]), EPS);
@@ -53,7 +61,7 @@ export function pinchAmount(lm: Vec3[], s: number): number {
 /** Pinch: ‖tip4−tip8‖/S < 0.30 (§12). */
 export function isPinching(lm: Vec3[], s: number): boolean {
     const denom = Math.max(s, EPS);
-    return dist(lm[THUMB_TIP], lm[INDEX_TIP]) / denom < PINCH_RATIO;
+    return distSq(lm[THUMB_TIP], lm[INDEX_TIP]) < (PINCH_RATIO * denom) * (PINCH_RATIO * denom);
 }
 
 /**
@@ -63,7 +71,7 @@ export function isPinching(lm: Vec3[], s: number): boolean {
  */
 export function fingerExtended(lm: Vec3[], tipIdx: number, pipIdx: number): boolean {
     const wrist = lm[WRIST];
-    return dist(lm[tipIdx], wrist) > dist(lm[pipIdx], wrist);
+    return distSq(lm[tipIdx], wrist) > distSq(lm[pipIdx], wrist);
 }
 
 /**
@@ -86,7 +94,7 @@ export function isGun(lm: Vec3[], s: number): boolean {
     const pinkyCurled = !fingerExtended(lm, PINKY_TIP, PINKY_PIP);
     // Thumb "up": tip stands clear of the wrist–index span, > THUMB_UP_RATIO·S out.
     const denom = Math.max(s, EPS);
-    const thumbUp = dist(lm[THUMB_TIP], lm[WRIST]) / denom > THUMB_UP_RATIO;
+    const thumbUp = distSq(lm[THUMB_TIP], lm[WRIST]) > (THUMB_UP_RATIO * denom) * (THUMB_UP_RATIO * denom);
     return indexExtended && thumbUp && ringCurled && pinkyCurled;
 }
 
@@ -96,7 +104,7 @@ export function isFist(lm: Vec3[], s: number): boolean {
         if (fingerExtended(lm, FINGER_TIPS[i], FINGER_PIPS[i])) return false;
     }
     const denom = Math.max(s, EPS);
-    return dist(lm[THUMB_TIP], lm[INDEX_TIP]) / denom > FIST_SEPARATION;
+    return distSq(lm[THUMB_TIP], lm[INDEX_TIP]) > (FIST_SEPARATION * denom) * (FIST_SEPARATION * denom);
 }
 
 /** Open palm: all five fingers extended AND spread > 0.4·S (§12). */

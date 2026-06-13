@@ -58,7 +58,7 @@ export class DevOverlay {
     }
 
     // Per-frame refresh. No-op when disabled. Never throws on null hands.
-    update(s: { frame: PoseFrame; gesture: string; tool: MenuId | null; morphT: number; fps: number }): void {
+    update(s: { frame: PoseFrame; gesture: string; tool: MenuId | null; morphT: number; fps: number; brush?: number }): void {
         if (!this.enabled || !this.ctx2d || !this.canvas || !this.readout) return;
 
         const ctx = this.ctx2d;
@@ -81,6 +81,7 @@ export class DevOverlay {
             row("gesture", s.gesture || "none") +
             row("tool", tool_label) +
             row("morph t", `${s.morphT.toFixed(2)} · ${morph_pct}`) +
+            (s.brush !== undefined ? row("brush", `${s.brush.toFixed(2)}×`) : "") +
             row("fps", String(Math.round(s.fps)));
     }
 

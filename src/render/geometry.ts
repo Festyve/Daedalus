@@ -22,6 +22,15 @@ import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 const DEFAULT_DETAIL = 44;
 const DEFAULT_RADIUS = 1.0;
 
+// Low-poly subdivision for SPAWNED shapes (§9.2 minimal wireframe look). Kept far below
+// makeIcosphere's DEFAULT_DETAIL so the wireframe reads as a clean triangulated mesh
+// rather than a dense blob. Sphere detail 12 → 20·13² = 3380 tris; cube 6 seg/side →
+// 6·2·6² = 432 tris; tetra detail 3 → 4·4² = 64 tris. (makeIcosphere is left untouched so
+// the existing unit tests that build their own spheres keep their vertex counts.)
+const SHAPE_SPHERE_DETAIL = 12;
+const SHAPE_CUBE_SEGMENTS = 6;
+const SHAPE_TETRA_DETAIL = 3;
+
 // Donut morph defaults (SPEC §7.1).
 const DONUT_R = 1.0;   // major radius (ring center → tube center)
 const DONUT_r = 0.42;  // minor radius (tube)
@@ -45,7 +54,15 @@ export function makeIcosphere(radius: number = DEFAULT_RADIUS, detail: number = 
 
     const vertex_count = geo.attributes.position.count;
     const color = new Float32Array(vertex_count * 3).fill(1); // white icing base
-    geo.setAttribute("color", new THREE.BufferAttribute(color, 3));
+    const color_attr = new THREE.BufferAttribute(color, 3);
+    color_attr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("color", color_attr);
+
+    // These attributes are mutated in place every frame (sculpt loop rewrites
+    // position/normal arrays, icing rewrites color spans), so hint DYNAMIC_DRAW
+    // for repeated re-upload instead of the default STATIC_DRAW.
+    (geo.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (geo.attributes.normal as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
 
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
@@ -115,13 +132,13 @@ export function makeShape(kind: "cube" | "sphere" | "tetra"): THREE.BufferGeomet
     let raw: THREE.BufferGeometry;
     switch (kind) {
         case "cube":
-            raw = new THREE.BoxGeometry(1.4, 1.4, 1.4, 24, 24, 24);
+            raw = new THREE.BoxGeometry(1.4, 1.4, 1.4, SHAPE_CUBE_SEGMENTS, SHAPE_CUBE_SEGMENTS, SHAPE_CUBE_SEGMENTS);
             break;
         case "sphere":
-            raw = new THREE.IcosahedronGeometry(DEFAULT_RADIUS, DEFAULT_DETAIL);
+            raw = new THREE.IcosahedronGeometry(DEFAULT_RADIUS, SHAPE_SPHERE_DETAIL);
             break;
         case "tetra":
-            raw = new THREE.TetrahedronGeometry(1.2, 5);
+            raw = new THREE.TetrahedronGeometry(1.2, SHAPE_TETRA_DETAIL);
             break;
     }
 
@@ -131,7 +148,15 @@ export function makeShape(kind: "cube" | "sphere" | "tetra"): THREE.BufferGeomet
     geo.computeVertexNormals();
 
     const vertex_count = geo.attributes.position.count;
-    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(vertex_count * 3).fill(1), 3));
+    const color_attr = new THREE.BufferAttribute(new Float32Array(vertex_count * 3).fill(1), 3);
+    color_attr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("color", color_attr);
+
+    // These attributes are mutated in place every frame (sculpt loop rewrites
+    // position/normal arrays, icing rewrites color spans), so hint DYNAMIC_DRAW
+    // for repeated re-upload instead of the default STATIC_DRAW.
+    (geo.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (geo.attributes.normal as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
 
     geo.computeBoundingSphere();
     geo.computeBoundingBox();

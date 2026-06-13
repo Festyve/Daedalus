@@ -28,11 +28,14 @@ import { startWebcam } from "./capture/webcam";
 import { PoseStore } from "./core/store";
 import { startLoop } from "./core/loop";
 import { Director } from "./core/director";
+import { QualityGuard } from "./core/quality";
+import { SnapshotPlayer } from "./core/snapshots";
 
 import { makeContext } from "./render/scene";
 import { makeComposer } from "./render/post";
 import { drawOverlay } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
+import { AutoRotate } from "./render/autoRotate";
 
 import { Carousel } from "./menu/carousel";
 import { MenuRouter } from "./menu/menuRouter";
@@ -99,6 +102,10 @@ carousel.onSelect = (id) => {
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
 const { composer } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
 
+// Idle auto-spin driver (§9.6): slowly rotates the object only while the user is not
+// focused on it, easing to a stop the moment they engage a tool or raise a hand.
+const autoRotate = new AutoRotate();
+
 // HUD chrome (§14.3) + the always-on ❓ gesture guide (§4.4) + the mock dev overlay.
 const chrome = new Chrome();
 const instructions = new InstructionsPopout();
@@ -152,6 +159,33 @@ const viewMode = new ViewModeController(ctx.scene, () => video);
 let source: InputSource | null = null;
 let video: HTMLVideoElement | null = null;
 
+// ---- auto quality fallback (§11.2) + tracking failure handling (§3.6) -------
+let degradedSingleHand = false;     // §11.2 fallback latched on (drop to single hand)
+let liveConfidenceGating = false;   // §3.6 low-confidence brush freeze (live source only)
+const snapshots = new SnapshotPlayer(); // §13.2 safety-mode scene restore
+
+// Fire once when FPS/confidence stay low: single-hand, heavier smoothing, quiet HUD note
+// (webcam is already 720p per §11.1, so no resolution change). Latched in QualityGuard.
+function onQualityDrop(): void {
+    degradedSingleHand = true;
+    if (source instanceof LiveInputSource) source.applyQualityFallback();
+    chrome.setNote("performance mode · single hand · extra smoothing");
+}
+const quality = new QualityGuard(onQualityDrop);
+
+// §3.6 no-hands hold: keep the last pose for ~150ms, then fade the skeleton — never snap.
+const HOLD_MS = 150;
+const FREEZE_CONF = 0.5;
+let heldFrame: PoseFrame | null = null;
+let msSinceHands = 0;
+
+// Best tracking confidence among present hands, or null when no hand is in frame (an
+// empty frame is §3.6 territory, not a §11.2 low-confidence quality drop).
+function confidenceOf(left: HandPose | null, right: HandPose | null): number | null {
+    if (!left && !right) return null;
+    return Math.max(left ? left.confidence : 0, right ? right.confidence : 0);
+}
+
 async function initInput(): Promise<void> {
     try {
         if (IS_MOCK) {
@@ -163,6 +197,7 @@ async function initInput(): Promise<void> {
         video = await startWebcam();
         source = new LiveInputSource(video);
         await source.init();
+        liveConfidenceGating = true; // §3.6 freeze applies only to real (noisy) tracking
         hideBanner();
     } catch (err) {
         const e = err as Error;
@@ -224,13 +259,19 @@ function driveCarousel(nav: HandPose | null, dtSeconds: number): void {
 const NAV_LABEL: Handedness = "Left";
 const EXEC_LABEL: Handedness = "Right";
 
+// Single-hand when forced by ?singlehand=1 OR latched by the §11.2 quality fallback.
+function singleHand(): boolean {
+    return SINGLE_HAND || degradedSingleHand;
+}
 function navHand(frame: PoseFrame): HandPose | null {
-    if (SINGLE_HAND) return frame.Right ?? frame.Left;
+    if (singleHand()) return frame.Right ?? frame.Left;
     return frame[NAV_LABEL];
 }
 function execHand(frame: PoseFrame): HandPose | null {
-    if (SINGLE_HAND) return frame.Right ?? frame.Left;
-    return frame[EXEC_LABEL];
+    const h = singleHand() ? (frame.Right ?? frame.Left) : frame[EXEC_LABEL];
+    // §3.6: a low-confidence live hand freezes brush engagement (never sculpt on noise).
+    if (liveConfidenceGating && h && h.confidence < FREEZE_CONF) return null;
+    return h;
 }
 
 // ---- director milestones pulled from observable ctx (§13) -------------------
@@ -279,6 +320,26 @@ startLoop((dtMs) => {
         frame = store.get() ?? EMPTY_FRAME;
     }
 
+    // §11.2 quality sample reads the LIVE detection (before the §3.6 hold) so a genuine
+    // no-hands gap counts as "no tracking", not "low confidence".
+    const liveConf = confidenceOf(frame.Left, frame.Right);
+
+    // §3.6 no-hands hold: hold the last good pose ~150ms (fading the skeleton), then drop
+    // to empty — so a brief tracking dropout never snaps the pose/brush off.
+    let skeletonAlpha = 1;
+    if (frame.Left !== null || frame.Right !== null) {
+        heldFrame = frame;
+        msSinceHands = 0;
+    } else {
+        msSinceHands += dtMs;
+        if (heldFrame && msSinceHands <= HOLD_MS) {
+            frame = heldFrame;
+            skeletonAlpha = 1 - msSinceHands / HOLD_MS;
+        } else {
+            heldFrame = null;
+        }
+    }
+
     const nav = navHand(frame);
     const exec = execHand(frame);
 
@@ -294,6 +355,12 @@ startLoop((dtMs) => {
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
 
+    // 4b) Idle auto-spin (§9.6): rotate the object only when the user is NOT focused on it
+    //     — no tool active, the carousel closed, and no hand in frame — and ease it to a
+    //     stop the instant any of those engages. Rotates the mesh, never the camera (§9.6).
+    const objectFocused = router.activeId !== null || carousel.isOpen || frame.Left !== null || frame.Right !== null;
+    autoRotate.update(ctx.mesh, !objectFocused, dtMs);
+
     // 5) Render: fullscreen webcam + skeleton behind the transparent model (AR),
     //    a clean model-on-black mirror in the corner, then the HUD (NEVER css3d).
     composer.render();
@@ -304,7 +371,20 @@ startLoop((dtMs) => {
         cornerCtx.fillRect(0, 0, cornerCanvas.width, cornerCanvas.height);
         cornerCtx.drawImage(ctx.renderer.domElement, 0, 0, cornerCanvas.width, cornerCanvas.height);
     }
-    if (previewCtx && video) drawOverlay(previewCtx, video, frame.Left, frame.Right);
+    // §0.7: AR mode shows the live webcam + (held/faded) skeleton; scene mode is pure
+    // #000814 with no camera feed — the model floats on the dark studio backdrop.
+    if (previewCtx && previewCanvas) {
+        if (viewMode.mode === "ar" && video) {
+            drawOverlay(previewCtx, video, frame.Left, frame.Right, skeletonAlpha);
+        } else {
+            previewCtx.fillStyle = "#000814"; // §14.1 bg
+            previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+        }
+    }
+
+    // §11.2 auto quality fallback: watch FPS + tracking confidence; degrade once if low.
+    const fps = dtMs > 0 ? 1000 / dtMs : 0;
+    quality.sample(fps, liveConf);
 
     chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });
     devOverlay.update({
@@ -312,7 +392,8 @@ startLoop((dtMs) => {
         gesture: navGestureName,
         tool: router.activeId,
         morphT: ctx.morphT,
-        fps: dtMs > 0 ? 1000 / dtMs : 0,
+        brush: ctx.brushRadius,
+        fps,
     });
 
     chrome.end();
@@ -332,8 +413,12 @@ if (PARAM_TOOL) selectByName(PARAM_TOOL);
 
 // ---- keyboard fallbacks (stage safety + quick tool select) -----------------
 addEventListener("keydown", (e) => {
-    if (e.key === " ") { director.advanceSafety(); return; }
+    // §13: safety mode — advance one authored stage and rebuild the real scene to it.
+    if (e.key === " ") { director.advanceSafety(); snapshots.apply(ctx, director.stage); return; }
     if (e.key === "Escape") { router.select(ctx, null); return; }
+    // §10.2 brush radius (keyboard parity with the mock [ ] keys).
+    if (e.key === "[") { nudgeBrushRadius(-1); return; }
+    if (e.key === "]") { nudgeBrushRadius(1); return; }
     const n = Number(e.key);
     if (Number.isInteger(n) && n >= 1 && n <= MENU_ORDER.length) {
         router.select(ctx, MENU_ORDER[n - 1]);
@@ -353,6 +438,17 @@ function setMorphT(t: number): void {
     director.onMorph(v);
 }
 
+// §10.2 [ / ] brush radius. ctx.brushRadius is a multiplier (1 = default) read by the
+// MORPH additive brush and the DECORATE smear. Stepped + clamped; driven by the mock
+// input and the keyboard.
+const BRUSH_MIN = 0.3;
+const BRUSH_MAX = 3.0;
+const BRUSH_STEP = 0.15;
+function nudgeBrushRadius(dir: number): void {
+    const next = ctx.brushRadius + Math.sign(dir) * BRUSH_STEP;
+    ctx.brushRadius = Math.min(BRUSH_MAX, Math.max(BRUSH_MIN, next));
+}
+
 interface DaedalusDebug {
     ctx: SceneContext;
     director: Director;
@@ -361,6 +457,7 @@ interface DaedalusDebug {
     viewMode: ViewModeController;
     selectMenu(id: keyof typeof MenuId | string | null): void;
     setMorphT(t: number): void;
+    nudgeBrushRadius(dir: number): void;
     injectPose(frame: PoseFrame | null): void;
     clearPose(): void;
     toggleView(): void;
@@ -379,10 +476,11 @@ const debug: DaedalusDebug = {
         selectByName(id === null ? null : String(id));
     },
     setMorphT,
+    nudgeBrushRadius,
     injectPose(frame) { injected = frame; },
     clearPose() { injected = null; },
     toggleView() { viewMode.toggle(); },
-    advance() { director.advanceSafety(); },
+    advance() { director.advanceSafety(); snapshots.apply(ctx, director.stage); },
     handScaleOf(pose) { return handScale(pose.world); },
     MenuId,
 };

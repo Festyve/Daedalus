@@ -226,7 +226,8 @@ class MorphMenu implements MenuModule {
         mesh.updateWorldMatrix(true, false);
         mesh.worldToLocal(mid);
 
-        engine.applyBrush(BrushVerb.Inflate, mid, BRUSH_RADIUS, INFLATE_STRENGTH, ctx.scratch);
+        // ctx.brushRadius (§10.2 [ ]) scales the additive brush footprint; default 1.
+        engine.applyBrush(BrushVerb.Inflate, mid, BRUSH_RADIUS * ctx.brushRadius, INFLATE_STRENGTH, ctx.scratch);
     }
 
     // Lazily build the sculpt engine over the active mesh and publish its BVH.

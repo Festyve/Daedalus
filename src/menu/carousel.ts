@@ -43,7 +43,7 @@ const HIDDEN_OPACITY = 0.0;    // further tools: not rendered
 const SNAP_MS = 100;           // ease-out slide between tools
 const FADE_MS = 80;            // open/close fade (selection + fist dismiss)
 const PULSE_PERIOD_MS = 2000;  // ambient idle pulse: slow 2s sine on emission
-const PULSE_DEPTH = 0.18;      // peak-to-trough amplitude of the idle pulse
+const PULSE_DEPTH = 0;         // flat minimal UI: idle "breathing" pulse disabled
 const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow ramps in
 
 // ---- Flick gesture (§4.1) ----
@@ -58,8 +58,8 @@ const RING_PX = 256;
 
 // ---- Centered-tool glow ring (§4.1 emphasis; §14.4 eased, never bouncy) ----
 const RING_SIZE = ITEM_SIZE * 1.9;   // ring plane edge length (larger than the active tile)
-const RING_BASE = 0.55;              // resting ring opacity at full fade, glow=0
-const RING_GLOW = 0.45;              // extra opacity added as proximity glow ramps to 1
+const RING_BASE = 0;                 // flat minimal UI: glow ring disabled (opacity stays 0)
+const RING_GLOW = 0;                 // (ring object kept so the code path / dispose stay intact)
 
 // One rendered tool tile: a textured plane (icon glyph baked once) plus its own material
 // so opacity + emissive pulse can be driven independently per item.
@@ -167,8 +167,6 @@ function drawLabel(canvas: HTMLCanvasElement, icon: string, label: string, accen
     g.textBaseline = "middle";
     g.font = `bold ${Math.round(LABEL_PX_H * 0.42)}px ${FONT}`;
     const text = `${icon}  ${label}`;
-    g.shadowColor = accent;
-    g.shadowBlur = LABEL_PX_H * 0.18;
     g.fillText(text, LABEL_PX_W / 2, LABEL_PX_H / 2);
 }
 
@@ -313,8 +311,8 @@ export class Carousel {
     }
 
     /** Materialize the carousel at the navigation fingertip (top-center). Fades in over
-     *  120ms (open animation handled as part of the fade ramp). atTip seeds the proximity
-     *  glow origin but does not move the screen-fixed group. */
+     *  120ms (open animation handled as part of the fade ramp). atTip is currently unused;
+     *  the group is screen-fixed and the proximity glow is driven entirely by update(). */
     open(atTip: THREE.Vector3): void {
         if (this.isOpen) return;
         this.isOpen = true;
@@ -324,7 +322,6 @@ export class Carousel {
         this.pinchLatched = false;
         this.flickArmed = true;
         this.glow = 0;
-        this.tmpLocal.copy(atTip); // touch atTip so callers can rely on it being read
         // Snap instantly to the current active tile on open (no slide from a stale offset).
         this.layoutTiles();
     }
