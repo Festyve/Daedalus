@@ -42,15 +42,15 @@ export interface CarouselItem {
 // ---- Layout (group-local units; tuned so a camera-parented group reads top-center) ----
 const ITEM_SPACING = 0.42;     // horizontal gap between adjacent tool centers
 const ITEM_SIZE = 0.34;        // edge length of each square tool tile
-const LABEL_W = 1.4;           // width of the name+icon label plane below the strip
-const LABEL_H = 0.34;          // height of the label plane
-const LABEL_DROP = 0.42;       // vertical offset of the label below the strip center
+const LABEL_W = 1.6;           // width of the name+icon label plane below the strip
+const LABEL_H = 0.40;          // height of the label plane
+const LABEL_DROP = 0.50;       // vertical offset of the label below the strip center
 const VISIBLE_RADIUS = 2;      // how many neighbors each side are rendered (2 = up to 5 tiles)
 
 // ---- Depth fade (§4.1) — opacity + scale by wheel-distance from the active tile, indexed
 //      0 / 1 / 2. Tiles read as a depth-faded strip: smaller and dimmer the further out;
 //      anything past VISIBLE_RADIUS is hidden. Opacity here is multiplied by the open fade.
-const DIST_OPACITY = [1.0, 0.62, 0.32];  // centered / one out / two out — neighbours read clearer
+const DIST_OPACITY = [1.0, 0.82, 0.52];  // centered / one out / two out — neighbours read clearer
 const DIST_SCALE = [1.15, 0.85, 0.62];   // centered / one out / two out
 
 // ---- Motion (§14.4) ----
@@ -71,15 +71,15 @@ const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow 
 const PINCH_SELECT = 0.6;
 
 // ---- Texture resolution for the per-tool icon tiles + the label strip ----
-const TILE_PX = 128;
-const LABEL_PX_W = 512;
-const LABEL_PX_H = 128;
+const TILE_PX = 256;
+const LABEL_PX_W = 640;
+const LABEL_PX_H = 160;
 const RING_PX = 256;
 
 // ---- Centered-tool glow ring (§4.1 emphasis; §14.4 eased, never bouncy) ----
 const RING_SIZE = ITEM_SIZE * 1.9;   // ring plane edge length (larger than the active tile)
-const RING_BASE = 0.62;              // resting ring opacity at full fade, glow=0 — slightly brighter
-const RING_GLOW = 0.45;              // extra opacity added as proximity glow ramps to 1
+const RING_BASE = 0.78;              // resting ring opacity at full fade, glow=0 — slightly brighter
+const RING_GLOW = 0.30;              // extra opacity added as proximity glow ramps to 1
 
 // One rendered tool tile: a textured plane (icon glyph baked once) plus its own material
 // so opacity + emissive pulse can be driven independently per item.
@@ -118,9 +118,9 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     const g = canvas.getContext("2d")!;
     g.clearRect(0, 0, TILE_PX, TILE_PX);
 
-    // Rounded-square frame so each tile reads as a discrete chip.
+    // Rounded-square frame — dark fill so tiles read clearly over any camera background.
     const pad = TILE_PX * 0.1;
-    const r = TILE_PX * 0.16;
+    const r = TILE_PX * 0.18;
     const x0 = pad;
     const y0 = pad;
     const w = TILE_PX - pad * 2;
@@ -132,16 +132,29 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     g.arcTo(x0, y0 + h, x0, y0, r);
     g.arcTo(x0, y0, x0 + w, y0, r);
     g.closePath();
-    g.lineWidth = TILE_PX * 0.035;
-    g.strokeStyle = "rgba(255,255,255,0.85)";
+    // Dark fill — stays dark regardless of material tint, giving contrast over any bg.
+    g.fillStyle = "rgba(0,8,20,0.85)";
+    g.fill();
+    // Wide soft glow pass then tight bright pass builds a luminous border.
+    g.shadowColor = "rgba(255,255,255,0.60)";
+    g.shadowBlur = TILE_PX * 0.08;
+    g.lineWidth = TILE_PX * 0.055;
+    g.strokeStyle = "rgba(255,255,255,0.95)";
     g.stroke();
+    g.shadowBlur = TILE_PX * 0.025;
+    g.lineWidth = TILE_PX * 0.022;
+    g.stroke();
+    g.shadowBlur = 0;
 
-    // Centered icon glyph.
+    // Centered icon glyph with a soft glow.
+    g.shadowColor = "rgba(255,255,255,0.72)";
+    g.shadowBlur = TILE_PX * 0.07;
     g.fillStyle = "#FFFFFF";
-    g.font = `bold ${Math.round(TILE_PX * 0.5)}px ${FONT}`;
+    g.font = `bold ${Math.round(TILE_PX * 0.52)}px ${FONT}`;
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText(icon, TILE_PX / 2, TILE_PX / 2 + TILE_PX * 0.02);
+    g.shadowBlur = 0;
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -194,14 +207,40 @@ function makeRingTexture(): THREE.CanvasTexture {
 function drawLabel(canvas: HTMLCanvasElement, icon: string, label: string, accent: string): void {
     const g = canvas.getContext("2d")!;
     g.clearRect(0, 0, LABEL_PX_W, LABEL_PX_H);
+
+    // Pill background for contrast over any camera content.
+    const ph = LABEL_PX_H * 0.72;
+    const pw = LABEL_PX_W * 0.88;
+    const px0 = (LABEL_PX_W - pw) / 2;
+    const py0 = (LABEL_PX_H - ph) / 2;
+    const pr = ph / 2;
+    g.beginPath();
+    g.moveTo(px0 + pr, py0);
+    g.arcTo(px0 + pw, py0, px0 + pw, py0 + ph, pr);
+    g.arcTo(px0 + pw, py0 + ph, px0, py0 + ph, pr);
+    g.arcTo(px0, py0 + ph, px0, py0, pr);
+    g.arcTo(px0, py0, px0 + pw, py0, pr);
+    g.closePath();
+    g.fillStyle = "rgba(0,8,20,0.88)";
+    g.fill();
+    g.globalAlpha = 0.40;
+    g.strokeStyle = accent;
+    g.lineWidth = 2.5;
+    g.stroke();
+    g.globalAlpha = 1;
+
+    // Text: double glow pass for punch.
     g.fillStyle = accent;
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.font = `bold ${Math.round(LABEL_PX_H * 0.42)}px ${FONT}`;
+    g.font = `bold ${Math.round(LABEL_PX_H * 0.44)}px ${FONT}`;
     const text = `${icon}  ${label}`;
     g.shadowColor = accent;
-    g.shadowBlur = LABEL_PX_H * 0.18;
+    g.shadowBlur = LABEL_PX_H * 0.24;
     g.fillText(text, LABEL_PX_W / 2, LABEL_PX_H / 2);
+    g.shadowBlur = LABEL_PX_H * 0.08;
+    g.fillText(text, LABEL_PX_W / 2, LABEL_PX_H / 2);
+    g.shadowBlur = 0;
 }
 
 export class Carousel {
@@ -221,6 +260,8 @@ export class Carousel {
     private readonly labelMat: THREE.MeshBasicMaterial;
     private readonly labelTex: THREE.CanvasTexture;
     private readonly labelCanvas: HTMLCanvasElement;
+    private readonly bgPanel: THREE.Mesh;        // dark backdrop behind the full strip for readability
+    private readonly bgMat: THREE.MeshBasicMaterial;
     private readonly ring: THREE.Mesh;          // glow halo pinned at screen-center behind the active tile
     private readonly ringMat: THREE.MeshBasicMaterial;
     private readonly ringTex: THREE.CanvasTexture;
@@ -250,6 +291,22 @@ export class Carousel {
 
         this.allIds = itemDefs.map((d) => d.id);
         this.order = [...this.allIds];
+
+        // Dark backdrop panel behind the entire strip — wider than the visible tile area so the
+        // carousel always reads against a consistent dark surface regardless of camera content.
+        const BG_W = VISIBLE_RADIUS * 2 * ITEM_SPACING + ITEM_SIZE * 2.6;
+        const BG_H = ITEM_SIZE * 1.82;
+        this.bgMat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(0, 8 / 255, 20 / 255),
+            transparent: true,
+            opacity: 0,
+            toneMapped: false,
+            depthTest: false,
+            depthWrite: false,
+        });
+        this.bgPanel = new THREE.Mesh(new THREE.PlaneGeometry(BG_W, BG_H), this.bgMat);
+        this.bgPanel.position.set(0, 0, -0.02);
+        this.object.add(this.bgPanel);
 
         // Centered-item glow ring: pinned at the group origin (screen-center) so it always
         // frames whichever tile is active. Added before the strip so the tile draws over it
@@ -523,7 +580,8 @@ export class Carousel {
         this.ringMat.opacity = (RING_BASE + this.glow * RING_GLOW) * ringBreathe * this.fade;
         this.ring.scale.setScalar((1 + this.glow * 0.08) * ringBreathe);
 
-        // ---- Label opacity tracks the fade ----
+        // ---- Background panel + label opacity track the fade ----
+        this.bgMat.opacity = 0.82 * this.fade;
         this.labelMat.opacity = this.fade;
     }
 
@@ -541,5 +599,7 @@ export class Carousel {
         this.ringTex.dispose();
         this.ringMat.dispose();
         this.ring.geometry.dispose();
+        this.bgMat.dispose();
+        this.bgPanel.geometry.dispose();
     }
 }
