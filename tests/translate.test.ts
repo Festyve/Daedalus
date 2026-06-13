@@ -202,6 +202,7 @@ function makeCtx(withMesh: boolean): SceneContext {
         activeMenu: null,
         scratch: makeScratch(),
         interactionPlaneZ: 0,   // mesh depth: unproject onto z = 0 plane
+        brushRadius: 1,
     };
 }
 

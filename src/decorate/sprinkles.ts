@@ -63,7 +63,6 @@ interface InstanceLayer {
 }
 
 export class Sprinkles {
-    private readonly scene: THREE.Scene;
     // Active instanced layers, at most one per geometry type currently in use.
     private readonly layers: InstanceLayer[] = [];
     // Accepted sprinkle centers (mesh object space) for Poisson spacing across
@@ -84,9 +83,7 @@ export class Sprinkles {
     private rafHandle = 0;
     private lastTickMs = 0;
 
-    constructor(scene: THREE.Scene) {
-        this.scene = scene;
-    }
+    constructor(_scene: THREE.Scene) {}
 
     // Total live instances across all layers (used to enforce MAX_TOTAL).
     get count(): number {

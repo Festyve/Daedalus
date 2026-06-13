@@ -101,15 +101,19 @@ describe("ScriptedAdapter.speak", () => {
 });
 
 describe("makeVoiceAdapter", () => {
-    it("returns a ScriptedAdapter satisfying the VoiceAdapter contract", () => {
+    it("returns a VoiceAdapter satisfying the contract", () => {
+        // The factory returns the live ElevenLabsAdapter when VITE_ELEVENLABS_AGENT_ID is
+        // configured, else the deterministic ScriptedAdapter — both honor the contract.
+        // (Construction is lazy: no socket is opened until respond() is called.)
         const adapter = makeVoiceAdapter();
-        expect(adapter).toBeInstanceOf(ScriptedAdapter);
         expect(typeof adapter.respond).toBe("function");
         expect(typeof adapter.speak).toBe("function");
     });
 
-    it("produces an adapter whose respond stays deterministic", async () => {
-        const adapter = makeVoiceAdapter();
+    it("ScriptedAdapter respond stays deterministic", async () => {
+        // Determinism is the scripted adapter's contract (the live adapter is, by design,
+        // a real LLM and not deterministic), so assert it on ScriptedAdapter directly.
+        const adapter = new ScriptedAdapter();
         const first = await drive(adapter, "thanks, that looks great");
         const second = await drive(adapter, "thanks, that looks great");
         expect(second.reply).toBe(first.reply);

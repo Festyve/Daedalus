@@ -2,9 +2,8 @@
 // "parting curtains" gesture: both palms open near the centre of frame, then sweep
 // outward along the horizontal axis within 600ms.
 //
-//   ar    — live full-colour webcam feed as the MAIN full-screen background plane
-//           behind the geometry. Default starting mode (the camera is the main view).
-//   scene — pure #000814 canvas, no camera feed.
+//   scene — pure #000814 canvas, no camera feed. Default starting mode.
+//   ar    — live webcam feed as a desaturated background plane behind the geometry.
 //
 // On every toggle a horizontal cyan scan line sweeps the full canvas (80ms) and
 // fades, like a display switching input. The scan line and the AR plane are owned
@@ -37,12 +36,11 @@ const CENTER_MAX = 0.8;
 const SWEEP_MS = 80;
 const FADE_MS = 180;
 
-// AR background plane sizing. The plane is parented to the CAMERA at a fixed depth
-// well behind any sculptable geometry, and sized every frame to exactly fill the
-// camera frustum at that depth (with a small margin) so the webcam feed always covers
-// the whole viewport — regardless of window aspect or the idle camera parallax.
-const AR_PLANE_DEPTH = 8;       // local distance in front of the camera (−Z)
-const AR_PLANE_MARGIN = 1.06;   // oversize slightly so no backdrop shows at the edges
+// AR background plane sizing. The plane is parented to the camera-facing backdrop at
+// a fixed depth well behind any sculptable geometry; it is large enough to fill the
+// frame at that depth and is rebuilt to the video's aspect ratio when it first loads.
+const AR_PLANE_DEPTH = -8;
+const AR_PLANE_HEIGHT = 9;
 
 // Per-hand sample carried between frames to derive image-space horizontal velocity.
 interface HandSample {
@@ -69,9 +67,9 @@ function nearCenter(lm: ReadonlyArray<{ x: number }>): boolean {
 }
 
 export class ViewModeController {
-    mode: ViewMode = "ar";
+    mode: ViewMode = "scene";
 
-    private readonly camera: THREE.PerspectiveCamera;
+    private readonly scene: THREE.Scene;
     private readonly getVideo: () => HTMLVideoElement | null;
 
     // Parting-curtains detection state (scalars only — no per-frame alloc).
@@ -84,14 +82,15 @@ export class ViewModeController {
     // AR background plane (created lazily on first AR activation).
     private arPlane: THREE.Mesh | null = null;
     private arTexture: THREE.VideoTexture | null = null;
+    private arAspectApplied = false;
 
     // Scan-line feedback overlay (plain DOM, full canvas — §0.7, no CSS3D).
     private scanEl: HTMLDivElement | null = null;
     private scanElapsed = 0;
     private scanActive = false;
 
-    constructor(camera: THREE.PerspectiveCamera, getVideo: () => HTMLVideoElement | null) {
-        this.camera = camera;
+    constructor(scene: THREE.Scene, getVideo: () => HTMLVideoElement | null) {
+        this.scene = scene;
         this.getVideo = getVideo;
     }
 
@@ -140,16 +139,13 @@ export class ViewModeController {
         }
 
         // Image-space horizontal velocity per hand, normalized by image-space S so the
-        // threshold reads in S/frame. The feed is now UN-MIRRORED (native camera space):
-        // the user's right hand (our "Right" pose) appears on the image's LEFT, so sweeping
-        // it outward (to the user's right) DECREASES x; the user's left hand (our "Left"
-        // pose) appears on the image's RIGHT, so sweeping it outward INCREASES x. Parting
-        // therefore means rVx < 0 and lVx > 0 (the opposite of the old selfie space).
+        // threshold reads in S/frame. Selfie space is mirrored, so the user's left hand
+        // physically sweeping outward (toward the screen's left edge) decreases x.
         const lScale = imageHandScale(left!.landmarks);
         const rScale = imageHandScale(right!.landmarks);
         const lVx = this.prevLeft.valid ? (left!.landmarks[INDEX_TIP].x - this.prevLeft.x) / lScale : 0;
         const rVx = this.prevRight.valid ? (right!.landmarks[INDEX_TIP].x - this.prevRight.x) / rScale : 0;
-        const movingApart = lVx > VX_THRESHOLD && rVx < -VX_THRESHOLD;
+        const movingApart = lVx < -VX_THRESHOLD && rVx > VX_THRESHOLD;
 
         this.sampleHands(left, right);
 
@@ -190,32 +186,14 @@ export class ViewModeController {
     /**
      * Per-frame upkeep: advance the scan-line animation and, in AR mode, push the
      * latest webcam frame into the background plane's texture. dt is in milliseconds.
-     *
-     * AR is the default mode, so the plane is created lazily here the moment the webcam
-     * is ready (getVideo() returns a video). In mock / no-camera runs getVideo() stays
-     * null, the plane is never built, and the main view simply stays black.
      */
     update(dt: number): void {
         if (this.scanActive) this.advanceScanLine(dt);
 
-        if (this.mode === "ar" && !this.arPlane && this.getVideo()) {
-            // ensureArPlane() builds the plane already visible (Mesh.visible defaults true).
-            this.ensureArPlane();
-        }
-
         if (this.mode === "ar" && this.arPlane && this.arPlane.visible) {
-            this.sizeArPlaneToView();
+            this.applyArAspect();
             if (this.arTexture) this.arTexture.needsUpdate = true;
         }
-    }
-
-    /**
-     * Show/hide the AR webcam background plane without changing `mode`. main.ts hides it
-     * for the corner black-scene preview pass (objects on #000814), then restores it so
-     * the main view keeps the camera background. No-op until the plane exists.
-     */
-    setBackgroundVisible(v: boolean): void {
-        if (this.arPlane) this.arPlane.visible = v;
     }
 
     // ---- internal ----------------------------------------------------------
@@ -237,10 +215,9 @@ export class ViewModeController {
         }
     }
 
-    // Build the AR webcam plane once: a full-colour, mildly contrast-raised video texture
-    // on a quad parented to the CAMERA at a fixed depth behind all geometry, sized to fill
-    // the frustum. Created on the first AR activation (now the default) so a webcam that
-    // never opens costs nothing.
+    // Build the AR webcam plane once: a desaturated, contrast-raised video texture on a
+    // large quad parented to the scene at a fixed depth behind all geometry. Created on
+    // the first AR activation so a webcam that never opens costs nothing.
     private ensureArPlane(): void {
         if (this.arPlane) return;
         const video = this.getVideo();
@@ -251,12 +228,9 @@ export class ViewModeController {
         texture.minFilter = THREE.LinearFilter;
         texture.magFilter = THREE.LinearFilter;
 
-        // Full-colour webcam backdrop (§9.5). The feed display and the tracked landmarks
-        // MUST share the same orientation: landmarks are kept in the camera's NATIVE
-        // (un-mirrored) space (liveInput.ts), so the plane samples vUv directly with no U
-        // flip. To switch to a mirrored/selfie view you would flip x in BOTH places (here
-        // and liveInput.ts). A very mild contrast bump keeps it from washing into the UI
-        // while still reading as a normal colour webcam.
+        // Desaturate + raise contrast in-shader (§9.5) so real-world video reads as a
+        // cool backdrop rather than competing with the cyan UI. Selfie space is
+        // mirrored, so flip U to match the tracked skeleton's mirrored image space.
         const material = new THREE.ShaderMaterial({
             uniforms: { uMap: { value: texture } },
             depthTest: false,
@@ -272,36 +246,36 @@ export class ViewModeController {
                 uniform sampler2D uMap;
                 varying vec2 vUv;
                 void main() {
-                    vec3 c = texture2D(uMap, vUv).rgb;
-                    vec3 contrast = (c - 0.5) * 1.04 + 0.5;      // very mild contrast
+                    vec3 c = texture2D(uMap, vec2(1.0 - vUv.x, vUv.y)).rgb;
+                    float g = dot(c, vec3(0.299, 0.587, 0.114));
+                    vec3 desat = mix(vec3(g), c, 0.15);          // mostly grayscale
+                    vec3 contrast = (desat - 0.5) * 1.18 + 0.5;  // raised contrast
                     gl_FragColor = vec4(clamp(contrast, 0.0, 1.0), 1.0);
                 }
             `,
         });
 
         const plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
-        // Parent to the camera so it stays pinned across the frame, then push it to a
-        // fixed depth behind the sculptable geometry. renderOrder -1 + depthTest off keeps
-        // it behind everything regardless of where the geometry sits.
-        plane.position.set(0, 0, -AR_PLANE_DEPTH);
+        plane.position.set(0, 0, AR_PLANE_DEPTH);
         plane.renderOrder = -1;   // draw behind sculptable geometry (renderOrder 0)
         plane.frustumCulled = false;
-        this.camera.add(plane);
+        plane.scale.set(AR_PLANE_HEIGHT * (16 / 9), AR_PLANE_HEIGHT, 1);
+        this.scene.add(plane);
 
         this.arPlane = plane;
         this.arTexture = texture;
-        this.sizeArPlaneToView();
+        this.arAspectApplied = false;
     }
 
-    // Size the plane to exactly fill the camera frustum at its depth (with a small
-    // margin), using the camera's current vertical FOV + aspect. Called on creation and
-    // every AR frame so it tracks window-resize aspect changes with zero allocation.
-    private sizeArPlaneToView(): void {
-        if (!this.arPlane) return;
-        const halfH = Math.tan((this.camera.fov * Math.PI) / 360) * AR_PLANE_DEPTH;
-        const height = 2 * halfH * AR_PLANE_MARGIN;
-        const width = height * this.camera.aspect;
-        this.arPlane.scale.set(width, height, 1);
+    // Once the video reports real dimensions, size the plane to its aspect ratio so the
+    // feed isn't stretched. Runs at most once per loaded stream.
+    private applyArAspect(): void {
+        if (this.arAspectApplied || !this.arPlane) return;
+        const video = this.getVideo();
+        if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
+        const aspect = video.videoWidth / video.videoHeight;
+        this.arPlane.scale.set(AR_PLANE_HEIGHT * aspect, AR_PLANE_HEIGHT, 1);
+        this.arAspectApplied = true;
     }
 
     // Create-or-reset the full-canvas scan-line element and start its sweep. Plain DOM

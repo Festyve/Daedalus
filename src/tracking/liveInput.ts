@@ -34,10 +34,18 @@ const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/w
 // One Euro params. Image-space landmarks are normalized [0..1]; world landmarks
 // are metric (~10x larger units) so they take a proportionally larger min-cutoff
 // to suppress jitter without lag (§3.3).
-const IMAGE_MIN_CUTOFF = 1.5;
-const IMAGE_BETA = 0.02;
+const IMAGE_MIN_CUTOFF = 1.0;
+const IMAGE_BETA = 0.05;
 const WORLD_MIN_CUTOFF = 15.0;
 const WORLD_BETA = 0.2;
+
+// Heavier-smoothing params applied by the §11.2 auto quality fallback when FPS /
+// tracking confidence stay low: a lower min_cutoff trades a little lag for a calmer,
+// less jittery pose so the demo stays usable on a struggling machine.
+const FALLBACK_IMAGE_MIN_CUTOFF = 0.6;
+const FALLBACK_IMAGE_BETA = 0.03;
+const FALLBACK_WORLD_MIN_CUTOFF = 7.0;
+const FALLBACK_WORLD_BETA = 0.12;
 
 const HANDS: readonly Handedness[] = ["Left", "Right"];
 
@@ -63,6 +71,18 @@ export class LiveInputSource implements InputSource {
     // detectForVideo demands strictly increasing timestamps; guard duplicates.
     private last_ts = -1;
 
+    // Set once after the first detectForVideo throw so a persistent GPU/WASM fault
+    // is logged a single time instead of every frame.
+    private detectFailed = false;
+
+    // Offscreen canvas used to mirror the camera frame before detection. The rest
+    // of the app (overlay, gestures, coords) assumes mirrored "selfie" landmarks;
+    // detecting on the raw feed produced un-mirrored landmarks AND inverted
+    // handedness (MediaPipe assumes a mirrored selfie image), so the skeleton and
+    // the Left/Right roles were both flipped.
+    private mirror: HTMLCanvasElement | null = null;
+    private mirrorCtx: CanvasRenderingContext2D | null = null;
+
     // Last good frame, returned (held) when detection is unavailable.
     private latest: PoseFrame = emptyFrame(performance.now());
 
@@ -70,6 +90,17 @@ export class LiveInputSource implements InputSource {
 
     constructor(video: HTMLVideoElement) {
         this.video = video;
+    }
+
+    // §11.2 auto quality fallback: dial both filter banks to heavier smoothing. Called
+    // once by the quality guard after sustained low FPS / low tracking confidence.
+    applyQualityFallback(): void {
+        this.banks.Left.setSmoothing(
+            FALLBACK_IMAGE_MIN_CUTOFF, FALLBACK_IMAGE_BETA, FALLBACK_WORLD_MIN_CUTOFF, FALLBACK_WORLD_BETA,
+        );
+        this.banks.Right.setSmoothing(
+            FALLBACK_IMAGE_MIN_CUTOFF, FALLBACK_IMAGE_BETA, FALLBACK_WORLD_MIN_CUTOFF, FALLBACK_WORLD_BETA,
+        );
     }
 
     async init(): Promise<void> {
@@ -99,7 +130,23 @@ export class LiveInputSource implements InputSource {
         if (ts <= this.last_ts) ts = this.last_ts + 1;
         this.last_ts = ts;
 
-        const res: HandLandmarkerResult = this.landmarker.detectForVideo(this.video, ts);
+        // detectForVideo can throw at runtime (lost GPU/WebGL context, a video
+        // texture upload failure, a transient WASM error). The master loop in main.ts
+        // and startLoop's rAF callback are unguarded, so an uncaught throw here would
+        // permanently kill the entire update/render loop. Hold the last good frame
+        // instead (the documented last-write-wins contract) and log once.
+        let res: HandLandmarkerResult;
+        try {
+            res = this.landmarker.detectForVideo(this.mirroredFrame(), ts);
+        } catch (err) {
+            if (!this.detectFailed) {
+                this.detectFailed = true;
+                if (typeof console !== "undefined") {
+                    console.error("[live] detectForVideo failed; holding last frame", err);
+                }
+            }
+            return this.latest;
+        }
 
         const frame: PoseFrame = {
             Left: null,
@@ -138,6 +185,29 @@ export class LiveInputSource implements InputSource {
         return frame;
     }
 
+    // Draw the current frame horizontally mirrored into an offscreen canvas and
+    // return it as the detection source, so MediaPipe reports landmarks (and
+    // handedness) in the mirrored selfie space the rest of the app expects. Falls
+    // back to the raw video until its dimensions are known.
+    private mirroredFrame(): HTMLCanvasElement | HTMLVideoElement {
+        const vw = this.video.videoWidth;
+        const vh = this.video.videoHeight;
+        if (!vw || !vh) return this.video;
+        if (!this.mirror) {
+            this.mirror = document.createElement("canvas");
+            this.mirrorCtx = this.mirror.getContext("2d");
+        }
+        if (!this.mirrorCtx) return this.video;
+        if (this.mirror.width !== vw || this.mirror.height !== vh) {
+            this.mirror.width = vw;
+            this.mirror.height = vh;
+        }
+        this.mirrorCtx.setTransform(-1, 0, 0, 1, vw, 0);
+        this.mirrorCtx.drawImage(this.video, 0, 0, vw, vh);
+        this.mirrorCtx.setTransform(1, 0, 0, 1, 0, 0);
+        return this.mirror;
+    }
+
     dispose(): void {
         this.ready = false;
         this.landmarker?.close();
@@ -157,13 +227,6 @@ export class LiveInputSource implements InputSource {
         // HandFilterBank.filter derives its own dt from the absolute timestamp;
         // dtMs is accepted for API parity but the bank smooths on tMs.
         void dtMs;
-        // Landmarks are kept in the camera's NATIVE (un-mirrored) image space, and the
-        // feed is displayed un-mirrored to match (viewMode.ts AR plane + overlay.ts) —
-        // so a hand at a screen spot controls things at that spot. The feed display and
-        // the landmarks MUST share the same orientation; to switch to a mirrored/selfie
-        // view you would flip x in BOTH places (here and viewMode.ts). World landmarks
-        // are metric and only feed distance-based predicates (§12), so they are left
-        // untouched. Pass the raw normalized landmarks straight through the filter.
         const { landmarks, world } = this.banks[label].filter(
             lm as Vec3[],
             world_lm as Vec3[],
@@ -181,20 +244,15 @@ export class LiveInputSource implements InputSource {
     }
 }
 
-// Map MediaPipe's per-hand handedness category to our Left/Right label. MediaPipe
-// determines handedness ASSUMING the input image is mirrored (selfie); we feed it the
-// RAW, non-mirrored camera frame (landmarks stay native — see buildPose), so its
-// reported label is inverted relative to the user's actual hands — swap it so Left =
-// the user's left hand (nav) and Right = the user's right hand (exec), per §3.2. When
-// the label is missing, fall back so the first detection is Right (execution hand) and
-// the second is Left.
+// Map MediaPipe's per-hand handedness category to our Left/Right label. When the
+// label is missing, fall back so the first detection is Right (execution hand,
+// §3.2) and the second is Left.
 function labelFor(handedness: Category[][] | undefined, i: number): Handedness {
     const name =
         handedness && handedness[i] && handedness[i][0]
             ? handedness[i][0].categoryName
             : "";
-    if (name === "Left") return "Right";
-    if (name === "Right") return "Left";
+    if (name === "Left" || name === "Right") return name;
     return i === 0 ? "Right" : "Left";
 }
 

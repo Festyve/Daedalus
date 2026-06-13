@@ -27,7 +27,7 @@ import { MenuId } from "../types";
 import { T, FONT } from "../render/tokens";
 import { classify } from "../gesture/detect";
 import { fingertipToWorld } from "../math/coords";
-import { makeVoiceAdapter, SpeechInput } from "./voice";
+import { makeVoiceAdapter, SpeechInput, scriptReply } from "./voice";
 import { applyIcing, icingMask } from "./icing";
 import { Sprinkles } from "./sprinkles";
 import { ICING, SPRINKLES } from "./designs";
@@ -373,10 +373,15 @@ export function createDecorateMenu(): MenuModule {
         fireDecoration(ctx);
 
         chat.beginAI();
-        voice.speak(transcriptReply(transcript));
+        voice.speak(scriptReply(transcript));
         void voice.respond(transcript, (chunk) => {
             chat?.appendAI(chunk);
-        }).then(() => {
+        }).catch((err) => {
+            // A networked adapter (ELEVENLABS SEAM) may reject/time out; log it.
+            if (typeof console !== "undefined") console.error("[voice] respond() failed", err);
+        }).finally(() => {
+            // Always settle the panel — spinner off, bubble un-dimmed — even on rejection,
+            // so a failing reply never leaves the 'AI is processing' state stuck on.
             chat?.finalizeAI();
         });
     }
@@ -437,8 +442,9 @@ export function createDecorateMenu(): MenuModule {
         }
 
         // Open-hand smear (not pinching) → paint icing under the index fingertip.
+        // ctx.brushRadius (§10.2 [ ]) scales the smear footprint; default 1.
         if (g.pinch < PINCH_ON && (g.name === "open" || g.name === "point")) {
-            applyIcing(ctx.mesh, ctx.bvh, world, SMEAR_RADIUS, SMEAR_ICING);
+            applyIcing(ctx.mesh, ctx.bvh, world, SMEAR_RADIUS * ctx.brushRadius, SMEAR_ICING);
         }
     }
 
@@ -469,28 +475,3 @@ export function createDecorateMenu(): MenuModule {
         },
     };
 }
-
-// Local mirror of the scripted-reply selection so TTS speaks the SAME line the chat
-// streams. The VoiceAdapter.respond() stream is the source of the on-screen text; this
-// keeps speak() in lockstep without exposing the adapter's internal reply table.
-function transcriptReply(transcript: string): string {
-    const hay = transcript.toLowerCase();
-    for (const rule of REPLY_RULES) {
-        if (rule.keywords.some((k) => hay.includes(k))) return rule.reply;
-    }
-    return DEFAULT_REPLY;
-}
-
-interface ReplyRule {
-    keywords: string[];
-    reply: string;
-}
-const REPLY_RULES: ReplyRule[] = [
-    { keywords: ["rainbow", "sprinkle"], reply: "On it — rainbow sprinkles and a glossy jam glaze, coming right up." },
-    { keywords: ["jam", "icing", "glaze", "frost"], reply: "Applying a rich jam icing across the top. Looking delicious already." },
-    { keywords: ["galaxy", "cosmic", "space", "star"], reply: "Cosmic mode: deep glaze and a scatter of star-bright sprinkles." },
-    { keywords: ["healthy", "diet", "sugar-free", "calorie"], reply: "I'm a donut decorator, not a miracle worker — adding extra sprinkles instead." },
-    { keywords: ["clear", "reset", "remove", "plain"], reply: "Wiping it back to a clean canvas. Ready when you are." },
-    { keywords: ["thank", "thanks", "nice", "love", "great"], reply: "My pleasure. This donut turned out beautifully." },
-];
-const DEFAULT_REPLY = "Decorating now — jam icing and a burst of rainbow sprinkles.";

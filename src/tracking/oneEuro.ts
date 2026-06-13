@@ -112,6 +112,18 @@ export class HandFilterBank {
         };
     }
 
+    // Live-retune both channels (§11.2 auto quality fallback: increase smoothing under
+    // sustained low FPS / tracking confidence). Lowering min_cutoff smooths harder.
+    // Rebuilds the filters so the new params take effect cleanly without leaking the
+    // previous adaptive state. d_cutoff stays at its default.
+    setSmoothing(imageMinCutoff: number, imageBeta: number, worldMinCutoff: number, worldBeta: number): void {
+        const total = LANDMARK_COUNT * AXES;
+        for (let i = 0; i < total; i++) {
+            this.image[i] = new OneEuroFilter(imageMinCutoff, imageBeta);
+            this.world[i] = new OneEuroFilter(worldMinCutoff, worldBeta);
+        }
+    }
+
     private filterSet(src: Vec3[], filters: OneEuroFilter[], tMs: number): Vec3[] {
         const out: Vec3[] = new Array(LANDMARK_COUNT);
         for (let i = 0; i < LANDMARK_COUNT; i++) {

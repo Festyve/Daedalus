@@ -117,6 +117,7 @@ function makeContext(mesh: THREE.Mesh | null): SceneContext {
         activeMenu: MenuId.ROTATE,
         scratch: makeScratch(),
         interactionPlaneZ: 0,
+        brushRadius: 1,
     };
 }
 

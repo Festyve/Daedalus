@@ -91,6 +91,9 @@ export class SculptEngine {
     private readonly candidateVerts = new Set<number>();
     private readonly dirtyVerts = new Set<number>();
     private readonly dirtyFaces = new Set<number>();
+    // BVH node indices the current stroke's brush sphere touched, for a region-local
+    // bvh.refit(dirtyNodes) instead of a full-tree refit (§6.2).
+    private readonly dirtyNodes = new Set<number>();
 
     constructor(mesh: THREE.Mesh) {
         patchPrototypes();
@@ -173,6 +176,7 @@ export class SculptEngine {
         this.candidateVerts.clear();
         this.dirtyVerts.clear();
         this.dirtyFaces.clear();
+        this.dirtyNodes.clear();
 
         // 1-2: gather candidate triangles whose bounds intersect the brush sphere.
         const sphere = this.queryS;
@@ -180,10 +184,16 @@ export class SculptEngine {
         sphere.radius = r;
         const idx = this.indexArr;
         const candidates = this.candidateVerts;
+        const dirtyNodes = this.dirtyNodes;
 
         this.bvh.shapecast({
-            intersectsBounds: (box: THREE.Box3): number => {
+            intersectsBounds: (box: THREE.Box3, _isLeaf: boolean, _score: number | undefined, _depth: number, nodeIndex: number): number => {
                 if (!sphere.intersectsBox(box)) return NOT_INTERSECTED;
+                // Record every node the brush sphere touches so finishStroke can refit
+                // ONLY this region. three-mesh-bvh's refit(nodeIndices) walks the
+                // children of each recorded node; a CONTAINED node force-refits its
+                // whole subtree, so recording the node we stop descent at suffices.
+                dirtyNodes.add(nodeIndex);
                 const contained = sphere.containsPoint(box.min) && sphere.containsPoint(box.max);
                 return contained ? CONTAINED : INTERSECTED;
             },
@@ -254,8 +264,11 @@ export class SculptEngine {
 
         this.positionAttr.needsUpdate = true;
 
-        // 5: incremental BVH bounds refit (NOT a rebuild) for the moved positions.
-        this.bvh.refit();
+        // 5: incremental BVH bounds refit (NOT a rebuild) over ONLY the nodes the
+        //    brush touched this stroke (collected during the shapecast above). An
+        //    empty set degrades safely to a full refit (three-mesh-bvh force-refits
+        //    when a node's children are absent from the set).
+        this.bvh.refit(this.dirtyNodes);
 
         // 6: recompute normals over the dirty region ONLY.
         this.recomputeNormals(verts, faces);
@@ -291,7 +304,7 @@ export class SculptEngine {
         }
         for (const vi of verts) {
             const i = vi * 3;
-            const len = Math.hypot(n[i], n[i + 1], n[i + 2]) || 1;
+            const len = Math.sqrt(n[i]*n[i] + n[i+1]*n[i+1] + n[i+2]*n[i+2]) || 1;
             const inv = 1 / len;
             n[i] *= inv; n[i + 1] *= inv; n[i + 2] *= inv;
         }

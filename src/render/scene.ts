@@ -1,11 +1,12 @@
 // Rendering scene (SPEC §9.2, §9.6). Owns the WebGL2 renderer, the fixed-framing
-// camera with a slight idle parallax, the reusable scratch-math pool, and the
-// wireframe material. The world starts EMPTY: ctx.mesh / ctx.bvh are null until ADD
+// camera with a slight idle parallax, the reusable scratch-math pool, and the minimal
+// wireframe materials. The world starts EMPTY: ctx.mesh / ctx.bvh are null until ADD
 // SHAPES calls attachMesh() to build the first sculptable object.
 //
 // Exports (the v5 contract — callers compile against these exactly):
 //   makeContext():SceneContext
-//   makeMatcapMaterial():THREE.MeshBasicMaterial
+//   makeFillMaterial():THREE.MeshBasicMaterial
+//   makeWireMaterial():THREE.MeshBasicMaterial
 //   attachMesh(ctx, geometry):THREE.Mesh
 import * as THREE from "three";
 import {
@@ -26,14 +27,26 @@ const CAM_FAR = 100;
 // Base camera position. The object sits at the origin; the camera reads it from a
 // slight 3/4 elevation so the matcap stays consistent.
 const CAM_BASE_X = 0;
-const CAM_BASE_Y = 0.35;
-const CAM_BASE_Z = 5.0;
+const CAM_BASE_Y = 2.4;
+const CAM_BASE_Z = 4.4;
 // Idle parallax: a tiny Lissajous drift around the base position so the frame
 // feels alive without the matcap shifting noticeably (§9.6).
 const PARALLAX_X = 0.12;
 const PARALLAX_Y = 0.07;
 const PARALLAX_SPEED_X = 0.00021; // rad/ms
 const PARALLAX_SPEED_Y = 0.00033; // rad/ms
+
+// ---- minimal wireframe object (§9.2 — replaces the blue-steel matcap) -------
+// The sculptable object renders as a faint solid FILL with a bright WIREFRAME drawn on
+// top of the same live geometry: clean, very visible, no lit / bloom / matcap shaders.
+// The fill is opaque (writes depth) so it occludes the back-facing wireframe — a fully
+// see-through wire reads as a tangle; polygonOffset nudges the fill back in depth so the
+// wire sits crisply on top without z-fighting. The §8.3 per-vertex icing buffer is read by
+// the WIREFRAME (vertexColors), so DECORATE recolors the edges over iced regions instead of
+// darkening the fill. The bright wire + near-black fill also suit the AR composite (§9.5):
+// under the canvas's screen blend the dark fill drops out and the glowing wire floats over
+// the live feed, while depth still culls the back edges.
+const WIRE_OPACITY = 0.9;
 
 // Patch three.js prototypes exactly once so geometry.computeBoundsTree() and
 // accelerated raycasting are available. Idempotent and shared with SculptEngine /
@@ -48,18 +61,39 @@ function patchPrototypes(): void {
 }
 
 /**
- * Holographic wireframe material for the sculptable mesh (§9.2). A bright cyan
- * (T.cyan) wire mesh, unlit and toneMapped:false so the wire stays at full
- * intensity — the UnrealBloom pass (§9.4) then blooms the bright edges into a
- * glowing JARVIS hologram. vertexColors:true so the per-vertex icing buffer
- * (§8.3) tints the wires.
+ * Faint solid fill behind the wireframe. Unlit MeshBasicMaterial (the scene has no lights,
+ * matching the old matcap's unlit contract). Deliberately NO vertexColors: it stays a
+ * uniform dark surface, so DECORATE icing — which writes a vivid color pre-compensated for
+ * the OLD matcap multiply (§8.3) — never multiplies down to dead-black patches here. The
+ * icing shows on the WIREFRAME instead (see makeWireMaterial). polygonOffset pushes the
+ * fill back in depth so the wire draws cleanly on top; it writes depth, culling back edges.
  */
-export function makeMatcapMaterial(): THREE.MeshBasicMaterial {
+export function makeFillMaterial(): THREE.MeshBasicMaterial {
     return new THREE.MeshBasicMaterial({
+        color: new THREE.Color(T.wireFill),
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+    });
+}
+
+/**
+ * Bright wireframe overlay. toneMapped:false keeps the edges vivid on both the dark studio
+ * background and the AR webcam feed (§9.5). depthWrite:false so the wire never self-occludes
+ * against the fill it sits on; the fill still writes depth and hides the back edges.
+ * vertexColors:true so the §8.3 icing buffer recolors the edges over iced regions: the white
+ * base (1,1,1) multiplies to the plain wire color, and iced verts shift it toward the design
+ * hue, which is how DECORATE reads on the wireframe now that the fill is uniform.
+ */
+export function makeWireMaterial(): THREE.MeshBasicMaterial {
+    return new THREE.MeshBasicMaterial({
+        color: new THREE.Color(T.wireLine),
         wireframe: true,
-        color: new THREE.Color(T.cyan),
         vertexColors: true,
         toneMapped: false,
+        transparent: true,
+        opacity: WIRE_OPACITY,
+        depthWrite: false,
     });
 }
 
@@ -85,6 +119,9 @@ function makeRenderer(): THREE.WebGLRenderer {
     const renderer = new THREE.WebGLRenderer({
         antialias: true,
         alpha: true,
+        // The corner mirror copies this canvas via drawImage every frame; without
+        // preserveDrawingBuffer the buffer may be cleared before the copy reads it.
+        preserveDrawingBuffer: true,
         powerPreference: "high-performance",
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -131,12 +168,15 @@ function startIdleParallax(camera: THREE.PerspectiveCamera): void {
 /**
  * Construct the single shared-state channel every module reads/writes (§3.4).
  * The world starts EMPTY (§5.1): mesh and bvh are null until ADD SHAPES calls
- * attachMesh(). No lights are added — the wireframe material is unlit.
+ * attachMesh(). No lights are added — the wireframe materials are unlit.
  */
 export function makeContext(): SceneContext {
     const renderer = makeRenderer();
     const camera = makeCamera();
     const scene = new THREE.Scene();
+    // Dark background: the model renders opaque on near-black, then composites over the
+    // fullscreen webcam via CSS mix-blend-mode: screen on #webgl — black drops out so
+    // the glowing model floats over the live feed as AR (§0.7, §9.5).
     scene.background = new THREE.Color(T.bg);
 
     window.addEventListener("resize", () => {
@@ -160,6 +200,7 @@ export function makeContext(): SceneContext {
         activeMenu: null,
         scratch: makeScratch(),
         interactionPlaneZ: 0,
+        brushRadius: 1,
     };
 }
 
@@ -168,7 +209,7 @@ export function makeContext(): SceneContext {
  * wire it into the context (§5.1, §6.1). This is the ONLY path that creates the
  * first mesh — until it runs, ctx.mesh is null and every module no-ops.
  *
- * - Mesh uses the holographic wireframe material (vertexColors for icing).
+ * - Mesh uses the faint fill material (vertexColors for icing) + a bright wireframe child.
  * - renderOrder=0, depthTest/Write=true (scene layer; menus stay above via §4.3).
  * - BVH built once and stored on both ctx.bvh and geometry.boundsTree so the
  *   SculptEngine / icing reuse it instead of rebuilding (dirty-region refit only).
@@ -186,18 +227,28 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
         buildDonutMorph(geometry);
     }
 
-    const mesh = new THREE.Mesh(geometry, makeMatcapMaterial());
+    const mesh = new THREE.Mesh(geometry, makeFillMaterial());
     mesh.renderOrder = LAYER.SCENE;
 
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    mat.depthTest = true;
-    mat.depthWrite = true;
+    const fillMat = mesh.material as THREE.MeshBasicMaterial;
+    fillMat.depthTest = true;
+    fillMat.depthWrite = true;
 
     // The Mesh constructor seeds morphTargetInfluences from geometry.morphAttributes;
     // guarantee the [0] slot (donut blend, §7.2) exists for setMorphT / the MORPH tool.
     if (!mesh.morphTargetInfluences || mesh.morphTargetInfluences.length === 0) {
         mesh.morphTargetInfluences = [0];
     }
+
+    // Bright wireframe overlay sharing the SAME geometry, parented to the fill mesh so it
+    // inherits every transform (idle auto-spin, ROTATE / TRANSLATE / DILATE) for free and
+    // deforms with each sculpt edit automatically. It also shares the fill's
+    // morphTargetInfluences ARRAY reference, so the single value the MORPH tool / setMorphT
+    // already writes drives the donut blend on BOTH meshes with no extra plumbing.
+    const wire = new THREE.Mesh(geometry, makeWireMaterial());
+    wire.renderOrder = LAYER.SCENE;
+    wire.morphTargetInfluences = mesh.morphTargetInfluences;
+    mesh.add(wire);
 
     // Build (or reuse) the BVH and expose it on the geometry so downstream sculpt
     // / icing modules pick it up rather than rebuilding (§6.2 dirty-region only).

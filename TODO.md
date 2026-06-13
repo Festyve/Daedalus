@@ -7,14 +7,22 @@ Decision log at bottom. Check items off; never delete history — strike or move
 
 ## 🔴 Deferred / blocked
 
-- [ ] **ElevenLabs Conversational AI** (real LLM reply + TTS) for DECORATE — §8.
-  - Status: **DEFERRED** by decision 2026-06-13. Build scripted fallback now.
-  - Design hook: `decorate/voice.ts` exposes a `VoiceAdapter` interface. Ship `ScriptedAdapter`
-    now (deterministic reply + browser `SpeechSynthesis` TTS). Add `ElevenLabsAdapter` later.
-  - Wiring when creds arrive: read `VITE_ELEVENLABS_AGENT_ID`; if present use real Conversational
-    AI websocket (signed-url handshake), else scripted. No other code changes.
-  - Acceptance: hardcoded JAM icing + rainbow sprinkles still fire instantly regardless; live
-    reply streams to chat panel typewriter + audio simultaneously.
+- [x] **ElevenLabs Conversational AI** (real LLM reply + TTS) for DECORATE — §8. **LANDED 2026-06-13.**
+  - `decorate/voice.ts` now ships a real `ElevenLabsAdapter implements VoiceAdapter`: opens (and
+    reuses) one Agents-Platform WebSocket, sends the transcript as a `user_message`, streams the
+    agent's reply text token-by-token to the chat typewriter (`agent_chat_response_part` / final
+    `agent_response`), and plays the returned PCM-16k audio in real time via Web Audio. Answers
+    `ping` with `pong`; flushes audio on `interruption`.
+  - **Config (`.env.local`):** `VITE_ELEVENLABS_AGENT_ID` is required. A PUBLIC agent connects
+    directly (no key). For a PRIVATE agent, also set `VITE_ELEVENLABS_API_KEY` — the adapter fetches
+    a signed URL (`get-signed-url`, header `xi-api-key`) before connecting. NOTE: a key in a Vite
+    build ships to the browser — fine for a local demo; mint the signed URL server-side for prod.
+  - `makeVoiceAdapter()` returns the live adapter when an agent id is set + `WebSocket` exists,
+    else `ScriptedAdapter`. The live adapter ALSO falls back to scripted at runtime if a connection
+    ever fails — so the demo never stalls. Hardcoded JAM icing + rainbow sprinkles fire instantly
+    regardless (§8.1 step 3), unchanged.
+  - Verify (manual, needs mic + the configured agent): DECORATE → speak → real reply streams to
+    the typewriter + voice plays. Headless/unit tests use the scripted path (network-free).
 
 ---
 

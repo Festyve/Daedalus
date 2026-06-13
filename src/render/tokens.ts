@@ -12,6 +12,9 @@ export const T = {
     textDim:       "rgba(255,255,255,0.45)",
     rimColor:      "#00FFD1",
     matcap:        "/matcaps/blue-steel.png",
+    // §9.2 minimal wireframe object (replaces the blue-steel matcap):
+    wireLine:      "#7CEFFF",            // bright wireframe edges — visible on dark + AR feed
+    wireFill:      "#0B1A2E",            // faint solid fill behind the wire (hides back edges)
     // per-tool accents (§14.1)
     toolAdd:       "#00FFD1",            // ADD SHAPES
     toolTranslate: "#4488FF",            // TRANSLATE

@@ -3,12 +3,12 @@
 //   Fingertip → world: raycast from camera through NDC → intersect interaction
 //                      plane at object depth
 //                      ndcX = x*2−1, ndcY = −(y*2−1)
-//                      mirror: negate ndcX only if the displayed video were flipped
+//                      mirror: negate ndcX if displayed video is flipped
 //
-// Landmarks arrive in the camera's NATIVE (un-mirrored) normalized image space (§3):
-// x,y ∈ [0,1] with the origin at top-left, matching the un-mirrored feed displayed
-// behind the geometry. The feed and the landmarks share the same orientation, so x
-// maps directly to NDC with no sign change. HOT LOOP: zero per-frame allocation —
+// Landmarks arrive in mirrored, normalized image space (§3): x,y ∈ [0,1] with the
+// origin at top-left, already flipped to match the selfie-view video. Because the
+// feed is mirror-flipped at the source, x maps directly to NDC with no further sign
+// change — the mirror is already baked in. HOT LOOP: zero per-frame allocation —
 // every call reuses the caller-owned ray / plane / out (§6.2, §11).
 import * as THREE from "three";
 import type { Vec3 } from "../types";
@@ -16,8 +16,8 @@ import type { Vec3 } from "../types";
 // Interaction plane normal: faces the camera along +Z. Constant — never reallocated.
 const PLANE_NORMAL = /*@__PURE__*/ new THREE.Vector3(0, 0, 1);
 
-// image space (native un-mirrored [0,1]) → NDC (§12). Allocates a small result object;
-// use only outside the per-frame hot loop (e.g. carousel / DOM projection, not sculpting).
+// image space (mirrored [0,1]) → NDC (§12). Allocates a small result object; use
+// only outside the per-frame hot loop (e.g. carousel / DOM projection, not sculpting).
 export function toNDC(p: Vec3): { x: number; y: number } {
     return { x: p.x * 2 - 1, y: -(p.y * 2 - 1) };
 }

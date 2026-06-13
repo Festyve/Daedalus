@@ -172,9 +172,15 @@ export function createAddShapesMenu(): MenuModule {
         if (old) {
             ctx.scene.remove(old);
             old.geometry.dispose();
-            const mat = old.material;
-            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-            else mat.dispose();
+            // Dispose every material under the old mesh — the fill plus its wireframe-overlay
+            // child (which shares this now-disposed geometry). Geometry is shared, so it is
+            // disposed exactly once above; traversal only frees the per-mesh materials.
+            old.traverse((o) => {
+                const m = (o as THREE.Mesh).material;
+                if (!m) return;
+                if (Array.isArray(m)) m.forEach((x) => x.dispose());
+                else m.dispose();
+            });
             ctx.bvh = null;
         }
 

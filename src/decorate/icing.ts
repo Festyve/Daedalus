@@ -46,15 +46,13 @@ const EDGE_SMOOTH_ITERS = 3;
 // Decoration visibility (aspect #59). The material is MeshMatcapMaterial with
 // vertexColors:true, which MULTIPLIES the (dark blue-steel) matcap by the vertex
 // color — so jam #8B0000 reads near-black on the steel. We write a pre-compensated
-// DISPLAY color that is a VIVID, SATURATED jam: computeDisplayColor() pushes the hue
-// off grey (SATURATE), screen-lifts the darks toward the hue (SCREEN_LIFT), then adds
-// a gloss-scaled specular sheen toward white (GLOSS_SPEC), so the multiply yields a
-// luminous red — NOT a wash toward grey/white (which desaturates to pink). The
-// wet/glassy sheen is added per-pixel in the matcap shader (render/scene.ts) too, so
-// the hue stays rich and the highlight stays specular.
-const SATURATE = 0.6;     // push channels away from their mean (richer, less grey)
-const SCREEN_LIFT = 0.35; // screen-style lift of darks toward the hue, not toward grey
-const GLOSS_SPEC = 0.5;   // max specular sheen toward white, scaled by design.gloss
+// DISPLAY color that is a VIVID, SATURATED jam: the dominant channel is rescaled up
+// to JAM_VALUE while the others stay near zero, so the multiply yields a luminous
+// red — NOT a wash toward grey/white (which desaturates to pink). The wet/glassy
+// sheen is added per-pixel in the matcap shader (render/scene.ts), not by whitening
+// the base color here, so the hue stays rich and the highlight stays specular.
+const JAM_VALUE = 0.95;   // brightness of the dominant channel after the rescale
+const JAM_FLOOR = 0.07;   // small floor on the minor channels so shadows aren't dead-black
 // A vertex straddles the boundary when its mask differs from a neighbour's by more
 // than this — those verts (plus their 1-ring) form the band we smooth.
 const BOUNDARY_DELTA = 0.05;
@@ -101,6 +99,7 @@ interface IcingHost {
 
 // Module-level scratch — zero allocation in the paint hot loop (SPEC §11).
 const LOCAL_POINT = new THREE.Vector3();
+const WORLD_SCALE = new THREE.Vector3();
 const QUERY_SPHERE = new THREE.Sphere();
 const DESIGN_COLOR = new THREE.Color();
 // Pre-compensated DISPLAY color actually written to vertices (aspect #59) — the
@@ -215,23 +214,21 @@ function heightGate(x: number, y: number, z: number, dripBias: number): number {
 // DISPLAY_COLOR (module scratch). Stays strictly below white so the mask seed
 // round-trip (color→deviation→mask) in stateFor() is preserved.
 function computeDisplayColor(design: IcingDesign): void {
-    let r = DESIGN_COLOR.r, g = DESIGN_COLOR.g, b = DESIGN_COLOR.b;
-    // Saturate around the channel mean.
-    const mean = (r + g + b) / 3;
-    r = mean + (r - mean) * (1 + SATURATE);
-    g = mean + (g - mean) * (1 + SATURATE);
-    b = mean + (b - mean) * (1 + SATURATE);
-    // Screen-style lift: 1 - (1 - c)(1 - k) raises darks toward the hue, not toward grey.
-    r = 1 - (1 - r) * (1 - SCREEN_LIFT);
-    g = 1 - (1 - g) * (1 - SCREEN_LIFT);
-    b = 1 - (1 - b) * (1 - SCREEN_LIFT);
-    // Gloss-scaled specular sheen toward white (wet, glassy jam).
-    const spec = GLOSS_SPEC * design.gloss;
-    r += (1 - r) * spec;
-    g += (1 - g) * spec;
-    b += (1 - b) * spec;
-    // Keep strictly below pure white so painted verts always read as deviation > 0.
-    DISPLAY_COLOR.setRGB(Math.min(r, 0.97), Math.min(g, 0.97), Math.min(b, 0.97));
+    const r = DESIGN_COLOR.r, g = DESIGN_COLOR.g, b = DESIGN_COLOR.b;
+    // Rescale so the DOMINANT channel reaches JAM_VALUE — this preserves the hue and
+    // maximizes saturation (no wash toward grey/white). The minor channels keep only
+    // a small JAM_FLOOR so the jam reads rich, not dead-black, where the matcap is
+    // dark — but they stay far below the dominant channel, so the jam stays vivid.
+    const maxc = Math.max(r, g, b) || 1;
+    const f = JAM_VALUE / maxc;
+    const floor = JAM_FLOOR * JAM_VALUE;
+    // Keep strictly below pure white so painted verts always read as deviation > 0
+    // (the stateFor() mask seed round-trips color → deviation).
+    DISPLAY_COLOR.setRGB(
+        Math.min(0.97, Math.max(r * f, floor)),
+        Math.min(0.97, Math.max(g * f, floor)),
+        Math.min(0.97, Math.max(b * f, floor)),
+    );
 }
 
 // Resolve vertex color from the mask: lerp white base → DISPLAY color by mask.
@@ -350,7 +347,14 @@ export function applyIcing(
     LOCAL_POINT.copy(point);
     mesh.worldToLocal(LOCAL_POINT);
 
-    const r = radius;
+    // The BVH + positions are in mesh OBJECT space, but `radius` is a world-space
+    // length. DILATE leaves a uniform mesh.scale (setScalar, never baked into the
+    // geometry — see menu/dilate.ts), so convert the radius into object space before
+    // the cull, QUERY_SPHERE bounds test, and falloff all consume it — otherwise a
+    // dilated mesh ices a footprint scaled by the dilate factor. Uniform scale ⇒
+    // dividing by .x is exact; guard a degenerate zero scale.
+    mesh.getWorldScale(WORLD_SCALE);
+    const r = WORLD_SCALE.x !== 0 ? radius / WORLD_SCALE.x : radius;
     const r2 = r * r;
     CANDIDATE_VERTS.clear();
     TOUCHED.clear();

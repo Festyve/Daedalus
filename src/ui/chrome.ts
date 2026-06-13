@@ -42,6 +42,7 @@ export class Chrome {
     private readonly stage_el: HTMLDivElement;
     private readonly tool_el: HTMLDivElement;
     private readonly hint_el: HTMLDivElement;
+    private readonly note_el: HTMLDivElement;
     private readonly stats: Stats;
 
     constructor() {
@@ -69,6 +70,15 @@ export class Chrome {
         this.hint_el.style.color = T.textDim;
         this.hint_el.style.fontSize = "11px";
         this.hint_el.style.letterSpacing = "0.08em";
+
+        // Quiet system note, top-center (§11.2 auto quality fallback message). Dimmed and
+        // empty until something asks to surface a note; never steals attention.
+        this.note_el = this.makeLabel({ left: "50%", top: "44px" });
+        this.note_el.style.color = T.textDim;
+        this.note_el.style.fontSize = "11px";
+        this.note_el.style.letterSpacing = "0.08em";
+        this.note_el.style.transform = "translateX(-50%)";
+        this.note_el.style.textAlign = "center";
 
         // Top-right: stats.js FPS meter, re-anchored and dimmed to read as
         // desaturated chrome rather than its stock neon-green panel.
@@ -128,6 +138,12 @@ export class Chrome {
     update(s: { stage: Stage; activeMenu: MenuId | null; viewMode?: ViewMode; gesture?: GestureName }): void {
         void s.viewMode;
         this.render(s);
+    }
+
+    // Surface (or clear) a quiet top-center system note — used by the §11.2 auto
+    // quality fallback. Pass null/"" to hide it.
+    setNote(text: string | null): void {
+        this.note_el.textContent = text ?? "";
     }
 
     // stats.js loop hooks: call begin() at the top of the frame and end() at the

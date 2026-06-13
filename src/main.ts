@@ -28,11 +28,14 @@ import { startWebcam } from "./capture/webcam";
 import { PoseStore } from "./core/store";
 import { startLoop } from "./core/loop";
 import { Director } from "./core/director";
+import { QualityGuard } from "./core/quality";
+import { SnapshotPlayer } from "./core/snapshots";
 
 import { makeContext } from "./render/scene";
 import { makeComposer } from "./render/post";
-import { drawSkeletons } from "./render/overlay";
+import { drawOverlay } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
+import { AutoRotate } from "./render/autoRotate";
 
 import { Carousel } from "./menu/carousel";
 import { MenuRouter } from "./menu/menuRouter";
@@ -103,28 +106,43 @@ carousel.onSelect = (id) => {
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
 const { composer } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
 
+// Idle auto-spin driver (§9.6): slowly rotates the object only while the user is not
+// focused on it, easing to a stop the moment they engage a tool or raise a hand.
+const autoRotate = new AutoRotate();
+
 // HUD chrome (§14.3) + the always-on ❓ gesture guide (§4.4) + the mock dev overlay.
 const chrome = new Chrome();
 const instructions = new InstructionsPopout();
 instructions.mount();
 const devOverlay = new DevOverlay(IS_MOCK || PARAM_FPS);
 
-// ---- skeleton overlay canvas / banner --------------------------------------
-// Full-screen transparent 2D canvas above the webgl canvas. The webcam now backs the
-// MAIN scene (un-mirrored), so the green skeletons drawn here land directly on the user's
-// real hands in the feed. Sized in CSS pixels (landmarks are normalized) and kept in
-// sync with the window.
-const overlayCanvas = document.getElementById("overlay") as HTMLCanvasElement | null;
-const overlayCtx = overlayCanvas ? overlayCanvas.getContext("2d") : null;
-function sizeOverlay(): void {
-    if (!overlayCanvas) return;
-    overlayCanvas.width = window.innerWidth;
-    overlayCanvas.height = window.innerHeight;
-}
-sizeOverlay();
-window.addEventListener("resize", sizeOverlay);
-
+// ---- preview canvas / corner mirror / banner -------------------------------
+// #preview is now the fullscreen webcam + skeleton (the main view); #corner is a
+// small clean model-on-black mirror of the WebGL canvas (the old big-screen look).
+const previewCanvas = document.getElementById("preview") as HTMLCanvasElement | null;
+const previewCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
+const cornerCanvas = document.getElementById("corner") as HTMLCanvasElement | null;
+const cornerCtx = cornerCanvas ? cornerCanvas.getContext("2d") : null;
 const banner = document.getElementById("banner");
+
+// Size the 2D canvases' drawing buffers: #preview fills the viewport (sharp webcam),
+// #corner keeps the screen aspect so the mirrored model isn't distorted (CSS pins its
+// on-screen width to 260px). Re-run on resize.
+const CORNER_WIDTH_CSS = 260;
+function sizePreviewCanvases(): void {
+    const dpr = Math.min(window.devicePixelRatio, 2);
+    if (previewCanvas) {
+        previewCanvas.width = Math.round(window.innerWidth * dpr);
+        previewCanvas.height = Math.round(window.innerHeight * dpr);
+    }
+    if (cornerCanvas) {
+        const cw = Math.round(CORNER_WIDTH_CSS * dpr);
+        cornerCanvas.width = cw;
+        cornerCanvas.height = Math.round((cw * window.innerHeight) / window.innerWidth);
+    }
+}
+sizePreviewCanvases();
+window.addEventListener("resize", sizePreviewCanvases);
 
 function showBanner(msg: string): void {
     if (!banner) return;
@@ -136,9 +154,7 @@ function hideBanner(): void {
 }
 
 // ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
-// The AR webcam plane parents to the camera (so it always fills the frame); the camera
-// was already added to the scene above (alongside the carousel).
-const viewMode = new ViewModeController(ctx.camera, () => video);
+const viewMode = new ViewModeController(ctx.scene, () => video);
 
 // ---- input source (best-effort; NEVER blocks rendering) --------------------
 // The render loop starts immediately on the empty scene. The input source — live
@@ -146,6 +162,33 @@ const viewMode = new ViewModeController(ctx.camera, () => video);
 // last (empty) frame and the loop renders the empty world.
 let source: InputSource | null = null;
 let video: HTMLVideoElement | null = null;
+
+// ---- auto quality fallback (§11.2) + tracking failure handling (§3.6) -------
+let degradedSingleHand = false;     // §11.2 fallback latched on (drop to single hand)
+let liveConfidenceGating = false;   // §3.6 low-confidence brush freeze (live source only)
+const snapshots = new SnapshotPlayer(); // §13.2 safety-mode scene restore
+
+// Fire once when FPS/confidence stay low: single-hand, heavier smoothing, quiet HUD note
+// (webcam is already 720p per §11.1, so no resolution change). Latched in QualityGuard.
+function onQualityDrop(): void {
+    degradedSingleHand = true;
+    if (source instanceof LiveInputSource) source.applyQualityFallback();
+    chrome.setNote("performance mode · single hand · extra smoothing");
+}
+const quality = new QualityGuard(onQualityDrop);
+
+// §3.6 no-hands hold: keep the last pose for ~150ms, then fade the skeleton — never snap.
+const HOLD_MS = 150;
+const FREEZE_CONF = 0.5;
+let heldFrame: PoseFrame | null = null;
+let msSinceHands = 0;
+
+// Best tracking confidence among present hands, or null when no hand is in frame (an
+// empty frame is §3.6 territory, not a §11.2 low-confidence quality drop).
+function confidenceOf(left: HandPose | null, right: HandPose | null): number | null {
+    if (!left && !right) return null;
+    return Math.max(left ? left.confidence : 0, right ? right.confidence : 0);
+}
 
 async function initInput(): Promise<void> {
     try {
@@ -158,6 +201,7 @@ async function initInput(): Promise<void> {
         video = await startWebcam();
         source = new LiveInputSource(video);
         await source.init();
+        liveConfidenceGating = true; // §3.6 freeze applies only to real (noisy) tracking
         hideBanner();
     } catch (err) {
         const e = err as Error;
@@ -219,13 +263,19 @@ function driveCarousel(nav: HandPose | null, dtSeconds: number): void {
 const NAV_LABEL: Handedness = "Left";
 const EXEC_LABEL: Handedness = "Right";
 
+// Single-hand when forced by ?singlehand=1 OR latched by the §11.2 quality fallback.
+function singleHand(): boolean {
+    return SINGLE_HAND || degradedSingleHand;
+}
 function navHand(frame: PoseFrame): HandPose | null {
-    if (SINGLE_HAND) return frame.Right ?? frame.Left;
+    if (singleHand()) return frame.Right ?? frame.Left;
     return frame[NAV_LABEL];
 }
 function execHand(frame: PoseFrame): HandPose | null {
-    if (SINGLE_HAND) return frame.Right ?? frame.Left;
-    return frame[EXEC_LABEL];
+    const h = singleHand() ? (frame.Right ?? frame.Left) : frame[EXEC_LABEL];
+    // §3.6: a low-confidence live hand freezes brush engagement (never sculpt on noise).
+    if (liveConfidenceGating && h && h.confidence < FREEZE_CONF) return null;
+    return h;
 }
 
 // ---- director milestones pulled from observable ctx (§13) -------------------
@@ -274,6 +324,26 @@ startLoop((dtMs) => {
         frame = store.get() ?? EMPTY_FRAME;
     }
 
+    // §11.2 quality sample reads the LIVE detection (before the §3.6 hold) so a genuine
+    // no-hands gap counts as "no tracking", not "low confidence".
+    const liveConf = confidenceOf(frame.Left, frame.Right);
+
+    // §3.6 no-hands hold: hold the last good pose ~150ms (fading the skeleton), then drop
+    // to empty — so a brief tracking dropout never snaps the pose/brush off.
+    let skeletonAlpha = 1;
+    if (frame.Left !== null || frame.Right !== null) {
+        heldFrame = frame;
+        msSinceHands = 0;
+    } else {
+        msSinceHands += dtMs;
+        if (heldFrame && msSinceHands <= HOLD_MS) {
+            frame = heldFrame;
+            skeletonAlpha = 1 - msSinceHands / HOLD_MS;
+        } else {
+            heldFrame = null;
+        }
+    }
+
     const nav = navHand(frame);
     const exec = execHand(frame);
 
@@ -289,39 +359,36 @@ startLoop((dtMs) => {
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
 
-    // 5) Render: the MAIN view (camera feed + composited objects, NEVER css3d), then a
-    //    bottom-right black-scene preview (the same objects on #000814, camera bg hidden),
-    //    then the green hand skeletons over the feed + HUD.
+    // 4b) Idle auto-spin (§9.6): rotate the object only when the user is NOT focused on it
+    //     — no tool active, the carousel closed, and no hand in frame — and ease it to a
+    //     stop the instant any of those engages. Rotates the mesh, never the camera (§9.6).
+    const objectFocused = router.activeId !== null || carousel.isOpen || frame.Left !== null || frame.Right !== null;
+    autoRotate.update(ctx.mesh, !objectFocused, dtMs);
+
+    // 5) Render: fullscreen webcam + skeleton behind the transparent model (AR),
+    //    a clean model-on-black mirror in the corner, then the HUD (NEVER css3d).
     composer.render();
+    // Corner mirror: black backdrop, then copy the (transparent) model canvas over it
+    // so the corner reads as the old big-screen model-on-black view.
+    if (cornerCtx && cornerCanvas) {
+        cornerCtx.fillStyle = "#000";
+        cornerCtx.fillRect(0, 0, cornerCanvas.width, cornerCanvas.height);
+        cornerCtx.drawImage(ctx.renderer.domElement, 0, 0, cornerCanvas.width, cornerCanvas.height);
+    }
+    // §0.7: AR mode shows the live webcam + (held/faded) skeleton; scene mode is pure
+    // #000814 with no camera feed — the model floats on the dark studio backdrop.
+    if (previewCtx && previewCanvas) {
+        if (viewMode.mode === "ar" && video) {
+            drawOverlay(previewCtx, video, frame.Left, frame.Right, skeletonAlpha);
+        } else {
+            previewCtx.fillStyle = "#000814"; // §14.1 bg
+            previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+        }
+    }
 
-    // Corner black-scene preview: re-render the scene with the AR background plane hidden
-    // into a scissored bottom-right box of the MAIN webgl canvas. setViewport/setScissor
-    // take CSS (logical) pixels — three.js applies the renderer pixelRatio internally, so
-    // we must NOT pre-multiply by dpr. GL viewport origin is BOTTOM-left, so vy = margin
-    // puts the box in the bottom-right corner (matching the #preview-frame border). Reset
-    // scissor test + full viewport afterward so the NEXT frame's composer.render() (which
-    // manages its own clear) draws the full canvas unaffected.
-    const W = window.innerWidth, H = window.innerHeight;
-    const cw = Math.round(W * 0.22), ch = Math.round(cw * H / W);
-    const margin = 16;
-    const vx = W - cw - margin;
-    const vy = margin;
-    viewMode.setBackgroundVisible(false);
-    const r = ctx.renderer;
-    r.setRenderTarget(null);
-    r.setScissorTest(true);
-    r.setViewport(vx, vy, cw, ch);
-    r.setScissor(vx, vy, cw, ch);
-    r.setClearColor(0x000814, 1);
-    r.clear();
-    r.render(ctx.scene, ctx.camera);
-    r.setScissorTest(false);
-    r.setViewport(0, 0, W, H);
-    // Restore the camera background for the MAIN view (only when AR mode owns it).
-    viewMode.setBackgroundVisible(viewMode.mode === "ar");
-
-    // Green hand skeletons over the MAIN feed (landmarks are un-mirrored, so they align).
-    if (overlayCtx) drawSkeletons(overlayCtx, frame.Left, frame.Right);
+    // §11.2 auto quality fallback: watch FPS + tracking confidence; degrade once if low.
+    const fps = dtMs > 0 ? 1000 / dtMs : 0;
+    quality.sample(fps, liveConf);
 
     chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });
     devOverlay.update({
@@ -329,7 +396,8 @@ startLoop((dtMs) => {
         gesture: navGestureName,
         tool: router.activeId,
         morphT: ctx.morphT,
-        fps: dtMs > 0 ? 1000 / dtMs : 0,
+        brush: ctx.brushRadius,
+        fps,
     });
 
     chrome.end();
@@ -349,8 +417,12 @@ if (PARAM_TOOL) selectByName(PARAM_TOOL);
 
 // ---- keyboard fallbacks (stage safety + quick tool select) -----------------
 addEventListener("keydown", (e) => {
-    if (e.key === " ") { director.advanceSafety(); return; }
+    // §13: safety mode — advance one authored stage and rebuild the real scene to it.
+    if (e.key === " ") { director.advanceSafety(); snapshots.apply(ctx, director.stage); return; }
     if (e.key === "Escape") { router.select(ctx, null); return; }
+    // §10.2 brush radius (keyboard parity with the mock [ ] keys).
+    if (e.key === "[") { nudgeBrushRadius(-1); return; }
+    if (e.key === "]") { nudgeBrushRadius(1); return; }
     const n = Number(e.key);
     if (Number.isInteger(n) && n >= 1 && n <= MENU_ORDER.length) {
         router.select(ctx, MENU_ORDER[n - 1]);
@@ -370,6 +442,17 @@ function setMorphT(t: number): void {
     director.onMorph(v);
 }
 
+// §10.2 [ / ] brush radius. ctx.brushRadius is a multiplier (1 = default) read by the
+// MORPH additive brush and the DECORATE smear. Stepped + clamped; driven by the mock
+// input and the keyboard.
+const BRUSH_MIN = 0.3;
+const BRUSH_MAX = 3.0;
+const BRUSH_STEP = 0.15;
+function nudgeBrushRadius(dir: number): void {
+    const next = ctx.brushRadius + Math.sign(dir) * BRUSH_STEP;
+    ctx.brushRadius = Math.min(BRUSH_MAX, Math.max(BRUSH_MIN, next));
+}
+
 interface DaedalusDebug {
     ctx: SceneContext;
     director: Director;
@@ -378,6 +461,7 @@ interface DaedalusDebug {
     viewMode: ViewModeController;
     selectMenu(id: keyof typeof MenuId | string | null): void;
     setMorphT(t: number): void;
+    nudgeBrushRadius(dir: number): void;
     injectPose(frame: PoseFrame | null): void;
     clearPose(): void;
     toggleView(): void;
@@ -396,10 +480,11 @@ const debug: DaedalusDebug = {
         selectByName(id === null ? null : String(id));
     },
     setMorphT,
+    nudgeBrushRadius,
     injectPose(frame) { injected = frame; },
     clearPose() { injected = null; },
     toggleView() { viewMode.toggle(); },
-    advance() { director.advanceSafety(); },
+    advance() { director.advanceSafety(); snapshots.apply(ctx, director.stage); },
     handScaleOf(pose) { return handScale(pose.world); },
     MenuId,
 };
