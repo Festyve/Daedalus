@@ -26,7 +26,7 @@
 import * as THREE from "three";
 import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
-import { T, FONT, TOOL_ACCENT } from "../render/tokens";
+import { T, TOOL_ACCENT } from "../render/tokens";
 import { Panel } from "./panel";
 import { fingertipToWorld } from "../math/coords";
 import { isOpenPalm, isFist } from "../gesture/predicates";

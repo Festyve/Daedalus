@@ -99,6 +99,7 @@ interface IcingHost {
 
 // Module-level scratch — zero allocation in the paint hot loop (SPEC §11).
 const LOCAL_POINT = new THREE.Vector3();
+const WORLD_SCALE = new THREE.Vector3();
 const QUERY_SPHERE = new THREE.Sphere();
 const DESIGN_COLOR = new THREE.Color();
 // Pre-compensated DISPLAY color actually written to vertices (aspect #59) — the
@@ -346,7 +347,14 @@ export function applyIcing(
     LOCAL_POINT.copy(point);
     mesh.worldToLocal(LOCAL_POINT);
 
-    const r = radius;
+    // The BVH + positions are in mesh OBJECT space, but `radius` is a world-space
+    // length. DILATE leaves a uniform mesh.scale (setScalar, never baked into the
+    // geometry — see menu/dilate.ts), so convert the radius into object space before
+    // the cull, QUERY_SPHERE bounds test, and falloff all consume it — otherwise a
+    // dilated mesh ices a footprint scaled by the dilate factor. Uniform scale ⇒
+    // dividing by .x is exact; guard a degenerate zero scale.
+    mesh.getWorldScale(WORLD_SCALE);
+    const r = WORLD_SCALE.x !== 0 ? radius / WORLD_SCALE.x : radius;
     const r2 = r * r;
     CANDIDATE_VERTS.clear();
     TOUCHED.clear();

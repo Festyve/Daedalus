@@ -235,7 +235,7 @@ export class InstructionsPopout {
     background: ${PANEL_BG}; border: 1px solid ${T.cyan};
     padding: 16px 20px 20px; pointer-events: auto;
     font-family: ${FONT}; color: ${T.text};
-    box-shadow: 0 0 24px ${T.cyanDim};
+    box-shadow: 0 2px 16px rgba(0,0,0,0.5);
 }
 #daedalus-instr-modal.daedalus-instr-hidden { display: none; }
 .daedalus-instr-title {

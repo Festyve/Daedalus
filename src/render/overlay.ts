@@ -83,6 +83,7 @@ export function drawOverlay(
     video: HTMLVideoElement,
     left: HandPose | null,
     right: HandPose | null,
+    skeletonAlpha = 1,
 ): void {
     const w = ctx2d.canvas.width;
     const h = ctx2d.canvas.height;
@@ -103,7 +104,12 @@ export function drawOverlay(
     ctx2d.restore();
 
     // Skeletons map directly onto the already-mirrored feed (landmarks are in mirrored
-    // image space), so no additional flip is applied here.
+    // image space), so no additional flip is applied here. skeletonAlpha < 1 is used by
+    // the §3.6 no-hands hold: the last pose is held then faded out, never snapped.
+    if (skeletonAlpha <= 0) return;
+    const prevAlpha = ctx2d.globalAlpha;
+    ctx2d.globalAlpha = skeletonAlpha < 1 ? skeletonAlpha : 1;
     drawSkeleton(ctx2d, left);
     drawSkeleton(ctx2d, right);
+    ctx2d.globalAlpha = prevAlpha;
 }

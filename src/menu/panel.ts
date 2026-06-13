@@ -42,10 +42,11 @@ export class Panel {
             "flex-direction:column",
             "padding:16px 18px 0 18px",
             "background:" + T.bgPanel,
-            // 0.5px cyan border + subtle inner glow (§4.2).
-            "border:0.5px solid " + this.accent,
+            // Flat minimal UI: thin accent border, no cyan inner glow — just a faint neutral
+            // drop shadow so the panel stays legible over the AR webcam feed.
+            "border:1px solid " + this.accent,
             "border-radius:10px",
-            "box-shadow:inset 0 0 24px " + T.cyanDim + ",0 0 18px rgba(0,0,0,0.55)",
+            "box-shadow:0 2px 12px rgba(0,0,0,0.45)",
             "color:" + T.text,
             "font-family:" + FONT,
             "font-size:12px",
@@ -53,7 +54,6 @@ export class Panel {
             "letter-spacing:0.02em",
             "opacity:0",
             "pointer-events:none",
-            "backdrop-filter:blur(2px)",
             "transition:opacity " + IN_MS + "ms ease-out,transform " + IN_MS + "ms ease-out",
             // Keep the panel on its own GPU compositor layer so the slide animates only the
             // composited transform/opacity — never a paint/layout on the main thread (§14.4).
@@ -76,7 +76,6 @@ export class Panel {
             "font-weight:600",
             "text-transform:uppercase",
             "letter-spacing:0.14em",
-            "text-shadow:0 0 8px " + this.accent,
         ].join(";");
 
         const dot = document.createElement("span");
@@ -86,7 +85,6 @@ export class Panel {
             "flex:0 0 auto",
             "border-radius:50%",
             "background:" + this.accent,
-            "box-shadow:0 0 8px " + this.accent,
         ].join(";");
 
         const label = document.createElement("span");
@@ -113,8 +111,8 @@ export class Panel {
             "flex:0 0 auto",
             "margin:0 -18px",
             "padding:9px 18px",
-            "border-top:0.5px solid " + T.cyanDim,
-            "background:rgba(0,255,209,0.05)",
+            "border-top:1px solid " + T.cyanDim,
+            "background:rgba(255,255,255,0.04)",
             "color:" + T.textDim,
             "font-size:10.5px",
             "line-height:1.45",

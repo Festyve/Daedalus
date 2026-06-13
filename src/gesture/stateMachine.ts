@@ -1,7 +1,8 @@
 // Pure carousel FSM + execution latch + small undo ring (SPEC §4.1, plan card
 // `gesture/stateMachine.ts`). No Three.js, no DOM, no time — fully deterministic
-// and unit-testable. The carousel render layer (menu/carousel.ts) and the menu
-// router drive their navigation off this logic.
+// and unit-testable. This is the intended canonical FSM, but it is not yet
+// consumed: menu/carousel.ts currently implements its own independent carousel
+// state and does not drive its navigation off this logic.
 //
 // Left-hand carousel semantics (§4.1):
 //   gun pose  → open()           closed → open

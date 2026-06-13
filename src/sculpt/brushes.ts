@@ -58,7 +58,7 @@ export type BrushKernel = (
 export function falloff(d: number, r = 1): number {
     const t = d / r;
     const u = 1 - t * t;
-    return u * u;
+    return u > 0 ? u * u : 0;
 }
 
 // ---------------------------------------------------------------------------

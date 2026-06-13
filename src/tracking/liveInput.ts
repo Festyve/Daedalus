@@ -39,6 +39,14 @@ const IMAGE_BETA = 0.05;
 const WORLD_MIN_CUTOFF = 15.0;
 const WORLD_BETA = 0.2;
 
+// Heavier-smoothing params applied by the §11.2 auto quality fallback when FPS /
+// tracking confidence stay low: a lower min_cutoff trades a little lag for a calmer,
+// less jittery pose so the demo stays usable on a struggling machine.
+const FALLBACK_IMAGE_MIN_CUTOFF = 0.6;
+const FALLBACK_IMAGE_BETA = 0.03;
+const FALLBACK_WORLD_MIN_CUTOFF = 7.0;
+const FALLBACK_WORLD_BETA = 0.12;
+
 const HANDS: readonly Handedness[] = ["Left", "Right"];
 
 /**
@@ -63,6 +71,10 @@ export class LiveInputSource implements InputSource {
     // detectForVideo demands strictly increasing timestamps; guard duplicates.
     private last_ts = -1;
 
+    // Set once after the first detectForVideo throw so a persistent GPU/WASM fault
+    // is logged a single time instead of every frame.
+    private detectFailed = false;
+
     // Offscreen canvas used to mirror the camera frame before detection. The rest
     // of the app (overlay, gestures, coords) assumes mirrored "selfie" landmarks;
     // detecting on the raw feed produced un-mirrored landmarks AND inverted
@@ -78,6 +90,17 @@ export class LiveInputSource implements InputSource {
 
     constructor(video: HTMLVideoElement) {
         this.video = video;
+    }
+
+    // §11.2 auto quality fallback: dial both filter banks to heavier smoothing. Called
+    // once by the quality guard after sustained low FPS / low tracking confidence.
+    applyQualityFallback(): void {
+        this.banks.Left.setSmoothing(
+            FALLBACK_IMAGE_MIN_CUTOFF, FALLBACK_IMAGE_BETA, FALLBACK_WORLD_MIN_CUTOFF, FALLBACK_WORLD_BETA,
+        );
+        this.banks.Right.setSmoothing(
+            FALLBACK_IMAGE_MIN_CUTOFF, FALLBACK_IMAGE_BETA, FALLBACK_WORLD_MIN_CUTOFF, FALLBACK_WORLD_BETA,
+        );
     }
 
     async init(): Promise<void> {
@@ -107,7 +130,23 @@ export class LiveInputSource implements InputSource {
         if (ts <= this.last_ts) ts = this.last_ts + 1;
         this.last_ts = ts;
 
-        const res: HandLandmarkerResult = this.landmarker.detectForVideo(this.mirroredFrame(), ts);
+        // detectForVideo can throw at runtime (lost GPU/WebGL context, a video
+        // texture upload failure, a transient WASM error). The master loop in main.ts
+        // and startLoop's rAF callback are unguarded, so an uncaught throw here would
+        // permanently kill the entire update/render loop. Hold the last good frame
+        // instead (the documented last-write-wins contract) and log once.
+        let res: HandLandmarkerResult;
+        try {
+            res = this.landmarker.detectForVideo(this.mirroredFrame(), ts);
+        } catch (err) {
+            if (!this.detectFailed) {
+                this.detectFailed = true;
+                if (typeof console !== "undefined") {
+                    console.error("[live] detectForVideo failed; holding last frame", err);
+                }
+            }
+            return this.latest;
+        }
 
         const frame: PoseFrame = {
             Left: null,

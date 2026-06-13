@@ -120,6 +120,7 @@ export interface SceneContext {
     activeMenu: MenuId | null;
     scratch: ScratchMath;           // reused objects (§6.2)
     interactionPlaneZ: number;      // object depth for unprojection (§12)
+    brushRadius: number;            // sculpt/decorate brush size multiplier (1 = default; §10.2 [ ])
 }
 
 // ---------- MenuModule contract: every menu honors this ----------
