@@ -1,34 +1,37 @@
-# Heisenberg — Technical Specification (v2, Deep)
+# Daedalus — Technical Specification (v3, Deep)
 
 > Sculpt 3D matter with your bare hands. No mouse. No tablet. No headset. Just a webcam, two hands, and the uncertainty of touch.
 >
-> **The arc:** a cold steel sphere → a torus → a decorated donut → eaten into nothing.
+> **The arc:** a cold steel sphere → squish it into a donut → decorate it with AI → eat it.
 
 ---
 
 ## Table of Contents
 0. Document Status
+0.5 Governing Principle: Real Functionality, Authored Content
+0.6 Cross-Device Sensitivity & Calibration
 1. The Thesis
 2. The Signature Demo Arc
 3. System Architecture
-4. Hand Tracking Layer (deep)
-5. Gesture Recognition & State Machine (deep)
-6. Sculpt Engine (deep)
-7. Morphology: Sphere → Torus (deep)
-8. Decorate Phase (deep)
-9. The "Eat It" Finale (deep)
-10. Rendering & Shader Pipeline (deep)
-11. Performance Engineering (deep)
-12. Coordinate Spaces & Math Reference
-13. Hardcoding / Director System
-14. Aesthetic System & Design Tokens
-15. Tooling, MCPs & Plugins
-16. Build Plan (36h, hour-by-hour)
-17. Risk Register & Fallbacks
-18. Dependencies
-19. File-by-File Manifest
-20. Definition of Done
-21. Pitch & Video Plan
+4. Hand Tracking Layer
+5. Spatial Edit Menus (deep)
+6. Gesture Interaction Paradigms per Menu (deep)
+7. Sculpt Engine
+8. Morphology: Sphere → Donut (deep)
+9. Decorate Phase & AI Chat Interface (deep)
+10. The "Eat It" Finale
+11. Rendering & Shader Pipeline
+12. Performance Engineering
+13. Coordinate Spaces & Math Reference
+14. Director & Guided Flow
+15. Aesthetic System & Design Tokens
+16. Tooling, MCPs & Plugins
+17. Build Plan (36h, hour-by-hour)
+18. Risk Register & Fallbacks
+19. Dependencies
+20. File-by-File Manifest
+21. Definition of Done
+22. Pitch & Video Plan
 
 ---
 
@@ -36,56 +39,113 @@
 
 | | |
 |---|---|
-| **Project** | Heisenberg |
+| **Project** | Daedalus |
 | **Event** | JAMHacks 10 (36h) |
 | **Tracks targeted** | Best Overall · Best Non-GenAI · Best Developer Tool · Most Entertaining Pitch |
 | **Team** | 4 |
-| **Stack** | Three.js (WebGL2/WebGPU) · MediaPipe Tasks Vision · three-mesh-bvh · three-bvh-csg · Vite + TypeScript |
-| **GenAI in product** | **None at runtime.** Pure computer vision + geometry processing. (GenAI may assist authoring/pitch only.) |
+| **Stack** | Three.js (WebGL2) · MediaPipe Tasks Vision · three-mesh-bvh · three-bvh-csg · Vite + TypeScript |
+| **GenAI in product** | **None at runtime.** Chat interface for sprinkles is hardcoded/simulated. Pure CV + geometry processing. |
+| **Build philosophy** | Real sculptor with spatial menus. Authored: donut target design, sprinkle designs, icing/glaze styling, AI chat responses. Real: all deformation, all menu interactions, all gesture controls. |
+| **Cross-device** | First-class sensitivity + calibration (§0.6) |
 | **Structural inspiration** | `collidingScopes/shape-creator-tutorial` (MIT) — elevated to a typed modular engine |
+
+---
+
+## 0.5 Governing Principle: Real Functionality, Authored Content
+
+Daedalus is a **genuinely working real-time sculptor with spatial hand-driven menus.** Every menu interaction, every deformation, every gesture paradigm is real. The only authored content is:
+
+- **The donut target design** — the shape you're sculpting toward (the beautiful donut) is a pre-authored mesh preset the squish/morph system pulls toward. The squishing motion is real; the target it tends toward is designed.
+- **Sprinkle / icing / glaze designs** — the visual design of each accessory type is authored. Placement and the AI chat that "generates" them is hardcoded/simulated.
+- **AI chat responses** — the chat interface looks and feels like a real LLM is generating the decoration. It is fully hardcoded. The *interface* is real; the *responses* are scripted.
+- **Tuning curves** — smoothing, falloff, menu snap distances, transition easing. Authored numbers that make real interactions feel polished.
+- **Color tokens & material presets** — authored design system.
+
+**Everything else is real:** menu rendering, menu selection by hand gesture, translation arrows, dilation pinch/spread, rotation hand-twist, morph squish, icing smear, eat dissolve.
+
+**Mental test:** "Is the user's hand genuinely controlling this?" If yes → real. If it's a *design* or a *scripted response* → authored.
+
+---
+
+## 0.6 Cross-Device Sensitivity & Calibration
+
+### 0.6.1 The problem
+Different cameras, hand sizes, lighting, and distances all break a fixed-threshold scheme.
+
+### 0.6.2 The solution
+1. **Hand-scale normalization (always on).** Every spatial threshold is a fraction of `S = ‖wrist(0) − middleMCP(9)‖` in MediaPipe world landmarks. This removes distance/hand-size variance.
+2. **5-second calibration ritual on first load:**
+   - "Hold your open hand still" → measure resting jitter → auto-set One Euro `min_cutoff`
+   - "Pinch fully" → record user's actual pinch distance as fraction of `S` → set pinch threshold at 60% of that
+   - "Reach forward, then back" → record comfortable depth range → map to brush/menu depth
+   - "Swipe fast left-to-right" → measure peak velocity → set One Euro `beta`
+   - Stores a `CalibrationProfile`; skippable with sane defaults.
+3. **Live sensitivity slider** — one 0–1 dial scales brush strength, gesture thresholds, and smoothing together. In the settings panel and usable mid-demo.
+4. **Adaptive smoothing** — One Euro params adapt continuously to per-frame jitter.
+5. **Auto input-quality detection** — if FPS < 25 or confidence < 0.5 for > 30 frames: drop to single-hand mode, lower webcam to 720p, increase smoothing, show quiet HUD note.
+
+### 0.6.3 CalibrationProfile
+```ts
+interface CalibrationProfile {
+    handScaleMeters: number;
+    restingJitter: number;
+    peakVelocity: number;
+    pinchClosed: number;        // fraction of S at full pinch
+    pinchOpen: number;          // fraction of S at rest
+    depthNear: number;          // comfortable near reach (world-z)
+    depthFar: number;           // comfortable far reach
+    responsiveness: number;     // 0..1 master sensitivity
+    handedness: "Left" | "Right";
+}
+```
+
+### 0.6.4 Defaults (skip-calibration path)
+`min_cutoff=1.0, beta=0.007, pinch=0.30·S, responsiveness=0.6` — tuned for typical laptop 720p webcam at arm's length.
 
 ---
 
 ## 1. The Thesis
 
-### 1.1 What it is
-Heisenberg is a browser-based real-time digital sculpting tool driven entirely by webcam hand tracking. The **left hand selects the active tool** (a mode/verb); the **right hand manipulates the mesh** (position, pressure, scale). Starting from a primitive sphere, the user sculpts, decorates, and ultimately destroys a 3D object — with their hands, in the air, in front of a camera.
+Daedalus is a browser-based real-time 3D sculptor controlled entirely by webcam hand tracking. Your **left hand navigates spatial edit menus** (floating radial/panel menus that appear in 3D space) to select what you're doing. Your **right hand executes** — using the interaction paradigm for the active menu (arrows, pinch/spread, rotation, squishing, etc).
 
-### 1.2 Why the name
-Heisenberg's uncertainty principle: you cannot simultaneously know a particle's exact position and momentum — observing perturbs the observed. Sculpting in mid-air is the same fight: the instant you hold your hand still to place a precise detail, micro-tremor and sensor noise conspire against you. Our entire **filtering layer (One Euro Filter)** is the conceptual answer to that uncertainty — turning chaos into clay. The name is a thesis statement, not decoration.
+The name: Daedalus's uncertainty principle says observing a particle perturbs it. Sculpting in mid-air is the same — the instant you hold your hand still to place a precise detail, micro-tremor conspires against you. Our filtering layer is the answer: it turns that uncertainty into clay.
 
-### 1.3 The pain it addresses
-3D sculpting has a brutal learning curve. Blender takes months; ZBrush costs money and muscle memory. Mapping a 2D mouse to deform a 3D form is fundamentally unintuitive. Heisenberg collapses that gap: hands are already 3D input devices. Anyone walks up and sculpts in ten seconds. Immediate, physical, visceral.
-
-### 1.4 Why it wins the room
-- **Demo-first:** a human sculpts a donut from thin air and mimes eating it. No slide beats that.
-- **Non-GenAI:** while everyone ships GPT wrappers, Heisenberg is real engineering — CV, BVH spatial queries, mesh deformation math, GPU shaders. SWE judges feel the difficulty.
-- **Try-it-yourself:** judges raise their own hands. Participation → memory → votes.
+**Why it wins:** every SWE judge will feel the difficulty immediately — real CV, real BVH, real shaders, real gesture menus. It's immediately demonstrable to anyone in the room. And the AI sprinkle chat finisher is the crowd moment: a conversational interface that *talks back* and *decorates the donut* is both technically impressive and funny.
 
 ---
 
 ## 2. The Signature Demo Arc
 
-The product is choreographed around one ~90-second narrative. Each beat is a real capability tuned to look cinematic.
-
 ```
-[ SPHERE ]  →  [ TORUS ]  →  [ DECORATE ]  →  [ EAT IT ]
-   cold         hands         icing +          dissolve +
-   steel        pull a        sprinkles        particles +
-   icosphere    hole          scattered        "nom nom"
+[ SPHERE ]  →  [ MENU TOUR ]  →  [ SQUISH → DONUT ]  →  [ AI CHAT → SPRINKLES ]  →  [ EAT IT ]
+   cold           show off          morph the              "add rainbow              dissolve +
+   steel          the menus         sphere into            sprinkles" →              particles
+   icosphere      in space          the donut              hardcoded AI              nom nom
 ```
 
-### Beat 1 — SPHERE (0:00–0:15)
-Cold matcap icosphere on pure black. Webcam corner: desaturated feed + green hand skeleton. User raises both hands; skeleton tracks. Stage label `HEISENBERG // SPHERE`.
+### Beat 1 — SPHERE (0:00–0:10)
+Cold matcap icosphere on pure black. Left hand floats up → the radial menu appears. Stage label `DAEDALUS // SPHERE`.
 
-### Beat 2 — TORUS (0:15–0:40)
-Left hand → **grab** pose (Grab tool). Right hand reaches "into" the sphere center and pulls; poles push through, a hole opens. A morph-target spine guarantees clean topology; real brush deformation rides on top so it feels hand-driven. Label `// TORUS`.
+### Beat 2 — MENU TOUR (0:10–0:30)
+Quick pass through the menus to show judges they're real:
+- Left hand selects ADD SHAPES → preview of shape primitives
+- LEFT hand selects TRANSLATE → directional arrows appear on mesh
+- Right hand follows an arrow → mesh shifts
+- Switches to ROTATE → hand twist rotates the mesh
+- Switches to DILATE → two-hand spread scales it up
 
-### Beat 3 — DECORATE (0:40–1:05)
-Left hand → **open palm** (Decorate). Right-hand smear paints pink icing across the top (vertex-color painting). Pinch drops sprinkles — hundreds of instanced capsules along surface normals. Now unmistakably a donut. Label `// DECORATE`.
+### Beat 3 — SQUISH → DONUT (0:30–1:00)
+Left hand selects MORPH menu. Right hand squishes/pushes through the sphere — the morph system pulls the geometry toward the authored donut target as the user squishes. The hole punches through, the ring fattens, the donut emerges. Label `// DONUT`. The audience gasps.
 
-### Beat 4 — EAT IT (1:05–1:30)
-Left hand → **fist** (the forbidden tool). User brings the donut toward their mouth (right hand pulls it toward the webcam). A noise-threshold **dissolve shader** eats geometry from the bite point outward; a hot emissive edge glows; **GPU particles** disintegrate into black. Optional: 2–3 real CSG bites first. Label `// CONSUMED` → Heisenberg wordmark.
+### Beat 4 — AI CHAT → SPRINKLES (1:00–1:20)
+Left hand opens the DECORATE menu. The AI chat panel slides in from the side. A hardcoded "conversation" plays out:
+- User (typed/voice UI): *"Add rainbow sprinkles and pink icing"*
+- AI (typewriter effect, hardcoded): *"Sure! Generating rainbow sprinkles... adding pink glaze... done!"*
+- Sprinkles materialize on the donut. Icing flows across the top.
+Label `// DECORATED`.
+
+### Beat 5 — EAT IT (1:20–1:40)
+Left hand → DESTROY menu (or just fist gesture). Right hand brings the donut toward the webcam. Dissolve shader eats it from the bite point. Particles burst. Crunch SFX. Label `// CONSUMED`. Daedalus wordmark.
 
 ---
 
@@ -96,636 +156,747 @@ Left hand → **fist** (the forbidden tool). User brings the donut toward their 
 ```
 ┌─────────────┐    ┌──────────────────────┐    ┌───────────────────┐
 │   Webcam    │───▶│  MediaPipe            │───▶│  One Euro Filter  │
-│ getUserMedia│    │  HandLandmarker (GPU) │    │  (per-landmark)   │
+│ getUserMedia│    │  HandLandmarker (GPU) │    │  + Calibration    │
 └─────────────┘    │  VIDEO mode, 2 hands  │    └─────────┬─────────┘
                    └──────────────────────┘              │
                                                           ▼
                                             ┌──────────────────────────┐
-                                            │  Gesture / State Machine  │
-                                            │  L hand → tool/mode        │
-                                            │  R hand → brush pose+verb   │
+                                            │   Gesture / State Machine  │
+                                            │  L hand → menu nav         │
+                                            │  R hand → menu execute     │
                                             └─────────────┬──────────────┘
                                                           ▼
-                          ┌──────────────────────────────────────────────┐
-                          │              Sculpt Engine                    │
-                          │  BVH query (three-mesh-bvh) → verts in r       │
-                          │  → falloff displacement / Taubin smooth        │
-                          │  → mark dirty → refit BVH nodes                 │
-                          │  → recompute normals (dirty region only)        │
-                          └─────────────┬────────────────────────────────┘
-                                        ▼
-                ┌────────────────────────────────────────────────────┐
-                │                  Three.js Scene                      │
-                │  matcap mesh + sprinkle InstancedMesh + particles    │
-                │  → EffectComposer (GTAO + bloom + vignette)          │
-                │  → canvas                                            │
-                └────────────────────────────────────────────────────┘
-
-  Parallel: renderer reads LATEST filtered pose every rAF.
-  Rendering NEVER blocks on inference. Inference lag → render interpolates last pose.
+                          ┌──────────────────────────────────────────────────┐
+                          │              Menu Router                          │
+                          │  active menu → selects execution paradigm:        │
+                          │  ADD_SHAPES | TRANSLATE | DILATE | ROTATE |       │
+                          │  INTERACT | MORPH | DECORATE | DESTROY            │
+                          └──────────────┬───────────────────────────────────┘
+                                         ▼
+              ┌──────────────────────────────────────────────────────────────┐
+              │  Execution Layer (one handler per menu)                       │
+              │  translate → arrow affordances + drag                         │
+              │  dilate → two-hand scale                                      │
+              │  rotate → hand-twist quaternion                               │
+              │  morph → squish brush + authored donut target pull           │
+              │  decorate → AI chat panel + hardcoded sprinkle placement     │
+              │  add → shape picker + instantiation                          │
+              │  interact → CSG operations between shapes                   │
+              │  destroy → dissolve + particles                              │
+              └──────────────┬───────────────────────────────────────────────┘
+                             ▼
+            ┌────────────────────────────────────────────────────────────────┐
+            │  Three.js Scene                                                  │
+            │  mesh(es) + menu UI (3D panels) + chat panel + particles        │
+            │  → EffectComposer (GTAO + bloom + vignette) → canvas            │
+            └────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 Threading model
-- **Main thread:** Three.js render loop (rAF), sculpt engine, UI.
-- **Inference:** MediaPipe runs in `VIDEO` mode pumped from the same rAF, but its result is treated as *state* — the renderer never `await`s it inline.
-- **Optional worker:** `OffscreenCanvas` + Web Worker for rendering if main-thread jank appears; MediaPipe can also be moved to a worker. Treated as an optimization, not a v1 dependency.
-- **Decoupling rule:** a ring buffer / latest-value store holds the most recent filtered pose. Render reads; inference writes. No locks, last-write-wins.
-
-### 3.3 Module boundaries
-The engine is deliberately split so any beat can be developed, tested, and demoed in isolation (see §19 for the file manifest). The `core/director.ts` sits above everything and can drive phases deterministically for a bulletproof pitch.
+### 3.2 Module boundaries
+Each menu has its own execution module. The menu router is the only thing that knows which module is active. Modules don't talk to each other; they talk to the shared scene state. This means each beat of the demo can be developed/tested in isolation.
 
 ---
 
-## 4. Hand Tracking Layer (deep)
+## 4. Hand Tracking Layer
 
-### 4.1 Library & loading
-`@mediapipe/tasks-vision`, `HandLandmarker`. WASM fileset from `cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm`; model `hand_landmarker.task` (float16). For canned left-hand gestures, `GestureRecognizer` is a drop-in superset (returns landmarks + handedness + 8 gesture classes).
+See §0.6 for calibration. See §12 for coordinate math.
 
-### 4.2 Initialization
-```ts
-import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
+### 4.1 Library
+`@mediapipe/tasks-vision` HandLandmarker or GestureRecognizer. GPU delegate, VIDEO mode, numHands: 2.
 
-const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
-);
-const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-    baseOptions: {
-        modelAssetPath: "/models/hand_landmarker.task",
-        delegate: "GPU",
-    },
-    runningMode: "VIDEO",
-    numHands: 2,
-    minHandDetectionConfidence: 0.5,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
-});
-```
+### 4.2 Role assignment
+- **Left hand** → menu navigator (opens menus, selects items, navigates panels)
+- **Right hand** → executor (all spatial manipulation: drags, pinches, twists, squishes)
+- Assignment keyed off `handedness`, never screen position. Swappable via calibration.
 
-### 4.3 The 21-landmark model (index reference)
+### 4.3 Landmark reference
 ```
 0  WRIST
-1  THUMB_CMC      2  THUMB_MCP     3  THUMB_IP      4  THUMB_TIP
-5  INDEX_MCP      6  INDEX_PIP     7  INDEX_DIP     8  INDEX_TIP
-9  MIDDLE_MCP    10  MIDDLE_PIP   11  MIDDLE_DIP   12  MIDDLE_TIP
-13 RING_MCP      14  RING_PIP     15  RING_DIP     16  RING_TIP
-17 PINKY_MCP     18  PINKY_PIP    19  PINKY_DIP    20  PINKY_TIP
+1  THUMB_CMC    2  THUMB_MCP   3  THUMB_IP    4  THUMB_TIP
+5  INDEX_MCP    6  INDEX_PIP   7  INDEX_DIP   8  INDEX_TIP
+9  MIDDLE_MCP  10  MIDDLE_PIP 11  MIDDLE_DIP 12  MIDDLE_TIP
+13 RING_MCP    14  RING_PIP   15  RING_DIP   16  RING_TIP
+17 PINKY_MCP   18  PINKY_PIP  19  PINKY_DIP  20  PINKY_TIP
 ```
-- `landmarks` → normalized image space (`x,y` ∈ [0,1], `z` depth relative to wrist).
-- `worldLandmarks` → meters, origin at hand geometric center (scale-invariant; preferred for gesture thresholds).
-- `handedness` → `Left` / `Right` (mirror-aware; remember the webcam is mirrored — handedness already accounts for the model's convention, but the displayed video is flipped, so map deliberately).
 
-### 4.4 Per-frame pump
-```ts
-function pump(video, tNowMs) {
-    const res = handLandmarker.detectForVideo(video, tNowMs);
-    // res.landmarks: Array<Array<{x,y,z}>>   (one per hand)
-    // res.worldLandmarks, res.handedness, res.handednesses
-    for each hand:
-        role = handedness === "Left" ? TOOL_HAND : SCULPT_HAND  // assign by config
-        filtered = oneEuro.apply(hand.landmarks, tNowMs)
-        store.write(role, filtered)
-}
-```
-In `VIDEO` mode, MediaPipe reuses the previous bounding box and skips palm detection most frames, cutting latency. Timestamps must be monotonically increasing (use `performance.now()`).
+### 4.4 One Euro Filter
+Per landmark, per axis (2 × 21 × 3 = 126 scalar filters). Parameters read through CalibrationProfile. See §0.6.4 for defaults and tuning protocol.
 
-### 4.5 One Euro Filter (the uncertainty answer)
-Adaptive low-pass: heavy smoothing at low velocity (kills jitter), light at high velocity (kills lag). One filter instance per (hand, landmark, axis) = 2 × 21 × 3 = 126 scalar filters. Cheap.
-
-```
-Parameters:
-  min_cutoff = 1.0    # lower → smoother at rest (more lag)
-  beta       = 0.007  # higher → snappier when moving (more jitter)
-  d_cutoff   = 1.0    # cutoff for the derivative
-
-Algorithm (per scalar x at time t):
-  dx   = (x - x_prev) * rate
-  edx  = lowpass(dx, alpha(d_cutoff))
-  cutoff = min_cutoff + beta * |edx|
-  x_hat = lowpass(x, alpha(cutoff))
-  where alpha(c) = 1 / (1 + (rate / (2*pi*c)))
-```
-**Tuning protocol (live):** start `min_cutoff=1.0, beta=0.007`. If the cursor shivers at rest → halve `min_cutoff`. If it lags during fast strokes → double `beta`. Keep `d_cutoff=1.0`. Bind both to dev-only sliders.
-
-### 4.6 Failure handling
-- **No hands:** hold last pose for N frames (≈150ms) then fade brush out; never snap.
-- **One hand lost:** keep the present hand's role active; suspend the missing role's actions.
-- **Role ambiguity (both Left or both Right):** fall back to screen-x ordering for that frame only and log.
-- **Confidence dips:** below threshold, freeze brush engagement (don't deform on noise).
+### 4.5 Failure handling
+- **No hands:** hold last pose N frames (≈150ms), fade affordances.
+- **One hand lost:** suspend that hand's role, continue other.
+- **Low confidence:** freeze menu selection and brush engagement.
 
 ---
 
-## 5. Gesture Recognition & State Machine (deep)
+## 5. Spatial Edit Menus (deep)
 
-### 5.1 Normalization
-All thresholds are normalized by **hand scale** `S = ||wrist(0) − middleMCP(9)||` (in world landmarks), making gestures distance-invariant. Distances below are expressed as fractions of `S`.
+This is the core UX of Daedalus. Edit menus are **floating spatial panels** that appear in 3D space around the object when the left hand opens them. They are **real interactive elements** — not HUD overlays — and are navigated by hand gesture.
 
-### 5.2 Finger-extended predicate
-A finger `f` is "extended" if its TIP is farther from the wrist than its PIP along the palm-normal-projected axis, AND the TIP–PIP–MCP angle exceeds ~160°. Curl is the inverse. Compute palm normal from `(indexMCP−wrist) × (pinkyMCP−wrist)`.
+### 5.1 Menu taxonomy
+Eight menus, each with its own icon, color accent, and execution paradigm:
 
-### 5.3 Left hand — discrete tool selector (debounced over 5 frames)
+| Menu | Icon | Accent | What it does |
+|---|---|---|---|
+| **ADD SHAPES** | + | teal | Pick from primitive shapes to add to the scene |
+| **TRANSLATE** | ↕↔ | blue | Move the selected object via directional arrows |
+| **DILATE** | ⊕ | purple | Scale the object up/down |
+| **ROTATE** | ↻ | amber | Rotate the object |
+| **INTERACT** | ⊗ | red | Boolean/CSG operations between multiple objects |
+| **MORPH** | ∿ | pink | Squish/deform the mesh toward authored presets |
+| **DECORATE** | ✦ | gold | Open AI chat panel + icing/sprinkle tools |
+| **DESTROY** | ✕ | white | Trigger the eat/dissolve finale |
 
-| Gesture | Predicate | Tool |
-|---|---|---|
-| Open palm | all 5 extended + spread > 0.4·S | Decorate / Smooth |
-| Fist | all 4 fingers curled + thumb tucked | **Eat** |
-| Grab/claw | fingers half-curled (~90°), thumb opposed | Grab/Move |
-| Pinch | ‖tip4 − tip8‖ < 0.25·S | Carve |
-| Thumbs up | thumb extended +y, others curled | Inflate |
-| Peace | index+middle extended, ring+pinky curled | Undo |
+### 5.2 Menu UI — the radial ring
+When the left hand forms a **"gun" pose** (index extended, thumb up, others curled), a **radial ring menu** materializes around the left index fingertip in 3D space. The 8 menus are arranged in a circle, each as a glowing icon + label tile.
 
-**Debounce:** a gesture must hold ≥5 consecutive frames to commit a tool switch (prevents flicker). The committed tool latches until a different gesture holds 5 frames. Show the active tool in the HUD with a 120ms crossfade.
+- Ring appears as a smooth fade-in (120ms).
+- Left hand **rotates to aim** the index finger at a menu item (item highlights on dwell).
+- Left hand **pinches** to select (closes the ring, activates the menu).
+- Left hand **fist** to dismiss without selecting.
+- The selected menu stays active (indicated in HUD) until another is picked.
 
-### 5.4 Right hand — continuous deformer
+### 5.3 Menu UI — in-menu panels
+When a menu is active, a **spatial panel** appears beside the object — a floating card rendered in 3D space (a `Plane` geometry with a canvas texture, or a CSS3DObject). The panel shows the controls/affordances specific to that menu (arrows, sliders, shape picker, chat window). The panel is always legible from the camera (billboard-locked on y-axis, angled toward the user).
 
-| Signal | Source | Drives |
-|---|---|---|
-| Brush position | INDEX_TIP(8), unprojected to mesh plane | brush center |
-| Engage | pinch(4↔8) closed | stroke on/off |
-| Pressure | pinch tightness OR palm openness ∈ [0,1] | brush strength |
-| Two-hand scale | ‖wristL − wristR‖ delta | global object scale |
-| Twist | hand roll (vector 5→17 angle) | optional rotate |
+### 5.4 Rendering the menus
+- All menu geometry rendered as Three.js objects in the scene — not HTML overlays (so they look 3D and can be lit/shadowed). Exception: the AI chat panel uses a CSS3DRenderer layer for the typewriter text effect.
+- Menu items have hover states (rim glow), selection states (filled glow), and idle states.
+- JetBrains Mono for all labels. Cold brutalist palette with per-menu accent.
 
-### 5.5 Brush state machine
-```
-IDLE ──(engage)──▶ ENGAGED ──(move)──▶ STROKING
-  ▲                   │                    │
-  └──(release)────────┴────(release)───────┘
-
-On ENGAGED→STROKING: capture stroke origin, begin accumulating dirty set.
-On *→IDLE: flush dirty set, finalize normals, push undo snapshot.
-```
-Undo = ring buffer of position-attribute snapshots (cap ~12; copy only dirty ranges to save memory).
-
-### 5.6 Gesture conflict resolution
-- Pinch vs Grab disambiguation: pinch requires thumb–index proximity AND other fingers *not* uniformly curled; grab requires uniform partial curl.
-- Tool hand never deforms; sculpt hand never switches tools. Hard separation by handedness prevents cross-talk.
+### 5.5 Multi-object selection (for INTERACT)
+When INTERACT is active, the user can "touch" a second object with the right hand to select it as the target for a boolean operation (union, subtract, intersect — shown as icons in the INTERACT panel).
 
 ---
 
-## 6. Sculpt Engine (deep)
+## 6. Gesture Interaction Paradigms per Menu (deep)
 
-### 6.1 Geometry baseline
-- Icosphere, subdivided to **~40k triangles** (sweet spot: enough resolution for a clean torus + sprinkle adhesion, light enough for 60fps).
-- Indexed `BufferGeometry`; attributes: `position`, `normal`, `color` (for icing), `morphTarget[0]` (torus).
-- `geometry.computeBoundsTree()` (three-mesh-bvh) once at load; refit incrementally thereafter.
+Each menu has a dedicated execution paradigm for the right hand. The left hand stays in menu-nav mode; the right hand switches paradigm automatically when the menu changes.
 
-### 6.2 The per-stroke loop (authoritative)
+### 6.1 ADD SHAPES
+**Paradigm: shape-pick + place**
+
+The SHAPES panel shows a grid of primitive thumbnails: sphere, cube, cylinder, cone, torus, icosahedron. Right-hand **point + dwell** (INDEX_TIP aimed at a thumbnail for ~600ms) highlights it. Right-hand **pinch** selects it. The shape spawns at the right hand's world position. Right hand can then immediately drag it into place.
+
+**Affordances:** thumbnail grid on spatial panel. Currently selected shape ghost follows right INDEX_TIP until placed.
+
+### 6.2 TRANSLATE
+**Paradigm: directional arrow drag**
+
+When TRANSLATE is active, **six directional arrows** appear around the selected object (±X, ±Y, ±Z), rendered as Three.js cone+cylinder affordances with per-axis color coding (X=red, Y=green, Z=blue — standard 3D app convention).
+
+Interaction:
+- Right hand **hovers near an arrow** → arrow highlights + scales up slightly.
+- Right hand **pinches near an arrow and drags** → the object translates along that axis.
+- Drag distance = right-hand displacement · sensitivity scalar (from CalibrationProfile).
+- **Snap-to-grid:** optional, toggled in panel. Off by default.
+- The panel shows live X/Y/Z readout in JetBrains Mono.
+
+**Affordances:** 6 axis arrows + live coordinate display on panel.
+
+### 6.3 DILATE
+**Paradigm: two-hand pinch-spread**
+
+Dilation uses **both hands simultaneously.** The right hand is the primary scale handle; the left hand is the secondary (releases menu-nav for this paradigm only — the dilation gesture is too natural to resist).
+
+Interaction:
+- User brings both hands near the object, each forming a loose pinch.
+- Moving hands **apart** → object scales up uniformly.
+- Moving hands **together** → object scales down.
+- Scale factor = `currentDist / startDist`.
+- Non-uniform scaling: if one hand stays still and only one moves, scale along the axis connecting the two hands.
+- The panel shows live scale readout.
+
+**Affordances:** a translucent bounding box around the object while dilation is active, with scale handles at corners (visual only, not interactive).
+
+### 6.4 ROTATE
+**Paradigm: hand-twist quaternion**
+
+Right hand controls rotation by its orientation in space.
+
+Interaction:
+- On engage (right hand pinch near the object), **capture the starting hand orientation** as a reference quaternion `Q_start` and the object's current rotation `R_start`.
+- Every frame: compute `deltaQ = Q_current · Q_start⁻¹` (the rotation the hand has applied since engage).
+- Apply `deltaQ` to `R_start` → new object rotation.
+- On disengage (pinch release), latch the rotation.
+- **Axis lock:** if user points index finger along the panel (a "gun" with the right hand briefly while in ROTATE), lock rotation to the axis closest to the index direction. Shows a lock icon in panel.
+- **Free rotate by default.** No gimbal lock (use quaternion throughout, never Euler until final display).
+
+**Affordances:** an arcball ring rendered around the object (3 colored circles for XYZ). The active arc highlights as the hand rotates. Live rotation display in Euler (for human readability) on panel.
+
+### 6.5 INTERACT (CSG operations)
+**Paradigm: two-object selection + operation pick**
+
+When INTERACT is active:
+1. The currently selected object is "source" (highlighted blue).
+2. Right hand "taps" another object (INDEX_TIP proximity) → it becomes "target" (highlighted red).
+3. Panel shows three operation icons: UNION (A∪B), SUBTRACT (A−B), INTERSECT (A∩B).
+4. Right hand point+dwell on an operation icon → preview shows the resulting mesh ghosted.
+5. Right hand pinch to confirm → `three-bvh-csg` `Evaluator.evaluate(source, target, op)` runs.
+6. Result replaces source; target removed.
+
+**Gotcha:** three-bvh-csg is experimental; non-manifold results possible. Add a "Repair mesh" button (runs a cleanup pass) and a "Undo" fallback.
+
+### 6.6 MORPH (sphere → donut)
+**Paradigm: squish gesture + authored target pull**
+
+This is the hero beat. MORPH menu has two sub-modes shown as panel tabs:
+
+**Free morph (real sculpt brushes):**
+- Right hand uses all real brushes (grab/inflate/smooth/flatten/pinch) to freely deform the geometry, just like the sculpt engine (§7). No target pulling.
+
+**Squish-to-preset (the donut demo):**
+- Panel shows authored shape presets: DONUT, PRETZEL, PILLOW, BLOB, SPIKE.
+- User selects DONUT (pre-authored mesh target).
+- A morph influence `t` (0→1) is driven by the **squish gesture**: right-hand fingers closing together like crushing/squishing. `t` increases as the squish tightens, decreases as it opens. The mesh interpolates toward the authored donut target proportionally.
+- The morph is **blend-shape driven** (same-topology authored target, `morphTargetInfluences[0] = t`), so it's clean even when the user squishes imprecisely.
+- The **real geometry underneath** also responds to grab/push brushes on top of the morph — so the squish feels physically real, not like a slider animation.
+- Once `t > 0.95`, label updates to `// DONUT` and a subtle ding SFX fires.
+
+**Squish gesture detection:**
+- Measure the spread of fingertips: `spread = average(‖tipI − tipM‖, ‖tipM − tipR‖, ‖tipR − tipP‖)`.
+- Normalize by `S`. `spread` maps to `t` via a smooth curve (high spread = `t=0`, tight squeeze = `t=1`).
+- Smooth `t` with a low-pass filter so squish feels continuous and satisfying.
+
+### 6.7 DECORATE (AI chat + icing)
+**Paradigm: AI chat panel (hardcoded) + smear/drop**
+
+See §9 for the full AI chat spec. Summary:
+
+- Panel opens with a chat interface (CSS3DRenderer layer or canvas texture).
+- Hardcoded conversation: user types/speaks a decoration request; AI "responds" with typewriter effect; sprinkles/icing materialize per §9.
+- Direct hand tools also available: right-hand smear for icing, pinch to drop sprinkles (real surface picking, authored designs).
+
+### 6.8 DESTROY (eat it)
+**Paradigm: fist + bring-to-mouth**
+
+- Left hand selects DESTROY from the menu.
+- Right hand forms a fist, moves toward the camera (as if bringing the donut to the mouth).
+- When INDEX_TIP z-depth crosses a threshold (close to camera), the dissolve triggers on the mesh under the right hand.
+- See §10 for the full dissolve spec.
+
+---
+
+## 7. Sculpt Engine
+
+> Exists to power MORPH free-mode brushes and any direct sculpting. Real BVH-localized deformation on arbitrary geometry.
+
+### 7.1 Geometry baseline
+- Icosphere, ~40k triangles. Indexed `BufferGeometry`. Attributes: `position`, `normal`, `color` (icing), `morphTarget[0]` (authored donut target).
+- `geometry.computeBoundsTree()` once at load; refit incrementally.
+
+### 7.2 Per-stroke loop
 ```
-1. fingertip(filtered) → world point P (see §12 unprojection)
-2. bvh.shapecast / closestPointToPoint → candidate triangles within radius r of P
-3. collect unique vertices V of those triangles where ‖v − P‖ ≤ r
+1. fingertip(filtered) → world point P (see §13 unprojection)
+2. bvh.shapecast → candidate triangles within radius r of P
+3. collect unique vertices V where ‖v − P‖ ≤ r
 4. for v in V:
-     d = ‖v − P‖
-     w = falloff(d / r)                  # see 6.3
-     applyBrush(verb, v, w, ctx)         # see 6.4
-     mark v, and its incident faces, dirty
-5. bvh.refit(dirtyNodeSet)               # only touched nodes
-6. recomputeNormals(dirtyVertexSet)      # see 6.5
-7. geometry.attributes.position.addUpdateRange(start,count); needsUpdate=true
-   (upload only changed ranges, not whole buffer)
+     w = falloff(d / r)          // (1-(d/r)^2)^2
+     applyBrush(verb, v, w, ctx)
+     mark v and incident faces dirty
+5. bvh.refit(dirtyNodeSet)
+6. recomputeNormals(dirtyVertexSet)
+7. upload changed attribute ranges only
 ```
-**Never** rebuild the full BVH or recompute all normals per stroke. Dirty-region updates are the core perf trick.
 
-### 6.3 Falloff kernels
-```
-smooth (default):  w = (1 - (d/r)^2)^2        # ZBrush/Blender feel
-linear:            w = 1 - d/r
-constant:          w = 1
-sharp (crease):    w = (1 - d/r)^4
-```
-`r` (brush radius) and the kernel are the two dials that most affect "feel." Expose both to dev sliders; ship tuned constants.
-
-### 6.4 Brush verbs
+### 7.3 Brush verbs
 | Brush | Operation |
 |---|---|
-| **Grab/Move** | `v += w · drag` where `drag` = filtered fingertip delta this frame (primary torus tool) |
-| **Inflate** | `v += w · strength · n_v` along vertex normal |
-| **Draw** | `v += w · strength · n_brushAvg` (averaged area normal — smoother bulges) |
-| **Flatten** | project `v` onto area-average plane: `v -= w·((v−c̄)·n̄)·n̄` |
-| **Pinch** | move `v` toward brush axis in tangent plane by `w` |
-| **Crease** | pinch + negative draw → sharp valley |
-| **Smooth** | **Taubin** (see 6.6) |
+| **Grab/Move** | `v += w · drag` (fingertip delta) |
+| **Inflate** | `v += w · strength · n_v` |
+| **Draw** | `v += w · strength · n_brushAvg` |
+| **Flatten** | project toward area-average plane by `w` |
+| **Pinch** | toward brush axis in tangent plane |
+| **Crease** | pinch + negative draw |
+| **Smooth** | Taubin (λ≈0.5, μ≈−0.53, 1–2 iterations, dirty region only) |
 
-### 6.5 Incremental normal recompute
-For each dirty vertex, accumulate face normals of incident faces (precompute vertex→face adjacency once at load). Cheaper than `computeVertexNormals()` over the whole mesh. Normalize at the end. Update `normal` attribute's dirty range only.
-
-### 6.6 Smoothing: Taubin, not Laplacian
-Plain Laplacian moves each vertex toward its neighbors' centroid and **shrinks volume** (reported ~28% shrinkage for HC-Laplacian in topology studies). **Taubin** applies a positive step λ then a negative un-shrink step μ, behaving as a band-pass that **preserves volume** (reported ~15% volume *increase* in the same study — i.e. it resists collapse). For a donut whose thin tube would otherwise deflate, Taubin is mandatory.
-```
-λ ≈ 0.5,  μ ≈ -0.53           # |μ| slightly > λ
-for k iterations:
-    step(λ)   # v += λ · L(v)
-    step(μ)   # v += μ · L(v)
-where L(v) = (mean of neighbors) - v   (umbrella / uniform Laplacian)
-```
-Run 1–2 iterations per smooth stroke on the dirty set only.
-
-### 6.7 Topology safety
-Start tessellation high enough that the torus never needs live retopology. If detail is lacking for a beat, a one-shot uniform subdivide is available — but avoid live dyntopo on stage (risk). SculptGL-style dyntopo is a stretch goal, not a dependency.
+### 7.4 Why Taubin not Laplacian
+Plain Laplacian moves vertices toward neighbors' centroid — shrinks volume (~28% measured). Taubin applies a positive step (λ) then a negative un-shrink step (μ) → band-pass filter that preserves volume. For a donut tube that must not deflate: Taubin is mandatory.
 
 ---
 
-## 7. Morphology: Sphere → Torus (deep)
+## 8. Morphology: Sphere → Donut (deep)
 
-Three layered strategies, in order of demo safety:
+### 8.1 The authored donut target
+A pre-authored `TorusGeometry` with **identical vertex count and ordering** as the starting icosphere, stored as `morphTarget[0]`. This guarantees clean blend-shape interpolation. Parameters: `R=1.0, r=0.42` (reads as a plump donut).
 
-### 7.1 (A) Morph target — the reliable spine
-- Pre-author a **torus with identical vertex count and ordering** to the start icosphere. (Generate by mapping each icosphere vertex to a torus parameterization, or author in Blender and export with matching index order.)
-- Add as `morphTarget[0]`; drive `mesh.morphTargetInfluences[0]` 0→1 from a gesture scalar (two-hand "pull apart" or a sustained grab at center).
-- GPU-interpolated per-vertex. Guaranteed clean, fast, repeatable. **This is the demo backbone.**
+### 8.2 Squish-driven morph
+From §6.6: squish spread → `t` → `morphTargetInfluences[0] = t`. Real brush deformation (§7) runs additively on top so it feels physical and hand-driven, not like watching a slider.
 
-### 7.2 (B) Real brush deformation on top — the "my hands did that" flavor
-- After/under the morph, let Grab/Inflate brushes push the center in and widen the ring so the transformation feels earned. The hole forms via inflate-negative at the poles or grab-through.
-
-### 7.3 (C) Pure procedural blend — fallback
-- `v = lerp(spherePos[i], torusPos[i], s)` driven by gesture scalar `s`. No brushes, no morph attribute — just math. Bulletproof but less tactile.
-
-**Recommended:** morph spine (A) + brush flavor (B). Never rely solely on live topology change.
-
-### 7.4 Torus parameterization (for authoring the target)
+### 8.3 Morph target authoring
 ```
-R = major radius (center of tube to center of torus)
-r = minor radius (tube)
-for sphere vertex with spherical coords (θ, φ):
-    u = θ            # around the tube
-    v = φ            # around the torus
-    x = (R + r·cos(u))·cos(v)
-    y = (R + r·cos(u))·sin(v)
-    z = r·sin(u)
+Torus parameterization:
+  x = (R + r·cos(u))·cos(v)
+  y = (R + r·cos(u))·sin(v)
+  z = r·sin(u)
+
+Map each icosphere vertex (spherical coords θ, φ) → torus (u=θ, v=φ).
+Export from Blender or generate procedurally at load time.
 ```
-Choose `R, r` so the torus volume reads as a donut (e.g. R=1.0, r=0.42).
+
+### 8.4 Other shape presets (MORPH menu)
+PRETZEL, PILLOW, BLOB, SPIKE — each an authored morph target. Only DONUT is the hero; others are fun extras if time allows.
 
 ---
 
-## 8. Decorate Phase (deep)
+## 9. Decorate Phase & AI Chat Interface (deep)
 
-### 8.1 Icing — real-time vertex painting
-- Right-hand smear writes color into a per-vertex `color` BufferAttribute.
-- Affected vertices = same BVH radius query as sculpting; blend toward icing color by `w`.
-- A height/threshold mask (`v.y > yIcingLine`) keeps icing on top, with a noisy boundary for a drip edge.
-- Material uses `vertexColors: true`; the cold matcap shows through on the un-iced ring.
+### 9.1 The two-layer design
+Decoration has two parallel input paths that work simultaneously:
 
-### 8.2 Sprinkles — instanced surface scatter
-- `MeshSurfaceSampler(donut).setWeightAttribute('color').build()` once. Weighting by the icing color means sprinkles **only land on iced regions**.
-- `sampler.sample(posTarget, normalTarget, colorTarget)` per sprinkle:
-  - position = sampled surface point + `ε · normal` (sit on top, not embedded)
-  - orientation = align sprinkle's long axis to a random tangent (or to normal for "standing" sprinkles)
-  - color = random from a candy palette
-- Render all as **one `InstancedMesh`** of tiny capsules/cylinders (cap ~800–1500 → one draw call). Each pinch "drops" a batch of N (e.g. 60) with a tiny scale-in animation.
+**Path A — AI Chat (hardcoded simulation):**
+A conversational interface that *simulates* what an LLM-powered decoration system would look like in a real product. Judges immediately understand the product vision without any real AI being involved.
 
-### 8.3 Decals (optional)
-`DecalGeometry` for a stamped detail (e.g. a glaze highlight) if time allows. Not required.
+**Path B — Direct hand tools:**
+Real surface picking + real placement of authored-design accessories. A judge can smear icing and drop sprinkles directly with their hands, independent of the chat.
 
----
+### 9.2 AI Chat Interface (deep spec)
 
-## 9. The "Eat It" Finale (deep)
+#### 9.2.1 What it is
+A floating spatial chat panel (CSS3DRenderer, positioned to the right of the donut). It looks exactly like a minimal chat UI — message bubbles, an input field, a "Decorating AI" avatar. It is **entirely hardcoded.** The product vision is: in v1 of the real product, you'd say "add pastel sprinkles and mint icing" and a real LLM would call a decoration API. For the hackathon, that API call is replaced by scripted responses that produce the exact same output.
 
-### 9.1 Primary — Dissolve + GPU particles (reliable, cinematic)
-**Dissolve shader** (patch the matcap material via `onBeforeCompile`, or a custom ShaderMaterial):
-```glsl
-// fragment
-uniform float uProgress;     // 0 → 1 over the eat animation
-uniform float uEdge;         // edge band width, e.g. 0.05
-uniform vec3  uEdgeColor;    // hot emissive, e.g. amber-white
-varying vec3  vObjPos;
+#### 9.2.2 Hardcoded conversation scripts
+Each script is an array of `ChatTurn` objects. A small set of pre-authored scripts covers the demo flow:
 
-float n = simplexNoise(vObjPos * uNoiseScale);   // object-space noise
-if (n < uProgress) discard;                       // eaten away
-float edge = smoothstep(uProgress, uProgress + uEdge, n);
-vec3 col = mix(uEdgeColor, baseMatcapColor, edge);
-// emissive boost in the edge band drives bloom
-```
-- Drive `uProgress` 0→1 from the bite contact point outward (bias the noise field by distance from the mouth-ward bite origin so it eats directionally, not uniformly).
-- **GPU particles:** emit from the dissolving edge each frame; per-particle lifespan, velocity (outward + slight gravity), size decay, alpha fade. Implement as a points system with a custom shader updating positions on GPU (or CPU for ≤2k particles). Additive blend + bloom = "vaporizing."
-
-### 9.2 Secondary — Real CSG bites (optional flex)
-`three-bvh-csg`:
 ```ts
-const evaluator = new Evaluator();
-const result = evaluator.evaluate(donutBrush, biteSphereBrush, SUBTRACTION);
-// or HOLLOW_SUBTRACTION to avoid requiring perfect manifoldness
+interface ChatTurn {
+    role: "user" | "ai";
+    text: string;
+    action?: DecorationAction;   // fires when the AI turn completes
+    delay: number;               // ms after previous turn
+}
+
+interface DecorationAction {
+    type: "apply_icing" | "add_sprinkles" | "add_glaze" | "clear";
+    design: IcingDesign | SprinkleDesign | GlazeDesign;
+    region?: "top" | "all" | "drip";
+}
 ```
->100× faster than BSP-based three.js CSG libs. **Risk:** experimental; numerical precision can yield non-manifold/missing tris. Use 2–3 bites for tactile credibility, then hand to the dissolve. **If it glitches in rehearsal, cut entirely.**
 
-### 9.3 Best-of-both choreography
-`2–3 CSG bites (real holes) → trigger dissolve → particle burst → fade to black → wordmark`.
+**Demo script 1 — the hero conversation:**
+```
+[user]  "Add rainbow sprinkles and pink icing"          // 0ms
+[ai]    "On it! Applying pink glaze first..."            // 800ms → fires: apply_icing(pink, top)
+[ai]    "Adding rainbow sprinkles..."                    // 1800ms → fires: add_sprinkles(rainbow)
+[ai]    "Done! Your donut looks delicious 🍩"           // 3000ms
+```
 
-### 9.4 Audio (cheap, huge ROI)
-A subtle crunch SFX on each bite and a soft "poof" on dissolve. WebAudio, preloaded buffers. Sound sells the eat more than any shader.
+**Demo script 2 — judge interaction:**
+```
+[user]  "Make it look like a galaxy donut"
+[ai]    "Ooh nice. Applying cosmic purple glaze..."      // → apply_icing(galaxy-purple, all)
+[ai]    "Scattering star sprinkles..."                   // → add_sprinkles(star-silver)
+[ai]    "Adding a shimmer glaze coat..."                 // → add_glaze(shimmer)
+[ai]    "Behold: a galaxy donut."
+```
+
+**Script 3 — funny edge case (shown if judges try weird inputs):**
+```
+[user]  "Make it healthy"
+[ai]    "I'm a donut decorator, not a miracle worker."
+[ai]    "...adding extra sprinkles."                     // → add_sprinkles(extra-rainbow)
+```
+
+#### 9.2.3 Input mechanism
+- **Primary:** a virtual keyboard (simple 2D panel) the left hand can "type" on (index-finger tap on key, collision detection on key bounds). Slow but visually impressive.
+- **Secondary (fallback):** a physical keyboard input field hidden in the DOM. For the demo, the presenter types.
+- **Scripted-demo shortcut:** left hand peace sign while chat is open → immediately fires the next scripted `ChatTurn` sequence. This is the pitch safety mechanism — looks like the user typed it.
+
+#### 9.2.4 Typewriter effect
+AI responses appear character-by-character at ~40 chars/second with a blinking cursor. The `DecorationAction` fires when the turn's text is **50% typed** (not at the end) so the decoration starts appearing while the AI is still "talking" — more cinematic.
+
+#### 9.2.5 Chat panel visual spec
+```
+Background:   #0A0A0A (near-black, distinct from scene black)
+Border:       0.5px, rgba(255,255,255,0.12)
+Width:        320px equivalent in scene units
+Font:         JetBrains Mono 12px
+User bubble:  right-aligned, rgba(255,255,255,0.08) bg
+AI bubble:    left-aligned, no bg, dimmer text for in-progress
+AI avatar:    "✦ DAEDALUS AI" label, animated spinner while "thinking"
+Input field:  bottom, monospace, blinking cursor
+```
+
+### 9.3 Authored accessory designs
+
+```ts
+// Sprinkle geometry presets
+const SPRINKLE_DESIGNS: Record<string, SprinkleDesign> = {
+    "rainbow":      { geometry: "capsule", palette: ["#FF3E9A","#FFE642","#42CFFF","#8BFF42"], length: 0.04, radius: 0.008, sizeJitter: 0.3, orientation: "random" },
+    "star-silver":  { geometry: "star", palette: ["#C0C8D4","#E8EEF4"], length: 0.035, radius: 0.01, sizeJitter: 0.2, orientation: "normal" },
+    "extra-rainbow":{ geometry: "capsule", palette: ["#FF3E9A","#FFE642","#42CFFF","#8BFF42","#FF6B42"], length: 0.04, radius: 0.008, sizeJitter: 0.5, orientation: "random" },
+};
+
+// Icing / glaze material presets
+const ICING_DESIGNS: Record<string, IcingDesign> = {
+    "pink":         { color: "#FF3E9A", gloss: 0.7, dripStyle: "smooth", edgeNoise: 0.15, sugarDusting: false },
+    "galaxy-purple":{ color: "#8B3EFF", gloss: 0.9, dripStyle: "thick", edgeNoise: 0.2, sugarDusting: true },
+};
+```
+
+### 9.4 Direct hand decoration (Path B)
+- Right-hand smear → vertex-color painting using active `IcingDesign` color+gloss.
+- Smear brush: same BVH radius query as sculpt, but writes color attribute instead of displacing position.
+- Edge smoothing pass (authored tuning curve) on the painted mask boundary → icing boundary always looks like icing, not a freehand blob.
+- Pinch → drop a batch of `SprinkleDesign` instances at the surface under the right hand, via `MeshSurfaceSampler` weighted by icing mask.
+- Scatter smoothing: Poisson-disk relaxation on sampled positions so sprinkles never clump.
+- One `InstancedMesh` per sprinkle geometry type; cap ~1500 total.
 
 ---
 
-## 10. Rendering & Shader Pipeline (deep)
+## 10. The "Eat It" Finale
 
-### 10.1 Engine
-Three.js r17x, `WebGLRenderer` (v1). Optional stretch: `WebGPURenderer` (~one-line swap, auto WebGL2 fallback) to unlock compute-shader particles.
+> Triggered by DESTROY menu or fist gesture. Real dissolve consumes whatever geometry the user actually sculpted/decorated.
 
-### 10.2 Material — cold matcap
-- `MeshMatcapMaterial` with a brushed-steel / obsidian matcap PNG (free: `nidorx/matcaps`).
-- Matcap bakes lighting into a sphere texture sampled by view-space normal → **no scene lights**, dirt cheap, identical every frame from a fixed camera. The professional sculpting-app choice.
-- `vertexColors: true` so icing paints over the steel.
-
-### 10.3 Rim light
-Fresnel via `onBeforeCompile`:
+### 10.1 Dissolve shader
 ```glsl
-float rim = pow(1.0 - max(dot(normalize(vNormal), vViewDir), 0.0), uRimPower);
-gl_FragColor.rgb += rim * uRimColor;     // cold blue-white edge
-```
-Or a second additive cold matcap (double-matcap) for an even crisper editorial edge.
+uniform float uProgress;      // 0 → 1 (animated)
+uniform float uEdge;          // edge band, e.g. 0.05
+uniform vec3  uBiteOrigin;    // world pos of right hand
+uniform vec3  uEdgeColor;     // #FFE6B0 (hot amber)
 
-### 10.4 Post-processing
-`EffectComposer`:
-1. `RenderPass`
-2. `GTAOPass` (or SSAO) — subtle contact shadows in crevices
-3. `UnrealBloomPass` — rim + dissolve-edge glow (threshold high so only emissive blooms)
-4. `OutputPass` + vignette (custom shader pass)
-
-Keep post minimal — it competes with the sculpt loop for frame budget. Bloom threshold tuned so only the hot dissolve edge and rim bloom, not the whole mesh.
-
-### 10.5 Camera
-Fixed framing, slight idle dolly/parallax for life. Object rotates (slow auto-spin or hand-twist), camera mostly static so the matcap reads consistently.
-
-### 10.6 Webcam overlay shader
-Corner panel; desaturate + raise contrast (CSS `filter: grayscale() contrast()` or a tiny shader). Hand skeleton drawn via MediaPipe `drawConnectors`/`drawLandmarks` (HAND_CONNECTIONS) in green on a separate 2D canvas layered above the feed.
-
----
-
-## 11. Performance Engineering (deep)
-
-### 11.1 Frame budget (60fps = 16.6ms)
-| Stage | Budget | Lever if over |
-|---|---|---|
-| MediaPipe inference | 8–12ms | GPU delegate, 720p input, VIDEO mode |
-| One Euro filtering | <1ms | — |
-| Gesture + state | <1ms | — |
-| BVH query + deform | 2–5ms | smaller radius, fewer verts, coarser mesh |
-| Normal recompute | 1–3ms | dirty-only, adjacency precomputed |
-| Render + post | 4–6ms | cut GTAO, lower bloom res |
-
-### 11.2 Hard rules
-- **GPU delegate mandatory** (CPU WASM ≈ 10–15fps).
-- **Decouple** inference from render (latest-value store; never block).
-- **Dirty-region only** — never full BVH rebuild or full normal recompute per stroke.
-- **Reuse temporaries** — module-level `Vector3`/`Matrix4`/`Plane` scratch objects; zero per-frame allocation in the hot loop (avoid GC pauses).
-- **One InstancedMesh** for sprinkles; cap particle count.
-- **Webcam at 720p** — MediaPipe internally downscales to ~192–256px, so higher res only burns CPU with no accuracy gain.
-- **`addUpdateRange`** to upload only changed attribute ranges, not the whole buffer.
-- **`powerPreference: "high-performance"`** on the renderer; `antialias: true` only if budget allows (MSAA cost), else FXAA pass.
-
-### 11.3 Profiling protocol
-- `stats.js` (FPS/ms/MB) always on in dev.
-- Chrome DevTools Performance panel for flame charts; watch for long tasks > 16ms and GC sawtooth.
-- Use the **Chrome DevTools MCP** (see §15) to let the agent pull live perf traces and propose fixes.
-
-### 11.4 Worker offload (stretch)
-`OffscreenCanvas.transferControlToOffscreen()` → render in a worker; post landmarks via `postMessage` (or `SharedArrayBuffer` with COOP/COEP headers for zero-copy). Only if main-thread jank is observed.
-
----
-
-## 12. Coordinate Spaces & Math Reference
-
-### 12.1 The spaces
-1. **Image space** — MediaPipe `x,y ∈ [0,1]`, origin top-left, `y` down. Mirrored vs the user (selfie view).
-2. **NDC** — `x,y ∈ [-1,1]`. `ndcX = x*2-1`, `ndcY = -(y*2-1)` (flip y). Mirror handling: if the displayed video is flipped, negate `ndcX` for on-screen correspondence.
-3. **World space** — Three.js scene. Unproject NDC onto an interaction plane.
-
-### 12.2 Fingertip → world point (the unprojection)
-The sculpt brush needs a 3D point. Two options:
-- **Plane unprojection (v1):** define an interaction plane facing the camera at the object's depth. Raycast from camera through NDC; intersect the plane → brush point. Use MediaPipe `z` (or world-landmark depth) to push the plane nearer/farther for a sense of depth.
-- **Direct world-landmark mapping (stretch):** scale MediaPipe world landmarks (meters) into scene units and place the brush at the actual 3D fingertip; gives true z-depth sculpting but needs careful calibration.
-
-### 12.3 Hand scale & invariance
-`S = ‖wrist − middleMCP‖` (world landmarks). All gesture distance thresholds use fractions of `S`. Object scale gesture uses `‖wristL − wristR‖ / S_avg` so it's invariant to how close the user stands.
-
-### 12.4 Smoothing math
-See §4.5 (One Euro). Apply in image space *before* unprojection so depth jitter is also tamed.
-
----
-
-## 13. Hardcoding / Director System
-
-Per the guiding principle: **optimize for a flawless 90-second demo, not general robustness.**
-
-- **Tuned constants:** brush radius, falloff, smooth iterations, morph rate, sprinkle batch size, dissolve speed are pre-tuned constants so the result is always satisfying regardless of hand-distance variance.
-- **Authored morph spine:** sphere→torus is authored, not solved → guaranteed clean topology.
-- **`core/director.ts`** is a phase sequencer:
-  - `auto` mode advances SPHERE→TORUS→DECORATE→EAT on gesture cues.
-  - `scripted` mode advances on keypress (or timed), so a tracking hiccup never derails the pitch. The hands still appear to drive it; the director just guarantees the beats land.
-  - `freeplay` mode for judges to mess around after the pitch.
-- **Known-good commit** before every risky feature merge; deploy target is a static host (GitHub Pages / Vercel) so the live URL always works.
-
-This is the difference between a lab demo and a stage win — not cheating, choreography.
-
----
-
-## 14. Aesthetic System & Design Tokens
-
-### 14.1 Palette
-```
---bg:        #000000   /* pure black */
---steel:     matcap (brushed steel / obsidian)
---rim:       #AEE8FF   /* cold blue-white edge */
---icing:     #FF3E9A   /* hot candy pink (the only warm accent) */
---edge-hot:  #FFE6B0   /* dissolve edge */
---text:      #FFFFFF
---text-dim:  rgba(255,255,255,0.45)
+float dist = length(vWorldPos - uBiteOrigin);
+float n = simplexNoise(vObjPos * 4.0) + dist * 0.3;  // bias from bite origin
+if (n < uProgress) discard;
+float edgeFactor = smoothstep(uProgress, uProgress + uEdge, n);
+fragColor.rgb = mix(uEdgeColor, baseColor, edgeFactor);
+// edge band gets emissive boost → drives bloom
 ```
 
-### 14.2 Type
-JetBrains Mono (OFL), everywhere. Uppercase, letter-spaced for stage labels (`HEISENBERG // TORUS`). Lowercase mono for HUD/FPS.
+### 10.2 GPU particles
+Emit from dissolving edge each frame; velocity = outward + slight gravity; size decay + alpha fade; additive blend + bloom.
 
-### 14.3 Chrome layout
-- Top-left: stage label.
-- Bottom-left: active tool (left-hand) label.
-- Bottom-right: desaturated webcam + green skeleton.
-- Top-right: FPS (dimmed).
-- No gradients, no rounded panels, no decoration. Brutalist editorial — black, white, one pink.
+### 10.3 Optional CSG bites
+2–3 `three-bvh-csg` SUBTRACTION bites at the bite origin before the dissolve, for tactile credibility. If artifacts appear in rehearsal: skip and dissolve-only.
 
-### 14.4 Motion
-Smooth camera, subtle bloom on rim + dissolve, vignette. Crossfades ≤120ms. Nothing bouncy; everything precise.
+### 10.4 Audio
+Crunch SFX on each bite; soft "poof" on dissolve complete. WebAudio, preloaded buffers.
 
 ---
 
-## 15. Tooling, MCPs & Plugins
+## 11. Rendering & Shader Pipeline
 
-> Goal: maximize build velocity in 36h. Keep the MCP set **small** (3–5 servers; each adds 500–1,000 tokens/tool to context — five servers ≈ 50–75k tokens before you ask anything). Use only servers that solve a *this-weekend* problem. Prefer vendor-maintained servers (security: a large share of public MCP servers have findings).
+### 11.1 Engine
+Three.js r17x, `WebGLRenderer` (WebGL2). Optional stretch: `WebGPURenderer` for compute particles.
 
-### 15.1 Core dev MCPs (install these)
-| MCP | Why for Heisenberg | Install (Claude Code) |
+### 11.2 Material
+`MeshMatcapMaterial`, cold brushed-steel matcap. `vertexColors: true` so icing paints. Normals recomputed on dirty region every frame.
+
+### 11.3 Rim light
+Fresnel via `onBeforeCompile`: `pow(1 − dot(n, viewDir), uRimPower) · uRimColor` (cold #AEE8FF edge).
+
+### 11.4 Post
+`EffectComposer`: RenderPass → GTAOPass (subtle) → UnrealBloomPass (high threshold: only rim + dissolve edge) → OutputPass + vignette.
+
+### 11.5 Menu rendering
+- Radial ring and spatial panels: Three.js objects in-scene.
+- AI chat panel: `CSS3DRenderer` layer on top for typewriter text.
+- Translation arrows: `CylinderGeometry` (shaft) + `ConeGeometry` (tip), per-axis color.
+- Dilation bounding box: `BoxHelper` or custom line geometry.
+- Rotation arcball: three `TorusGeometry` rings.
+
+### 11.6 Webcam overlay
+Corner panel, desaturated. Green skeleton via `drawConnectors`/`drawLandmarks` (HAND_CONNECTIONS) on a 2D canvas layered above.
+
+---
+
+## 12. Performance Engineering
+
+### 12.1 Frame budget (60fps = 16.6ms)
+| Stage | Budget |
+|---|---|
+| MediaPipe inference | 8–12ms (GPU delegate, overlapped) |
+| Filtering + calibration | <1ms |
+| Gesture + menu router | <1ms |
+| BVH query + deform/morph | 2–5ms |
+| Normal recompute | 1–3ms |
+| Render + menus + post | 4–6ms |
+
+### 12.2 Hard rules
+- GPU delegate mandatory.
+- Renderer reads latest filtered pose; never blocks on inference.
+- Dirty-region updates only.
+- Zero per-frame allocation in hot loop (reuse scratch Vector3/Matrix4/Plane).
+- One InstancedMesh per sprinkle geometry type.
+- Webcam at 720p.
+- Upload only changed attribute ranges.
+- Menu geometry is static per-frame except affordance highlight state (cheap uniform update).
+- CSS3D chat panel is cheap (browser DOM); don't let it block the WebGL frame.
+
+---
+
+## 13. Coordinate Spaces & Math Reference
+
+### 13.1 The spaces
+1. **Image space** — MediaPipe `x,y ∈ [0,1]`, origin top-left, mirrored.
+2. **NDC** — `ndcX = x*2−1`, `ndcY = −(y*2−1)` (flip y; handle mirror).
+3. **World space** — Three.js scene.
+
+### 13.2 Fingertip → world (unprojection)
+- Raycast from camera through NDC, intersect interaction plane at object depth.
+- Use MediaPipe world-landmark `z` to adjust depth for 3D feel.
+- All menu affordance proximity tests happen in world space.
+
+### 13.3 Arrow drag (TRANSLATE)
+- Project drag vector onto the arrow's axis direction: `projected = dot(drag3D, axisDir) · axisDir`.
+- Apply to object position. Clean axis-locked translation.
+
+### 13.4 Rotation quaternion (ROTATE)
+- Capture `Q_start` on engage; `deltaQ = Q_current · Q_start⁻¹`; apply to `R_start`.
+- Never convert to Euler until display. No gimbal lock.
+
+### 13.5 Scale (DILATE)
+- `scale = currentHandDist / startHandDist · R_start_scale`.
+- Non-uniform: if one hand moves more, scale axis = normalized vector between hands.
+
+---
+
+## 14. Director & Guided Flow
+
+The director is a **guided-flow + safety layer** over the real sculptor. It does not fake anything; it guides and provides a keypress fallback.
+
+### 14.1 Modes
+- **`guided`** (default for pitch): surfaces prompts/highlights for the SPHERE→DONUT→DECORATE→EAT story. Tracks progress (did they hit t>0.95 on the morph? did they open the chat?). Advances label when real milestones are hit.
+- **`assist`**: optional accelerators (snap-to-clean-donut, auto-tidy smoothing pass, "apply icing preset" button visible in panel).
+- **`safety`**: keypress advances to next beat using authored mesh snapshots (the ONLY place pre-authored geometry substitutes for real input — strictly a fallback for stage failure).
+- **`freeplay`**: no guidance. Real sculptor for judge experimentation.
+
+### 14.2 What's authored only as safety
+- Geometry snapshots of each beat (sphere, clean donut, decorated donut) — used only if tracking fails.
+- Scripted chat turns — fire on peace-sign shortcut when needed.
+
+---
+
+## 15. Aesthetic System & Design Tokens
+
+### 15.1 Palette (authored constants in `render/tokens.ts`)
+```ts
+export const TOKENS = {
+    bg:         "#000000",
+    steel:      "matcap/steel-obsidian.png",
+    rim:        "#AEE8FF",    // cold blue-white
+    icingPink:  "#FF3E9A",    // hot candy pink
+    edgeHot:    "#FFE6B0",    // dissolve edge
+    text:       "#FFFFFF",
+    textDim:    "rgba(255,255,255,0.45)",
+    // menu accents
+    menuTeal:   "#00FFD1",    // ADD
+    menuBlue:   "#4488FF",    // TRANSLATE
+    menuPurple: "#AA44FF",    // DILATE
+    menuAmber:  "#FFB830",    // ROTATE
+    menuRed:    "#FF4444",    // INTERACT
+    menuPink:   "#FF3E9A",    // MORPH
+    menuGold:   "#FFD700",    // DECORATE
+    menuWhite:  "#FFFFFF",    // DESTROY
+};
+```
+
+### 15.2 Type
+JetBrains Mono everywhere. Stage labels uppercase letter-spaced. HUD lowercase.
+
+### 15.3 Chrome layout
+- Top-left: `DAEDALUS // {PHASE}` stage label
+- Bottom-left: active menu label
+- Bottom-right: desaturated webcam + green skeleton
+- Top-right: FPS (dimmed)
+- Right: spatial chat panel (when DECORATE active)
+- No gradients, no rounded panels outside menus. Editorial brutalist.
+
+---
+
+## 16. Tooling, MCPs & Plugins
+
+### 16.1 Dev MCPs (install these, max 5)
+| MCP | Why | Install |
 |---|---|---|
-| **Context7** | Three.js / MediaPipe / three-mesh-bvh move fast; Context7 injects **version-correct** docs & API examples so the agent doesn't hallucinate dead APIs. Append `use context7` to prompts. Highest-value pick. | `claude mcp add context7 -- npx -y @upstash/context7-mcp` |
-| **Chrome DevTools MCP** | Official Google server. Lets the agent drive a live Chrome, pull **performance traces**, read console/network, inspect the DOM. Critical for hitting 60fps — the agent can profile the sculpt loop and propose fixes. Add `--slim` for token-lean. | `claude mcp add chrome-devtools -s user -- npx chrome-devtools-mcp@latest` |
-| **GitHub MCP** | Issue/PR/commit context inline; manage the repo, the 30-commit history, releases. Reduces context-switching. | `claude mcp add github -- npx -y @modelcontextprotocol/server-github` |
-| **Playwright MCP** (optional) | Only if you want cross-browser smoke tests (Firefox/WebKit) of the demo build. Accessibility-tree driving, deterministic. Skip if Chrome-only. | `claude mcp add playwright -s user -- npx @playwright/mcp@latest` |
-| **Serena** (optional) | Semantic code index for the monorepo — symbol search, dependency tracing across many files. Useful once the engine grows. | per Serena README (local binary) |
+| **Context7** | Version-correct docs for Three.js / MediaPipe / three-mesh-bvh / three-bvh-csg. Append "use context7" proactively. | `claude mcp add context7 -- npx -y @upstash/context7-mcp` |
+| **Chrome DevTools MCP** | Pull live perf traces; verify 60fps / <80ms; inspect DOM for CSS3D chat panel. | `claude mcp add chrome-devtools -s user -- npx chrome-devtools-mcp@latest` |
+| **GitHub MCP** | Commit at every milestone; manage the 30-commit history; keep deployable build. | `claude mcp add github -- npx -y @modelcontextprotocol/server-github` |
+| **Playwright MCP** (optional) | Cross-browser smoke test if needed. | `claude mcp add playwright -s user -- npx @playwright/mcp@latest` |
 
-**Recommended minimal set:** Context7 + Chrome DevTools + GitHub. Add Playwright only for cross-browser verification near the end.
+### 16.2 Pitch-video tooling (NOT in-product)
+- **Higgsfield AI** (Cinema Studio virtual camera rig) — cinematic title card + "vaporize" finale sting for the pitch video only. Multi-model aggregator with Crash Zoom, Dolly, 360 Orbit presets. Free tier has daily credits.
+- **OBS Studio** — 60fps screen capture of live demo.
+- **CapCut / DaVinci Resolve** — edit the 90s cut.
 
-### 15.2 Claude Code skills/plugins (project-local)
-- A **`frontend-design` skill** / `CLAUDE.md` conventions doc enforcing: 4-space indent, the matcap aesthetic, no runtime GenAI, module boundaries from §3.
-- **MCP Tool Search** enabled so Context7's tools load on-demand instead of eating context at session start.
-- Hooks: a pre-commit hook running `tsc --noEmit` + `vitest` so the agent can't push a broken build.
+### 16.3 Asset tooling
+- **Blender** — author the donut morph target; bake/select matcaps.
+- **nidorx/matcaps** — cold steel/obsidian matcap PNGs (free).
+- **JetBrains Mono** — OFL, self-host.
 
-### 15.3 Pitch-video tooling (NOT build tools)
-> These touch GenAI and must **not** power the product (Non-GenAI track). They're for the *pitch video* only.
-- **Higgsfield AI** — cinematic AI video tool: multi-model aggregator (Sora/Kling/Veo) with a **Cinema Studio** virtual camera rig (crash zooms, dolly, 360 orbits, Boltcam angles; stackable camera moves; genre pacing). Excellent for a dramatic intro/outro sting or B-roll cutaways in the pitch video. Credit-based; the free Diffuse app tier gives daily credits. Use for: title card, "vaporize" transition flourish, cinematic establishing shots around the live screen-capture.
-- **CapCut / DaVinci Resolve (free)** — actual edit/timeline for the 90s cut.
-- **OBS Studio (free)** — capture the live browser demo at 60fps for the screen-recording core of the video.
-- **WebAudio SFX packs (CC0)** — crunch/poof sounds (these *are* shippable in-product; they're not GenAI).
-
-### 15.4 Asset tooling
-- **Blender (free)** — author the same-topology torus morph target; bake/select matcaps; preview materials.
-- **nidorx/matcaps (free)** — matcap PNG library (steel/obsidian).
-- **JetBrains Mono (OFL)** — UI typeface.
-
-### 15.5 Deploy
-- **Vite build** → static output.
-- **GitHub Pages or Vercel (free)** — the live demo URL. Ensure COOP/COEP headers if using SharedArrayBuffer (Vercel: `vercel.json` headers; Pages: a `_headers`-equivalent or meta workaround).
+### 16.4 Deploy
+- Vite static build → GitHub Pages or Vercel (free).
+- COOP/COEP headers if using SharedArrayBuffer (`vercel.json` or `_headers`).
 
 ---
 
-## 16. Build Plan (36h, hour-by-hour)
+## 17. Build Plan (36h, hour-by-hour)
 
-| Window | Goal | Owner hint |
-|---|---|---|
-| **0–2h** | Repo, Vite+TS scaffold, `CLAUDE.md`, MCPs (Context7 + Chrome DevTools + GitHub), deploy a hello-triangle to the live URL. | all |
-| **2–6h** | Webcam + HandLandmarker (GPU, VIDEO, 2 hands) + One Euro. Matcap sphere renders. Green skeleton overlay. Verify <80ms feel on the demo machine. | CV + render |
-| **6–12h** | three-mesh-bvh sculpt loop (port from `sculpt.html`). Right-hand pinch/grab → grab/inflate/Taubin-smooth. Dirty-region updates + incremental normals. | engine |
-| **12–18h** | Left-hand gesture detection + debounced tool state machine + HUD. Brush feel tuning (radius/falloff). | gesture + UI |
-| **18–24h** | Sphere→torus morph target + real brush blend. Director phase sequencing (auto + scripted). | engine + director |
-| **24–29h** | Decorate: vertex-color icing + MeshSurfaceSampler sprinkles (InstancedMesh). | decorate |
-| **29–33h** | Eat finale: dissolve shader + GPU particles + bloom + crunch SFX. Optional 2–3 CSG bites. | finale + shaders |
-| **33–35h** | Polish: JetBrains Mono chrome, vignette/GTAO, webcam overlay styling, full demo run-throughs. | all |
-| **35–36h** | Record pitch video (OBS capture + Higgsfield stings + CapCut/Resolve cut). Final known-good commit + deploy. | all |
-
-**Invariant:** a deployable known-good build exists at every window boundary.
+| Window | Goal |
+|---|---|
+| **0–2h** | Repo, Vite+TS scaffold, `CLAUDE.md`, MCPs, deploy hello-triangle to live URL. |
+| **2–5h** | Webcam + HandLandmarker (GPU, VIDEO, 2 hands) + One Euro + calibration ritual (§0.6). Matcap sphere renders. Green skeleton overlay. Verify <80ms. |
+| **5–10h** | Radial ring menu (§5.2): render, open/close gestures, item highlight/select, active-menu state. HUD updates. |
+| **10–14h** | TRANSLATE (arrows + axis drag) + DILATE (two-hand scale) + ROTATE (quaternion twist). Verify all three feel good via Chrome DevTools MCP perf trace. |
+| **14–18h** | MORPH menu (§6.6): authored donut target, squish gesture → morph influence, real brushes on top. Donut emerges cleanly. |
+| **18–20h** | ADD SHAPES (shape picker + spawn) + INTERACT (CSG select + op) — simpler menus. |
+| **20–26h** | DECORATE: AI chat panel (CSS3D, hardcoded scripts, typewriter), icing smear, sprinkles (MeshSurfaceSampler + InstancedMesh, Poisson relaxation). |
+| **26–30h** | DESTROY / eat finale: dissolve shader + GPU particles + optional CSG bites + crunch SFX. |
+| **30–33h** | Polish: matcap rim, GTAO + bloom + vignette, director guided mode, smooth beat transitions. |
+| **33–35h** | Cross-device test on a second machine; tune calibration defaults; full run-through rehearsals. |
+| **35–36h** | Record pitch video (OBS + Higgsfield stings + CapCut cut). Final known-good commit + deploy. |
 
 ---
 
-## 17. Risk Register & Fallbacks
+## 18. Risk Register & Fallbacks
 
 | Risk | Trigger | Fallback |
 |---|---|---|
-| MediaPipe FPS poor on demo machine | <30fps | numHands→1, webcam→720p, drop post-processing |
-| three-bvh-csg artifacts | non-manifold/missing tris in rehearsal | cut booleans, dissolve-only finale |
-| Live sculpt jitters | shaky cursor | raise One Euro `min_cutoff`, reduce mesh density |
-| Frame budget blown | jank | render→OffscreenCanvas worker; cut GTAO/bloom |
-| Torus topology breaks | hole won't form cleanly | rely purely on morph target for that beat |
-| Tracking fails on stage | lost hands | `director.ts` scripted keypress-advance mode |
-| Unprojection depth feels off | brush floats | lock to fixed interaction plane (drop z-depth) |
-| Deploy headers (COOP/COEP) missing | SharedArrayBuffer fails | drop worker path; main-thread render |
+| MediaPipe FPS poor | <30fps | numHands→1, webcam→720p, drop post |
+| Menu selection flickers | debounce too short | increase dwell time, require pinch confirmation |
+| three-bvh-csg artifacts | non-manifold tris in rehearsal | cut booleans; dissolve-only finale |
+| Squish gesture ambiguous | poor squish detection | map left-hand thumbs-up to a morph slider in panel |
+| CSS3D chat panel lags | DOM paint overhead | move to canvas texture if needed |
+| Feels wrong on demo device | different webcam | run calibration ritual; live sensitivity slider |
+| Live sculpt jitters | shaky cursor | re-run calibration; raise `min_cutoff` via slider |
+| Tracking fails on stage | lost hands | director `safety` mode → keypress-advance |
+| Unprojection depth off | brush floats | lock to fixed interaction plane |
 
 ### De-risked minimum-viable build
-Single hand · GestureRecognizer canned gestures for mode · sphere→torus morph-only · sprinkles-only decorate · dissolve-only eat · plain matcap, no post. Still delivers the full **sphere→torus→decorate→eat** narrative; buildable well under 36h. Layer ambition back in as time allows.
+TRANSLATE + DILATE + ROTATE working → MORPH squish-to-donut → AI chat with hardcoded script → dissolve finale. Skip ADD SHAPES and INTERACT if time is short. Still delivers the full arc with 3 of 8 menus fully polished.
 
 ---
 
-## 18. Dependencies
+## 19. Dependencies
 
 | Package | Purpose | License |
 |---|---|---|
 | `three` | rendering, geometry, math | MIT |
 | `@mediapipe/tasks-vision` | hand tracking | Apache-2.0 |
-| `three-mesh-bvh` | sculpt spatial queries | MIT |
-| `three-bvh-csg` | optional real bites | MIT |
+| `three-mesh-bvh` | sculpt + menu spatial queries | MIT |
+| `three-bvh-csg` | INTERACT CSG + optional bites | MIT |
 | `vite` + `typescript` | build/dev | MIT / Apache-2.0 |
 | `vitest` | tests | MIT |
 | `stats.js` | FPS overlay | MIT |
-| One Euro Filter (vendored) | landmark smoothing | BSD/MIT-style |
+| One Euro Filter (vendored) | landmark smoothing | BSD/MIT |
 | `nidorx/matcaps` | matcap textures | CC |
 | JetBrains Mono | UI typeface | OFL |
 
-**Zero paid services. Zero runtime GenAI. Everything free and open-source.**
+Zero paid services. Zero runtime GenAI. Everything free/open-source.
 
 ---
 
-## 19. File-by-File Manifest
+## 20. File-by-File Manifest
 
 ```
-heisenberg/
-├── CLAUDE.md                      # conventions: 4-space, aesthetic, no runtime GenAI
+daedalus/
+├── CLAUDE.md
+├── SPEC.md
 ├── index.html
 ├── vite.config.ts
 ├── tsconfig.json
 ├── public/
 │   ├── models/hand_landmarker.task
-│   ├── matcaps/steel.png
-│   └── fonts/JetBrainsMono.woff2
+│   ├── matcaps/steel-obsidian.png
+│   ├── fonts/JetBrainsMono.woff2
+│   └── sfx/crunch.wav, poof.wav, ding.wav
 ├── src/
 │   ├── core/
-│   │   ├── loop.ts                # master rAF, decoupled inference/render
-│   │   ├── director.ts            # phase sequencer (auto/scripted/freeplay)
-│   │   └── store.ts               # latest-pose value store
+│   │   ├── loop.ts               # master rAF, decoupled inference/render
+│   │   ├── director.ts           # guided/assist/safety/freeplay modes
+│   │   └── store.ts              # latest-pose value store (ring buffer)
 │   ├── capture/
-│   │   └── webcam.ts              # getUserMedia, video element
+│   │   └── webcam.ts             # getUserMedia, video element
 │   ├── tracking/
-│   │   ├── handLandmarker.ts      # MediaPipe init + pump
-│   │   └── oneEuro.ts             # One Euro Filter
+│   │   ├── handLandmarker.ts     # MediaPipe init + pump
+│   │   ├── oneEuro.ts            # One Euro Filter (adaptive)
+│   │   └── calibration.ts        # §0.6 ritual, CalibrationProfile, live slider
 │   ├── gesture/
-│   │   ├── predicates.ts          # finger-extended, pinch, spread, hand scale
-│   │   ├── detect.ts              # landmarks → discrete gestures
-│   │   └── stateMachine.ts        # tool latch + brush FSM + undo ring
-│   ├── sculpt/
-│   │   ├── engine.ts              # BVH query, dirty tracking, normal recompute
-│   │   ├── brushes.ts             # grab/inflate/draw/flatten/pinch/crease
-│   │   ├── smooth.ts              # Taubin
-│   │   └── morph.ts               # sphere↔torus morph driver
+│   │   ├── predicates.ts         # finger-extended, pinch, spread, squish, hand scale
+│   │   ├── detect.ts             # landmarks → discrete gestures
+│   │   └── stateMachine.ts       # menu-nav + execution brush FSM + undo ring
+│   ├── menu/
+│   │   ├── radialRing.ts         # §5.2 ring render + open/close + selection
+│   │   ├── spatialPanel.ts       # §5.3 floating panel base component
+│   │   ├── menuRouter.ts         # active menu → execution paradigm routing
+│   │   ├── addShapes.ts          # §6.1 shape picker + spawn
+│   │   ├── translate.ts          # §6.2 arrow affordances + axis drag
+│   │   ├── dilate.ts             # §6.3 two-hand scale + bbox
+│   │   ├── rotate.ts             # §6.4 arcball + quaternion twist
+│   │   ├── interact.ts           # §6.5 two-object CSG operations
+│   │   ├── morph.ts              # §6.6 squish gesture + authored target blend
+│   │   └── destroy.ts            # §6.8 fist + bring-to-mouth trigger
 │   ├── decorate/
-│   │   ├── icing.ts               # vertex-color painting
-│   │   └── sprinkles.ts           # MeshSurfaceSampler + InstancedMesh
+│   │   ├── designs.ts            # §9.3 authored SprinkleDesign/IcingDesign/GlazeDesign
+│   │   ├── chatPanel.ts          # §9.2 AI chat UI + hardcoded scripts + typewriter
+│   │   ├── icing.ts              # vertex-color painting + edge smoothing
+│   │   └── sprinkles.ts          # MeshSurfaceSampler + InstancedMesh + Poisson relax
+│   ├── sculpt/
+│   │   ├── engine.ts             # BVH query, dirty tracking, normal recompute
+│   │   └── brushes.ts            # all brush verbs + Taubin smooth
 │   ├── finale/
-│   │   ├── dissolve.ts            # dissolve shader + uniforms
-│   │   ├── particles.ts           # GPU particle burst
-│   │   └── csg.ts                 # optional three-bvh-csg bites
+│   │   ├── dissolve.ts           # dissolve shader + uniforms + progress driver
+│   │   ├── particles.ts          # GPU particle burst
+│   │   └── csg.ts                # optional three-bvh-csg bites
 │   ├── render/
-│   │   ├── scene.ts               # camera, matcap, composer, rim
-│   │   ├── post.ts                # GTAO + bloom + vignette
-│   │   └── overlay.ts             # webcam corner + skeleton draw
+│   │   ├── scene.ts              # camera, matcap, composer, rim, CSS3DRenderer
+│   │   ├── tokens.ts             # §15.1 authored design tokens
+│   │   ├── post.ts               # GTAO + bloom + vignette
+│   │   └── overlay.ts            # webcam corner + skeleton draw
 │   ├── ui/
-│   │   └── chrome.ts              # stage label, tool HUD, FPS
+│   │   ├── chrome.ts             # stage label, active-menu HUD, FPS
+│   │   └── calibrationUI.ts      # calibration ritual + sensitivity slider
 │   ├── audio/
-│   │   └── sfx.ts                 # crunch/poof WebAudio
-│   └── main.ts                    # bootstrap
+│   │   └── sfx.ts                # crunch/poof/ding WebAudio
+│   └── main.ts                   # bootstrap
 └── tests/
     ├── predicates.test.ts
     ├── oneEuro.test.ts
+    ├── calibration.test.ts
     ├── brushes.test.ts
     └── morph.test.ts
 ```
 
 ---
 
-## 20. Definition of Done
+## 21. Definition of Done
 
 - [ ] Open URL → webcam grants → sphere appears in <3s
+- [ ] Calibration ritual runs (skippable); live sensitivity slider works; feels right on a second device
 - [ ] Both hands tracked with green skeleton; <80ms perceived latency
-- [ ] Left hand reliably switches tools (debounced, visible in HUD)
-- [ ] Right hand sculpts with satisfying clay-like feel (Taubin smooth, tuned falloff)
-- [ ] Sphere → torus reads as hand-driven and resolves cleanly (morph spine + brush flavor)
-- [ ] Icing paints + sprinkles scatter only on iced regions
-- [ ] "Eat it" dissolve + particles + crunch SFX fire and look cinematic
-- [ ] Holds 60fps on the demo machine in Chrome
-- [ ] `director.ts` scripted-demo fallback works without live tracking
-- [ ] Known-good build committed and deployed to a live static URL
-- [ ] 90-second pitch video recorded (OBS core + Higgsfield stings + edited cut)
+- [ ] Radial ring menu opens on "gun" pose; all 8 menus selectable; active menu shown in HUD
+- [ ] TRANSLATE: arrows appear, axis drag works, object moves correctly
+- [ ] DILATE: two-hand spread scales object; bounding box shows
+- [ ] ROTATE: hand twist rotates; arcball renders; quaternion (no gimbal lock)
+- [ ] MORPH: squish gesture drives t toward donut; real brushes apply on top; donut emerges cleanly
+- [ ] DECORATE: AI chat panel opens; hardcoded conversation plays with typewriter; sprinkles/icing appear
+- [ ] Direct hand decoration: icing smear + sprinkle drop works independently of chat
+- [ ] DESTROY/eat: dissolve shader + particles + crunch SFX, cinematic
+- [ ] Freeplay is a real working sculptor
+- [ ] 60fps on demo machine in Chrome
+- [ ] Director safety mode advances via keypress if tracking fails
+- [ ] Known-good build deployed to live static URL
+- [ ] 90-second pitch video recorded and edited
 
 ---
 
-## 21. Pitch & Video Plan
+## 22. Pitch & Video Plan
 
-### 21.1 Live demo (on stage)
-Run `director` in `auto` mode; if tracking flakes, a teammate quietly switches to `scripted`. Narrate the four beats. End by inviting a judge to try `freeplay`.
+### 22.1 Live demo
+Run director in `guided` mode. Use peace-sign shortcut to fire the AI chat script on cue. If tracking flakes, teammate switches to `safety` keypress mode.
 
-### 21.2 Pitch video (90s)
-- **Core:** OBS 60fps screen capture of a clean run (sphere→torus→decorate→eat).
-- **Stings:** Higgsfield Cinema Studio for a title card and a dramatic "vaporize" transition; cold, brutalist, matches the app aesthetic. (Pitch only — never in-product.)
-- **Audio:** crunch/poof SFX synced; minimal cold synth bed.
-- **Edit:** CapCut or DaVinci Resolve (free). Cut to the beat; hard cuts, no fluff.
-- **Last frame:** the Heisenberg wordmark on black + the live URL.
+### 22.2 Pitch video (90s)
+- **Core:** OBS 60fps screen capture (sphere → menu tour → donut → AI chat → sprinkles → eat).
+- **Stings:** Higgsfield Cinema Studio for title card + dramatic "vaporize" finale (pitch video only — never in-product).
+- **Audio:** crunch/poof SFX synced; cold synth bed.
+- **Edit:** CapCut or DaVinci Resolve.
+- **Last frame:** `DAEDALUS` wordmark on black + live URL.
 
-### 21.3 The one-liner
-> "Blender takes months to learn. Heisenberg takes ten seconds and two hands. Watch me make a donut — and eat it."
+### 22.3 One-liners
+> "Blender takes months to learn. Daedalus takes ten seconds and two hands. Watch me make a donut — and eat it."
+
+> "We simulated what an AI decoration API would look like. Now imagine GPT-4o calling this. That's the product."
 
 ---
 
-*Heisenberg — you can know where your hand is, or what it's shaping. Never both. That's the fun.*
+*Daedalus — you can know where your hand is, or what it's shaping. Never both. That's the fun.*
