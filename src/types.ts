@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 import type { MeshBVH } from "three-mesh-bvh";
+import type { CSS3DRenderer } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 
 // ---------- Tracking ----------
 export interface Landmark { x: number; y: number; z: number; } // normalized mirrored image space
@@ -118,6 +119,7 @@ export interface SceneContext {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
+    css3d: CSS3DRenderer;      // DOM layer for the AI chat panel (§9, §11.5)
     mesh: THREE.Mesh;          // the active sculptable object
     bvh: MeshBVH | null;       // built on mesh.geometry position
     extraMeshes: THREE.Mesh[]; // spawned shapes (ADD/INTERACT)

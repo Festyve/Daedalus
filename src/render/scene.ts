@@ -161,6 +161,7 @@ export function makeContext(): SceneContext {
         scene: layers.scene,
         camera: layers.camera,
         renderer: layers.renderer,
+        css3d: layers.css3d,
         mesh: layers.mesh,
         bvh: null,
         extraMeshes: [],
