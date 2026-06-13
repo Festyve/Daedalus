@@ -105,10 +105,33 @@ const instructions = new InstructionsPopout();
 instructions.mount();
 const devOverlay = new DevOverlay(IS_MOCK || PARAM_FPS);
 
-// ---- preview canvas / banner -----------------------------------------------
+// ---- preview canvas / corner mirror / banner -------------------------------
+// #preview is now the fullscreen webcam + skeleton (the main view); #corner is a
+// small clean model-on-black mirror of the WebGL canvas (the old big-screen look).
 const previewCanvas = document.getElementById("preview") as HTMLCanvasElement | null;
 const previewCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
+const cornerCanvas = document.getElementById("corner") as HTMLCanvasElement | null;
+const cornerCtx = cornerCanvas ? cornerCanvas.getContext("2d") : null;
 const banner = document.getElementById("banner");
+
+// Size the 2D canvases' drawing buffers: #preview fills the viewport (sharp webcam),
+// #corner keeps the screen aspect so the mirrored model isn't distorted (CSS pins its
+// on-screen width to 260px). Re-run on resize.
+const CORNER_WIDTH_CSS = 260;
+function sizePreviewCanvases(): void {
+    const dpr = Math.min(window.devicePixelRatio, 2);
+    if (previewCanvas) {
+        previewCanvas.width = Math.round(window.innerWidth * dpr);
+        previewCanvas.height = Math.round(window.innerHeight * dpr);
+    }
+    if (cornerCanvas) {
+        const cw = Math.round(CORNER_WIDTH_CSS * dpr);
+        cornerCanvas.width = cw;
+        cornerCanvas.height = Math.round((cw * window.innerHeight) / window.innerWidth);
+    }
+}
+sizePreviewCanvases();
+window.addEventListener("resize", sizePreviewCanvases);
 
 function showBanner(msg: string): void {
     if (!banner) return;
@@ -271,8 +294,16 @@ startLoop((dtMs) => {
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
 
-    // 5) Render: composited scene (NEVER css3d) + webcam corner overlay + HUD.
+    // 5) Render: fullscreen webcam + skeleton behind the transparent model (AR),
+    //    a clean model-on-black mirror in the corner, then the HUD (NEVER css3d).
     composer.render();
+    // Corner mirror: black backdrop, then copy the (transparent) model canvas over it
+    // so the corner reads as the old big-screen model-on-black view.
+    if (cornerCtx && cornerCanvas) {
+        cornerCtx.fillStyle = "#000";
+        cornerCtx.fillRect(0, 0, cornerCanvas.width, cornerCanvas.height);
+        cornerCtx.drawImage(ctx.renderer.domElement, 0, 0, cornerCanvas.width, cornerCanvas.height);
+    }
     if (previewCtx && video) drawOverlay(previewCtx, video, frame.Left, frame.Right);
 
     chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });

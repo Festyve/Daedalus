@@ -237,6 +237,9 @@ function makeRenderer(): THREE.WebGLRenderer {
     const renderer = new THREE.WebGLRenderer({
         antialias: true,
         alpha: true,
+        // The corner mirror copies this canvas via drawImage every frame; without
+        // preserveDrawingBuffer the buffer may be cleared before the copy reads it.
+        preserveDrawingBuffer: true,
         powerPreference: "high-performance",
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -289,6 +292,9 @@ export function makeContext(): SceneContext {
     const renderer = makeRenderer();
     const camera = makeCamera();
     const scene = new THREE.Scene();
+    // Dark background: the model renders opaque on near-black, then composites over the
+    // fullscreen webcam via CSS mix-blend-mode: screen on #webgl — black drops out so
+    // the glowing model floats over the live feed as AR (§0.7, §9.5).
     scene.background = new THREE.Color(T.bg);
 
     window.addEventListener("resize", () => {

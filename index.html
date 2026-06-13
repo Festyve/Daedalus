@@ -12,8 +12,12 @@
     />
 </head>
 <body>
-    <!-- desaturated webcam preview + green skeleton overlay (§11.6, §15.3) -->
+    <!-- fullscreen desaturated webcam + green skeleton overlay — the main view;
+         the transparent #webgl model floats over this as AR (§11.6, §15.3) -->
     <canvas id="preview"></canvas>
+
+    <!-- clean model-on-black mirror, bottom-right corner (filled by main.ts) -->
+    <canvas id="corner"></canvas>
 
     <!-- HUD root: stage label, active-menu, FPS (filled by ui/chrome.ts) -->
     <div id="chrome"></div>

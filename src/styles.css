@@ -18,20 +18,32 @@ html, body {
     overflow: hidden;
 }
 
-/* the WebGL canvas is appended by the renderer with id="webgl" */
-canvas#webgl { position: fixed; inset: 0; z-index: 0; display: block; }
+/* the WebGL canvas is appended by the renderer with id="webgl" — the model layer.
+   mix-blend-mode: screen drops its near-black background so the glowing model
+   composites over the fullscreen webcam (#preview) below it as AR (§0.7, §9.5). */
+canvas#webgl { position: fixed; inset: 0; z-index: 1; display: block; mix-blend-mode: screen; }
 
-/* desaturated webcam, bottom-right (§15.3) */
+/* fullscreen desaturated webcam + green skeleton — now the main view (§15.3) */
 #preview {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    filter: saturate(0.35) brightness(0.92);
+}
+
+/* clean model-on-black mirror, bottom-right corner — the old big-screen view (§15.3) */
+#corner {
     position: fixed;
     right: 16px;
     bottom: 16px;
-    z-index: 3;
+    z-index: 2;
     width: 260px;
     height: auto;
     border: 1px solid var(--line);
     background: #000;
-    filter: saturate(0.35) brightness(0.92);
 }
 
 /* HUD overlay layer (chrome.ts paints into this) */
