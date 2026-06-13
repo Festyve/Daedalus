@@ -256,8 +256,16 @@ export class ViewModeController {
         // mirrored to selfie space (liveInput.ts), so the plane samples a U-flipped vUv
         // (1 - vUv.x) so the webcam shows mirrored — the user's right hand on screen-right.
         // To switch to a native/un-mirrored view you would drop the x-flip in BOTH places
-        // (here and liveInput.ts). A very mild contrast bump keeps it from washing into the
-        // UI while still reading as a normal colour webcam.
+        // (here and liveInput.ts).
+        //
+        // Colour management (why the feed isn't washed out): the webcam VideoTexture is
+        // sRGB-encoded, but a hand-written ShaderMaterial samples it raw — three.js does NOT
+        // auto-decode sRGB->linear for user shaders. The composer's OutputPass then treats
+        // this plane's output as LINEAR and applies ACES tone-map + sRGB-encode. So we must
+        // hand back a *linear* colour: decode the sampled sRGB texel to linear here, and the
+        // OutputPass re-encode lands the feed back at its natural raw brightness instead of
+        // double-encoding it to milky white (which also pushed pixels past the bloom
+        // threshold and made the camera glow).
         const material = new THREE.ShaderMaterial({
             uniforms: { uMap: { value: texture } },
             depthTest: false,
@@ -272,10 +280,14 @@ export class ViewModeController {
             fragmentShader: `
                 uniform sampler2D uMap;
                 varying vec2 vUv;
+                // Standard sRGB electro-optical transfer (sRGB -> linear), matching the
+                // decode three.js applies to colour-managed textures.
+                vec3 srgbToLinear(vec3 c) {
+                    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+                }
                 void main() {
                     vec3 c = texture2D(uMap, vec2(1.0 - vUv.x, vUv.y)).rgb;
-                    vec3 contrast = (c - 0.5) * 1.04 + 0.5;      // very mild contrast
-                    gl_FragColor = vec4(clamp(contrast, 0.0, 1.0), 1.0);
+                    gl_FragColor = vec4(srgbToLinear(c), 1.0);
                 }
             `,
         });
