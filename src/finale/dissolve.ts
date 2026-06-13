@@ -19,7 +19,7 @@ import { TOKENS } from "../render/tokens";
 import { ParticleBurst } from "./particles";
 
 // Seconds for the normalized animation t to travel 0 -> 1.
-const DISSOLVE_SECONDS = 2.2;
+const DISSOLVE_SECONDS = 2.6;
 // The shader threshold uProgress is t * PROGRESS_SPAN. snoise is in [-1,1] and the
 // world-distance bias adds up to ~+0.9 near the far side, so n can reach ~1.7;
 // sweeping the threshold across that full span guarantees the body is visually
