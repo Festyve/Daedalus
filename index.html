@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HandSculpt — sphere → donut</title>
+    <link rel="stylesheet" href="styles.css" />
+
+    <!-- Pinned, mutually-compatible versions (verified to load together).
+         An import map keeps "three" a single instance so three-mesh-bvh /
+         three-bvh-csg share it (CSG breaks if there are two copies of three). -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+            "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.7.0/build/index.module.js",
+            "three-bvh-csg": "https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js",
+            "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs"
+        }
+    }
+    </script>
+</head>
+<body>
+    <!-- live webcam preview + landmark overlay (mirrored selfie view) -->
+    <canvas id="preview"></canvas>
+
+    <!-- what the system currently perceives -->
+    <div id="status">
+        <h2>HandSculpt</h2>
+        <div class="row"><span>Left hand</span><b id="g-left">—</b></div>
+        <div class="row"><span>Right hand</span><b id="g-right">—</b></div>
+        <div class="row"><span>Clutch</span><b id="g-clutch">off</b></div>
+        <div class="row"><span>Stage</span><b id="g-stage">SPHERE</b></div>
+    </div>
+
+    <!-- dismissible instructions -->
+    <div id="instructions">
+        <button id="dismiss" aria-label="dismiss">×</button>
+        <h3>Turn the sphere into a donut — with your hands</h3>
+        <ol>
+            <li><b>Scale:</b> make a <b>left fist</b> (clutch), then raise / lower your <b>right hand</b>.</li>
+            <li><b>Squash:</b> open <b>both hands</b> → flatten the sphere into a disc.</li>
+            <li><b>Bore:</b> both open, <b>pull apart</b> → punch the hole through the middle.</li>
+            <li><b>Smooth:</b> both open, <b>bring together</b> → round it into a clean donut.</li>
+        </ol>
+        <p class="muted">Keyboard fallback:
+            <kbd>[</kbd> <kbd>]</kbd> scale · <kbd>S</kbd> squash · <kbd>B</kbd> bore ·
+            <kbd>M</kbd> smooth · <kbd>R</kbd> reset · <kbd>O</kbd> orbit</p>
+    </div>
+
+    <!-- camera / no-hands messages -->
+    <div id="banner" class="hidden"></div>
+
+    <script type="module" src="main.js"></script>
+</body>
+</html>
