@@ -33,6 +33,11 @@ const WIRE_BASE = new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15);
 const WIRE_DIM = WIRE_BASE.clone().multiplyScalar(0.45);
 const WIRE_PRIMARY = WIRE_BASE.clone().lerp(new THREE.Color(T.white), 0.55);
 
+// NEGATIVE (cutter) shapes read RED so a "hole" operand is unmistakable at a glance. A negative
+// shape that is selected glows full red; an unselected one is dimmed like the other ghosts.
+const NEG_BASE = new THREE.Color(0xff4d4d);
+const NEG_DIM = NEG_BASE.clone().multiplyScalar(0.5);
+
 // Scratch for selectionCenter (no per-frame allocation, §6.2).
 const TMP_POS = new THREE.Vector3();
 
@@ -64,6 +69,20 @@ export function selectedCount(ctx: SceneContext): number {
 /** Whether `mesh` is in the selection set. */
 export function isSelected(ctx: SceneContext, mesh: THREE.Mesh): boolean {
     return ctx.selected.indexOf(mesh) >= 0;
+}
+
+/**
+ * Whether `mesh` is tagged NEGATIVE — a cutter that INTERACT's UNION subtracts (carves a hole)
+ * instead of adding. The flag lives on the mesh itself (userData) so it travels with the shape and
+ * needs no SceneContext plumbing. Shapes default to positive (undefined → false).
+ */
+export function isNegative(mesh: THREE.Mesh): boolean {
+    return mesh.userData.negative === true;
+}
+
+/** Toggle `mesh`'s NEGATIVE (cutter) tag. SELECT calls this; INTERACT reads it when combining. */
+export function toggleNegative(mesh: THREE.Mesh): void {
+    mesh.userData.negative = !mesh.userData.negative;
 }
 
 /**
@@ -174,7 +193,26 @@ export function refreshHighlight(ctx: SceneContext): void {
         mat.transparent = !selected;
         mat.opacity = selected ? SELECTED_OPACITY : UNSELECTED_OPACITY;
         mat.depthWrite = selected;
-        mat.color.copy(primary ? WIRE_PRIMARY : selected ? WIRE_BASE : WIRE_DIM);
+        // NEGATIVE (cutter) shapes override the cyan tier with red so a "hole" operand is obvious;
+        // positives keep the primary/selected/dim cyan tiers.
+        if (m.userData.negative === true) {
+            mat.color.copy(selected ? NEG_BASE : NEG_DIM);
+        } else {
+            mat.color.copy(primary ? WIRE_PRIMARY : selected ? WIRE_BASE : WIRE_DIM);
+        }
+    }
+}
+
+/**
+ * Set the render mode for EVERY shape in the scene: solid/shaded (on=false) or wireframe
+ * mesh (on=true). Records the choice on ctx so shapes spawned later inherit it (attachMesh).
+ * Toggled by the both-hands finger-gun gesture (§main.ts). wireframe is orthogonal to the
+ * selection highlight, so refreshHighlight() leaves it untouched.
+ */
+export function setWireframe(ctx: SceneContext, on: boolean): void {
+    ctx.wireframe = on;
+    for (const m of allShapes(ctx)) {
+        (m.material as THREE.MeshStandardMaterial).wireframe = on;
     }
 }
 

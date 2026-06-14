@@ -1,8 +1,9 @@
 // SELECT tool (multi-selection). Builds the SELECTION SET that the edit tools act on, using the
 // fist controls — the SAME hands as the main tool menu: the RIGHT hand moves through the shapes and
 // the LEFT hand commits. A RIGHT-hand FIST steps a FOCUS CURSOR to the next shape; a LEFT-hand FIST
-// toggles the focused shape in/out of the selection. Close the left fist again to keep adding
-// shapes; open the main menu (right-hand gun) when the selection is done. The focused shape pulses
+// toggles the focused shape in/out of the selection; a LEFT-hand PINCH marks it NEGATIVE (a red
+// cutter that INTERACT's UNION carves into a hole). Close the left fist again to keep adding shapes;
+// open the main menu (right-hand gun) when the selection is done. The focused shape pulses
 // so you can see what the next left-fist will toggle; selected shapes are drawn bright, the rest
 // ghosted (see core/shapes.refreshHighlight). The selection persists after you leave SELECT, so the
 // next tool edits the shapes you chose, and the on-screen counter (ui/chrome) shows how many.
@@ -21,6 +22,8 @@ import {
     selectedCount,
     isSelected,
     toggleSelect,
+    isNegative,
+    toggleNegative,
     focusedShape,
     moveFocus,
     refreshHighlight,
@@ -35,11 +38,12 @@ export function createSelectMenu(): MenuModule {
 
     let panel: Panel | null = null;
     let pulseMs = 0;              // focus-cursor pulse phase
-    // Per-hand discrete-pose debouncers + rising-edge latches (one action per fist-close).
+    // Per-hand discrete-pose debouncers + rising-edge latches (one action per pose-close).
     let execGate = new GestureDebouncer();   // right hand → cycle
-    let navGate = new GestureDebouncer();     // left hand → toggle
+    let navGate = new GestureDebouncer();     // left hand → toggle select (fist) / mark negative (open)
     let execWasFist = false;
     let navWasFist = false;
+    let navWasPinch = false;
 
     // Make the focused shape shimmer toward white so the user can see what the left fist will
     // toggle — even when it is currently unselected (then we also lift its opacity above the
@@ -66,23 +70,30 @@ export function createSelectMenu(): MenuModule {
         const fIdx = Math.min(Math.max(ctx.focusIndex, 0), total - 1);
         const focused = focusedShape(ctx);
         const onSel = focused ? isSelected(ctx, focused) : false;
+        const onNeg = focused ? isNegative(focused) : false;
         const sel = selectedCount(ctx);
+        const negCount = allShapes(ctx).filter(isNegative).length;
         panel.setBody(
             `<div style="display:flex;flex-direction:column;gap:14px">` +
-                // big selection counter
+                // big selection counter (+ a red "holes" tally when any cutter is marked)
                 `<div style="font-size:30px;font-weight:700;color:${accent};text-shadow:0 0 12px ${accent}">` +
-                    `${sel} <span style="color:rgba(255,255,255,0.45);font-size:16px">selected</span></div>` +
+                    `${sel} <span style="color:rgba(255,255,255,0.45);font-size:16px">selected</span>` +
+                    (negCount > 0
+                        ? ` <span style="color:#ff6b6b;font-size:16px">· ${negCount} hole${negCount > 1 ? "s" : ""}</span>`
+                        : "") +
+                `</div>` +
                 // focus cursor readout
                 `<div style="font-size:13px;color:rgba(255,255,255,0.8)">` +
                     `cursor on shape <b>${fIdx + 1}</b> / ${total} — ` +
                     (onSel
                         ? `<span style="color:${accent}">in selection</span>`
                         : `<span style="color:rgba(255,255,255,0.55)">not selected</span>`) +
+                    (onNeg ? ` <span style="color:#ff6b6b">· hole</span>` : "") +
                 `</div>` +
                 `<div style="font-size:11px;color:rgba(255,255,255,0.55);line-height:1.5">` +
                     (total === 1
-                        ? "Close your left fist to select / deselect this shape. Spawn more shapes to build a multi-selection."
-                        : "Close your right fist to move the cursor · close your left fist to add / remove the cursor's shape.") +
+                        ? "Close your left fist to select this shape · left pinch to make it a <span style=\"color:#ff6b6b\">hole</span>."
+                        : "Right fist moves the cursor · left fist adds / removes it · left pinch marks it a <span style=\"color:#ff6b6b\">hole</span> (cutter).") +
                 `</div>` +
             `</div>`,
         );
@@ -98,6 +109,7 @@ export function createSelectMenu(): MenuModule {
             navGate = new GestureDebouncer();
             execWasFist = false;
             navWasFist = false;
+            navWasPinch = false;
             // Park the focus cursor on the primary selection if there is one.
             if (ctx.mesh) ctx.focusIndex = Math.max(0, allShapes(ctx).indexOf(ctx.mesh));
             refreshHighlight(ctx);
@@ -125,8 +137,11 @@ export function createSelectMenu(): MenuModule {
             }
             execWasFist = execFist;
 
-            // Left (nav) fist (rising edge) → toggle the focused shape in/out of the selection.
-            const navFist = navGate.push(nav ? classify(nav.landmarks, nav.world, null).name : "none") === "fist";
+            // Left (nav) hand drives two actions off one debounced pose stream: a FIST toggles the
+            // focused shape in/out of the selection; a PINCH toggles its NEGATIVE (cutter) tag.
+            const navPose = navGate.push(nav ? classify(nav.landmarks, nav.world, null).name : "none");
+
+            const navFist = navPose === "fist";
             if (navFist && !navWasFist) {
                 const f = focusedShape(ctx);
                 if (f) {
@@ -135,6 +150,21 @@ export function createSelectMenu(): MenuModule {
                 }
             }
             navWasFist = navFist;
+
+            // Left PINCH (rising edge) → mark / unmark the focused shape as NEGATIVE (a cutter). A
+            // shape becoming a cutter is auto-added to the selection so it takes part in the combine.
+            // Pinch is far from the fist used to select — and from a fist's release — so the two
+            // left-hand actions never collide.
+            const navPinch = navPose === "pinch";
+            if (navPinch && !navWasPinch) {
+                const f = focusedShape(ctx);
+                if (f) {
+                    toggleNegative(f);
+                    if (isNegative(f) && !isSelected(ctx, f)) toggleSelect(ctx, f);
+                    paint(ctx);
+                }
+            }
+            navWasPinch = navPinch;
         },
 
         exit(ctx: SceneContext): void {

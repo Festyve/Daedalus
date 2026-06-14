@@ -1,12 +1,17 @@
-// INTERACT tool (multi-shape CSG, §5 extended). Combines the two SELECTED shapes (A, B) using a
-// boolean operation — union, subtract, or intersect — and shows a LIVE PREVIEW of the result.
-// The operation is picked from a 3D CAROUSEL (item 5: the same wheel component) that the nav
-// hand SWIPES; an exec-hand pinch APPLIES it: A and B are removed and replaced by the single
+// INTERACT tool (multi-shape CSG, §5 extended). Combines the SELECTED shapes with a boolean
+// operation — union, subtract, or intersect — and shows a LIVE PREVIEW of the result. The
+// operation is picked from a 3D CAROUSEL (the same wheel component) that the exec hand PINCHES to
+// advance; a nav-hand pinch APPLIES it: the operands are removed and replaced by the single
 // resulting shape, which becomes the new selection.
 //
-// CSG runs through three-bvh-csg (built on the same three-mesh-bvh already vendored). It
-// operates on each shape's BASE geometry in world space (morph blend is ignored), which is
-// the right call for the hard-coded primitive booleans we expose here.
+// NEGATIVE shapes: any selected shape tagged negative in SELECT (drawn red) acts as a CUTTER.
+// UNION fuses every POSITIVE shape and then carves every NEGATIVE one out of the result — so
+// "mark one negative, then union" drills a hole. SUBTRACT / INTERSECT fold over all operands
+// (primary first) and ignore the tag. With exactly two shapes this matches the classic behaviour.
+//
+// CSG runs through three-bvh-csg (built on the same three-mesh-bvh already vendored). It operates
+// on each shape's BASE geometry in world space (morph blend is ignored), folding the operands into
+// a single result.
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
@@ -17,14 +22,14 @@ import { Panel } from "./panel";
 import { Carousel, type CarouselItem } from "./carousel";
 import { classify } from "../gesture/detect";
 import { attachMesh } from "../render/scene";
-import { selectedShapes, selectedCount, removeShape, selectOnly } from "../core/shapes";
+import { selectedShapes, selectedCount, removeShape, selectOnly, isNegative } from "../core/shapes";
 import { sfx } from "../audio/sfx";
 
-// Boolean operations offered, in carousel order.
+// Boolean operations offered, in carousel order. UNION leads — it is the cutter-aware hole-maker.
 const OPS: ReadonlyArray<{ key: number; label: string; verb: string; icon: string }> = [
-    { key: ADDITION, label: "UNION", verb: "merge", icon: "∪" },
-    { key: SUBTRACTION, label: "SUBTRACT", verb: "carve B out of A", icon: "⊖" },
-    { key: INTERSECTION, label: "INTERSECT", verb: "keep the overlap", icon: "∩" },
+    { key: ADDITION, label: "UNION", verb: "fuse the shapes · carve any red holes", icon: "∪" },
+    { key: SUBTRACTION, label: "SUBTRACT", verb: "primary minus the rest", icon: "⊖" },
+    { key: INTERSECTION, label: "INTERSECT", verb: "keep the shared overlap", icon: "∩" },
 ];
 
 // Carousel item per op (id = OPS index as a string). All share the INTERACT accent.
@@ -38,10 +43,17 @@ const OP_ITEMS: CarouselItem[] = OPS.map((op, i) => ({
 // Where the op sub-carousel sits in camera-local space (top-center, like the tool wheel).
 const CAROUSEL_POS = new THREE.Vector3(0, 0.9, -3.2);
 
-const PINCH_ON = 0.7;
-
 function blankVec(): Vec3 {
     return { x: 0, y: 0, z: 0 };
+}
+
+// Build a world-space CSG Brush from a mesh (its base geometry + world transform).
+function brushOf(mesh: THREE.Mesh): Brush {
+    const b = new Brush(mesh.geometry);
+    mesh.updateWorldMatrix(true, false);
+    mesh.matrixWorld.decompose(b.position, b.quaternion, b.scale);
+    b.updateMatrixWorld(true);
+    return b;
 }
 
 export function createInteractMenu(): MenuModule {
@@ -57,17 +69,15 @@ export function createInteractMenu(): MenuModule {
     const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     const FAR_TIP = new THREE.Vector3(10, 10, 0);
 
-    // The two operands captured on enter, the live preview mesh, and a status message.
-    let opA: THREE.Mesh | null = null;
-    let opB: THREE.Mesh | null = null;
+    // The operands captured on enter (a snapshot of the selection), the live preview mesh, and a
+    // status message.
+    let operands: THREE.Mesh[] = [];
     let preview: THREE.Mesh | null = null;
     let status = "";
 
     const evaluator = new Evaluator();
     evaluator.useGroups = false;          // single material → single-group result geometry
     evaluator.attributes = ["position", "normal"];
-    const brushA = new Brush(new THREE.BufferGeometry());
-    const brushB = new Brush(new THREE.BufferGeometry());
 
     const prevLandmarks: Vec3[] = Array.from({ length: 21 }, blankVec);
     function snapshot(lm: Vec3[]): void {
@@ -80,8 +90,13 @@ export function createInteractMenu(): MenuModule {
         hasNavPrev = true;
     }
 
-    // Dispose the live preview mesh (its geometry is owned by the preview unless we keep it
-    // for an apply, in which case keepGeometry=true hands the geometry off to attachMesh).
+    // How many operands are currently tagged negative (cutters) — for the panel note.
+    function negativeCount(): number {
+        return operands.filter(isNegative).length;
+    }
+
+    // Dispose the live preview mesh (its geometry is owned by the preview unless we keep it for an
+    // apply, in which case keepGeometry=true hands the geometry off to attachMesh).
     function clearPreview(keepGeometry: boolean): THREE.BufferGeometry | null {
         if (!preview) return null;
         const geo = preview.geometry;
@@ -92,37 +107,41 @@ export function createInteractMenu(): MenuModule {
         return keepGeometry ? geo : null;
     }
 
-    // Run the CSG op A⊕B on their BASE geometries in world space, returning a fresh
-    // world-space result geometry (white vertex colours added for the solid lit material),
-    // or null if the operation fails / produces nothing.
+    // Fold the operands into a single CSG result per the current op, then rebuild it as a fresh
+    // APP-three geometry (welded + indexed + white colour + bounds), or null on empty / failure.
     function computeResult(): THREE.BufferGeometry | null {
-        if (!opA || !opB) return null;
-        opA.updateWorldMatrix(true, false);
-        opB.updateWorldMatrix(true, false);
+        if (operands.length < 2) return null;
+        const op = OPS[opIndex].key;
+        let acc: Brush;
 
-        brushA.geometry = opA.geometry;
-        opA.matrixWorld.decompose(brushA.position, brushA.quaternion, brushA.scale);
-        brushA.updateMatrixWorld(true);
+        if (op === ADDITION) {
+            // UNION: fuse every POSITIVE, then carve every NEGATIVE (cutter) out of the result.
+            const positives = operands.filter((m) => !isNegative(m));
+            const negatives = operands.filter((m) => isNegative(m));
+            if (positives.length === 0) return null;     // nothing to add the cutters to
+            acc = brushOf(positives[0]);
+            for (let i = 1; i < positives.length; i++) acc = evaluator.evaluate(acc, brushOf(positives[i]), ADDITION);
+            for (const n of negatives) acc = evaluator.evaluate(acc, brushOf(n), SUBTRACTION);
+        } else {
+            // SUBTRACT: primary minus all others. INTERSECT: overlap of all. (UNION is the only
+            // cutter-aware op, so the negative tag is ignored here.) Primary (selected[0]) leads.
+            acc = brushOf(operands[0]);
+            for (let i = 1; i < operands.length; i++) acc = evaluator.evaluate(acc, brushOf(operands[i]), op);
+        }
 
-        brushB.geometry = opB.geometry;
-        opB.matrixWorld.decompose(brushB.position, brushB.quaternion, brushB.scale);
-        brushB.updateMatrixWorld(true);
-
-        const result = evaluator.evaluate(brushA, brushB, OPS[opIndex].key);
-        const rp = result.geometry.attributes.position as THREE.BufferAttribute | undefined;
+        const rp = acc.geometry.attributes.position as THREE.BufferAttribute | undefined;
         if (!rp || rp.count === 0) return null;
 
-        // three-bvh-csg builds the result with ITS OWN three instance (Vite may not dedupe),
-        // so its geometry lacks the prototype-patched computeBoundsTree the rest of the
-        // pipeline relies on. Rebuild it as a fresh APP-three geometry from the raw arrays,
-        // then mergeVertices to weld + index it (matching the indexed icosphere/box the
-        // sculpt + icing + BVH path expects). Seed a white colour buffer for the solid lit
-        // material (vertexColors:true) — the CSG result carries no colour attribute.
+        // three-bvh-csg builds the result with ITS OWN three instance (Vite may not dedupe), so its
+        // geometry lacks the prototype-patched computeBoundsTree the rest of the pipeline relies on.
+        // Rebuild it as a fresh APP-three geometry from the raw arrays, then mergeVertices to weld +
+        // index it (matching the indexed icosphere/box the sculpt + icing + BVH path expects). Seed
+        // a white colour buffer for the solid lit material — the CSG result carries no colour.
         const soup = new THREE.BufferGeometry();
         soup.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(rp.array), 3));
-        const rn = result.geometry.attributes.normal as THREE.BufferAttribute | undefined;
+        const rn = acc.geometry.attributes.normal as THREE.BufferAttribute | undefined;
         if (rn) soup.setAttribute("normal", new THREE.BufferAttribute(Float32Array.from(rn.array), 3));
-        if (result.geometry.index) soup.setIndex(Array.from(result.geometry.index.array as ArrayLike<number>));
+        if (acc.geometry.index) soup.setIndex(Array.from(acc.geometry.index.array as ArrayLike<number>));
 
         const geo = mergeVertices(soup);
         soup.dispose();
@@ -134,11 +153,11 @@ export function createInteractMenu(): MenuModule {
         return geo;
     }
 
-    // Recompute the preview for the current operation: hide A & B, show the result in the
+    // Recompute the preview for the current operation: hide the operands, show the result in the
     // INTERACT accent. Safe to call repeatedly; failures fall back to "couldn't combine".
     function rebuildPreview(ctx: SceneContext): void {
         clearPreview(false);
-        if (!opA || !opB) return;
+        if (operands.length < 2) return;
         let geo: THREE.BufferGeometry | null = null;
         try {
             geo = computeResult();
@@ -146,9 +165,8 @@ export function createInteractMenu(): MenuModule {
             geo = null;
         }
         if (!geo) {
-            status = "couldn't combine these two — try a different overlap";
-            opA.visible = true;
-            opB.visible = true;
+            status = "couldn't combine these — try a different overlap";
+            for (const m of operands) m.visible = true;
             return;
         }
         status = "";
@@ -165,8 +183,7 @@ export function createInteractMenu(): MenuModule {
         preview = new THREE.Mesh(geo, mat);
         preview.renderOrder = 0;
         ctx.scene.add(preview);
-        opA.visible = false;
-        opB.visible = false;
+        for (const m of operands) m.visible = false;
     }
 
     function paint(ctx: SceneContext): void {
@@ -174,20 +191,27 @@ export function createInteractMenu(): MenuModule {
         if (selectedCount(ctx) < 2) {
             panel.setBody(
                 `<div style="font-size:12px;color:rgba(255,255,255,0.7);line-height:1.6">` +
-                `INTERACT needs <b>two selected shapes</b>. Use SELECT to pinch a second shape ` +
-                `into the selection, then come back to combine them.</div>`,
+                `INTERACT needs <b>two selected shapes</b>. In SELECT, add a second shape ` +
+                `(left fist) — and open your left palm on one to make it a ` +
+                `<span style="color:#ff6b6b">hole</span> — then come back to combine them.</div>`,
             );
             return;
         }
         const op = OPS[opIndex];
+        const negs = negativeCount();
+        const holeNote =
+            op.key === ADDITION && negs > 0
+                ? `<div style="font-size:11px;color:#ff6b6b;margin-top:2px">carving ${negs} hole${negs > 1 ? "s" : ""}</div>`
+                : "";
         const note = status
             ? `<div style="font-size:11px;color:#FF9090;margin-top:6px">${status}</div>`
-            : `<div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:6px">previewing — pinch (exec) to apply</div>`;
+            : `<div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:6px">previewing — pinch (nav) to apply</div>`;
         panel.setBody(
             `<div style="display:flex;flex-direction:column;gap:10px">` +
                 `<div style="font-size:22px;font-weight:700;color:${accent};text-shadow:0 0 12px ${accent}">${op.label}</div>` +
-                `<div style="font-size:11px;color:rgba(255,255,255,0.55)">${op.verb} (selected ⊕ next)</div>` +
-                `<div style="font-size:10.5px;color:rgba(255,255,255,0.4)">swipe nav to change operation</div>` +
+                `<div style="font-size:11px;color:rgba(255,255,255,0.55)">${op.verb} (${operands.length} shapes)</div>` +
+                holeNote +
+                `<div style="font-size:10.5px;color:rgba(255,255,255,0.4)">pinch (exec) to change operation</div>` +
                 note +
             `</div>`,
         );
@@ -198,34 +222,30 @@ export function createInteractMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
-            panel.setInstructions("<b>RIGHT PINCH</b> change operation &nbsp;·&nbsp; <b>LEFT SQUEEZE</b> apply");
+            panel.setInstructions("<b>RIGHT PINCH</b> change operation &nbsp;·&nbsp; <b>LEFT PINCH</b> apply");
             opIndex = 0;
             hasNavPrev = false;
             currentExecHand = null;
             status = "";
-            const sel = selectedShapes(ctx);
-            if (sel.length >= 2) {
-                opA = sel[0]; // primary selected
-                opB = sel[1]; // second selected
+            operands = [...selectedShapes(ctx)];
+            if (operands.length >= 2) {
                 rebuildPreview(ctx);
-                // Op picker carousel (only meaningful with two operands).
+                // Op picker carousel (only meaningful with operands).
                 carousel = new Carousel(OP_ITEMS);
                 carousel.object.position.copy(CAROUSEL_POS);
                 ctx.camera.add(carousel.object);
                 carousel.open(FAR_TIP);
 
-                // Wire up selection: left-hand pinch applies the operation.
+                // Wire up selection: nav-hand pinch applies the operation.
                 carousel.onSelect = () => {
-                    if (!currentExecHand || !preview || !opA || !opB) return;
+                    if (!currentExecHand || !preview || operands.length < 2) return;
                     const geo = clearPreview(true);      // keep the result geometry
-                    const a = opA, b = opB;
-                    opA = null;
-                    opB = null;
-                    if (geo && a && b) {
-                        removeShape(ctx, a);
-                        removeShape(ctx, b);
-                        const result = attachMesh(ctx, geo); // result becomes ctx.mesh
-                        selectOnly(ctx, result);             // and the sole selection (count = 1)
+                    const ops = operands;
+                    operands = [];
+                    if (geo) {
+                        for (const m of ops) removeShape(ctx, m);
+                        const result = attachMesh(ctx, geo);  // result becomes ctx.mesh
+                        selectOnly(ctx, result);               // and the sole selection (count = 1)
                         sfx.ding();
                     }
                     // The operands are gone — tear down the op wheel until the user re-enters.
@@ -236,9 +256,6 @@ export function createInteractMenu(): MenuModule {
                     }
                     paint(ctx);
                 };
-            } else {
-                opA = null;
-                opB = null;
             }
             paint(ctx);
             panel.show();
@@ -246,7 +263,7 @@ export function createInteractMenu(): MenuModule {
 
         update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
             if (!panel) return;
-            if (!opA || !opB || !carousel) return; // nothing to combine
+            if (operands.length < 2 || !carousel) return; // nothing to combine
             const dtSec = dt / 1000;
 
             currentExecHand = exec;
@@ -254,9 +271,13 @@ export function createInteractMenu(): MenuModule {
             // Right-hand (exec) pinch advances the carousel; when opIndex changes, rebuild preview.
             const execG = exec ? classify(exec.landmarks, exec.world, null) : NONE_GESTURE;
 
-            // Left-hand (nav) gesture for selection is handled via carousel.onSelect.
+            // Left-hand (nav) gesture for apply is handled via carousel.onSelect.
             const navG = nav ? classify(nav.landmarks, nav.world, hasNavPrev ? prevLandmarks : null) : NONE_GESTURE;
             carousel.update(FAR_TIP, execG, navG, dtSec);
+
+            // An apply (carousel.onSelect) tears the wheel down synchronously inside the update()
+            // above — bail before touching the now-null carousel.
+            if (!carousel) return;
 
             // Track operation changes when the carousel advances.
             const centered = Number(carousel.current);
@@ -274,12 +295,10 @@ export function createInteractMenu(): MenuModule {
         },
 
         exit(ctx: SceneContext): void {
-            // Cancel any un-applied preview and restore the two operands.
+            // Cancel any un-applied preview and restore the operands.
             clearPreview(false);
-            if (opA) opA.visible = true;
-            if (opB) opB.visible = true;
-            opA = null;
-            opB = null;
+            for (const m of operands) m.visible = true;
+            operands = [];
             if (carousel) {
                 ctx.camera.remove(carousel.object);
                 carousel.dispose();

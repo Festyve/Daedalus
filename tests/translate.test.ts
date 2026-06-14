@@ -201,6 +201,7 @@ function makeCtx(withMesh: boolean): SceneContext {
         morphT: 0,
         stage: "EMPTY",
         viewMode: "scene",
+        wireframe: false,
         activeMenu: null,
         scratch: makeScratch(),
         interactionPlaneZ: 0,   // mesh depth: unproject onto z = 0 plane
@@ -312,7 +313,7 @@ describe("TRANSLATE group — all selected shapes move together", () => {
         return {
             scene: new THREE.Scene(), camera, renderer: null as any,
             mesh: a, bvh: null, extraMeshes: [b], selected: [a, b], focusIndex: 0,
-            morphT: 0, stage: "EMPTY", viewMode: "scene", activeMenu: null,
+            morphT: 0, stage: "EMPTY", viewMode: "scene", wireframe: false, activeMenu: null,
             scratch: makeScratch(), interactionPlaneZ: 0,
         };
     }

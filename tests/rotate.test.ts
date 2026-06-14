@@ -116,6 +116,7 @@ function makeContext(mesh: THREE.Mesh | null): SceneContext {
         morphT: 0,
         stage: mesh ? "SPHERE" : "EMPTY",
         viewMode: "scene",
+        wireframe: false,
         activeMenu: MenuId.ROTATE,
         scratch: makeScratch(),
         interactionPlaneZ: 0,
@@ -372,7 +373,7 @@ describe("ROTATE quaternion math (§5.4)", () => {
             return {
                 scene, camera, renderer: {} as THREE.WebGLRenderer,
                 mesh: a, bvh: null, extraMeshes: [b], selected: [a, b], focusIndex: 0,
-                morphT: 0, stage: "SPHERE", viewMode: "scene", activeMenu: MenuId.ROTATE,
+                morphT: 0, stage: "SPHERE", viewMode: "scene", wireframe: false, activeMenu: MenuId.ROTATE,
                 scratch: makeScratch(), interactionPlaneZ: 0,
             };
         }

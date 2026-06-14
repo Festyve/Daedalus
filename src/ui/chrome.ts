@@ -12,13 +12,13 @@ import { T, TOOL_ACCENT, FONT, GLASS_BG, GLASS_BLUR, panelGlow } from "../render
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
 const MENU_INSTRUCTION: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: "right pinch to cycle shape · left pinch to spawn",
-    [MenuId.SELECT]: "right fist moves the cursor · left fist adds / removes",
+    [MenuId.SELECT]: "right fist moves cursor · left fist selects · left pinch = hole",
     [MenuId.TRANSLATE]: "right open palm to grab · right fist to lock",
     [MenuId.DILATE]: "both fists to grab · hands apart / together to scale",
     [MenuId.ROTATE]: "right pinch near the object · twist · release to latch",
     [MenuId.MORPH]: "both fists · jiggle to morph sphere → torus",
     [MenuId.DECORATE]: "right palm to ice · right pinch for sprinkles · or speak",
-    [MenuId.INTERACT]: "right pinch to pick the op · left pinch to apply",
+    [MenuId.INTERACT]: "right pinch picks union / subtract / intersect · left pinch applies",
     [MenuId.DESTROY]: "right pinch destroys all selected shapes",
 };
 

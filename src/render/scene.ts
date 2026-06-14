@@ -28,12 +28,10 @@ const CAM_FAR = 100;
 const CAM_BASE_X = 0;
 const CAM_BASE_Y = 0.35;
 const CAM_BASE_Z = 5.0;
-// Idle parallax: a tiny Lissajous drift around the base position so the frame
-// feels alive without the matcap shifting noticeably (§9.6).
-const PARALLAX_X = 0.12;
-const PARALLAX_Y = 0.07;
-const PARALLAX_SPEED_X = 0.00021; // rad/ms
-const PARALLAX_SPEED_Y = 0.00033; // rad/ms
+// The idle Lissajous breath that used to live here now belongs to CameraRig (render/
+// cameraRig.ts), which owns the camera as spherical orbit state and is driven from the single
+// master loop (§2). main.ts builds the rig from this base-framed camera and calls rig.update()
+// each frame; the rig folds the same sub-degree drift onto its committed (θ, φ, r).
 
 // Patch three.js prototypes exactly once so geometry.computeBoundsTree() and
 // accelerated raycasting are available. Idempotent and shared with SculptEngine /
@@ -115,23 +113,6 @@ function makeCamera(): THREE.PerspectiveCamera {
     return camera;
 }
 
-// Slight idle parallax for life (§9.6). Runs on its own rAF so it is independent
-// of the main update loop; the camera mostly stays put (small Lissajous drift)
-// while always looking at the origin so the matcap reads consistently. Reuses a
-// single closure-scoped target — no per-frame allocation.
-function startIdleParallax(camera: THREE.PerspectiveCamera): void {
-    const t0 = performance.now();
-    const tick = (now: number): void => {
-        const t = now - t0;
-        camera.position.x = CAM_BASE_X + Math.sin(t * PARALLAX_SPEED_X) * PARALLAX_X;
-        camera.position.y = CAM_BASE_Y + Math.sin(t * PARALLAX_SPEED_Y) * PARALLAX_Y;
-        camera.position.z = CAM_BASE_Z;
-        camera.lookAt(0, 0, 0);
-        requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-}
-
 /**
  * Artificial lighting so the SOLID meshes read as 3D (§9.2 rework). A three-point-ish rig:
  * a soft cool ambient lifts the shadow side off pure black; a bright warm key from the upper
@@ -169,8 +150,6 @@ export function makeContext(): SceneContext {
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    startIdleParallax(camera);
-
     return {
         scene,
         camera,
@@ -183,6 +162,7 @@ export function makeContext(): SceneContext {
         morphT: 0,
         stage: "EMPTY",
         viewMode: "scene",
+        wireframe: false,
         activeMenu: null,
         scratch: makeScratch(),
         interactionPlaneZ: 0,
@@ -218,6 +198,9 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     const mat = mesh.material as THREE.MeshStandardMaterial;
     mat.depthTest = true;
     mat.depthWrite = true;
+    // Match the world's current render mode so a shape spawned while in wireframe arrives
+    // as wireframe rather than solid (the both-hands-gun toggle flips ctx.wireframe).
+    mat.wireframe = ctx.wireframe;
 
     // The Mesh constructor seeds morphTargetInfluences from geometry.morphAttributes;
     // guarantee the [0] slot (torus blend, §7.2) exists for setMorphT / the MORPH tool.

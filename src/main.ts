@@ -34,6 +34,10 @@ import { LAYER } from "./render/layers";
 import { makeComposer, SCENE_BLOOM_STRENGTH } from "./render/post";
 import { drawSkeletons } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
+import { CameraRig } from "./render/cameraRig";
+import { makeAxisTriad } from "./render/axisTriad";
+import { MiniView } from "./render/miniView";
+import { asMenuLayer } from "./render/layers";
 
 import { Carousel } from "./menu/carousel";
 import { MenuRouter } from "./menu/menuRouter";
@@ -46,10 +50,12 @@ import { createMorphMenu } from "./menu/morph";
 import { createDecorateMenu } from "./decorate/chatPanel";
 import { createInteractMenu } from "./menu/interaction";
 import { createDestroyMenu } from "./menu/destroy";
+import { OrbitController } from "./menu/orbit";
 
 import { classify, GestureDebouncer } from "./gesture/detect";
+import { GunArbiter } from "./gesture/gunArbiter";
 import { handScale } from "./gesture/predicates";
-import { selectedCount } from "./core/shapes";
+import { selectedCount, setWireframe } from "./core/shapes";
 import { eligibleTools } from "./render/tokens";
 
 import { Chrome } from "./ui/chrome";
@@ -112,6 +118,20 @@ carousel.onSelect = (id) => {
     sfx.ping();
     router.select(ctx, id as MenuId);
 };
+
+// ---- Camera Orbit Mode (Part 1) -------------------------------------------
+// The rig owns the camera as spherical orbit state (replacing scene.ts's old idle-parallax
+// rAF) and is driven from the master loop below. In the idle state (no active tool, carousel
+// closed) both hands in a grab pose engage OrbitController, which orbits the rig. A scene-
+// center axis gizmo (Layer 1, above the mesh) and a top-right orientation mini-viewport fade
+// in while orbiting.
+const rig = new CameraRig(ctx.camera);
+const orbit = new OrbitController();
+const orbitGizmo = makeAxisTriad(2.0, 0.02);
+asMenuLayer(orbitGizmo.group);
+ctx.scene.add(orbitGizmo.group);
+const miniView = new MiniView();
+let orbit_visual = 0; // eased 0..1 visibility shared by the gizmo + mini-view (~120ms ramp)
 
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
 const { composer, setBloom } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
@@ -186,49 +206,37 @@ async function initInput(): Promise<void> {
 const navTipWorld = new THREE.Vector3();
 const navTipLocal = new THREE.Vector3();
 const execGate = new GestureDebouncer();  // debounce exec-hand discrete poses
+const navGate = new GestureDebouncer();   // debounce nav-hand discrete poses (for the both-gun toggle)
 let execPrevLm: HandPose["landmarks"] | null = null; // prev exec landmarks for gesture classify
 let execGestureName = "none";              // last committed exec gesture (for the dev overlay)
-let gunWasActive = false;                  // rising-edge tracker for gun toggle
+// Disambiguates the shared finger-gun pose: right gun alone -> carousel; both guns -> wireframe.
+const gunArbiter = new GunArbiter();
 
 function driveCarousel(exec: HandPose | null, nav: HandPose | null, dtSeconds: number): void {
     const NONE_GESTURE = { name: "none" as const, extended: 0, pinch: 0, spread: 0, vx: 0 };
 
-    // Classify right-hand (exec) gesture for toggle.
+    // Classify right-hand (exec) gesture; track whether a gun is committed this frame.
     let execG: GestureState = NONE_GESTURE;
+    let execGunCommitted = false;
     if (exec) {
         execG = classify(exec.landmarks, exec.world, execPrevLm);
         execPrevLm = exec.landmarks;
         const committed = execGate.push(execG.name);
         execGestureName = committed;
-
-        // Right-hand gun toggles on rising edge only (new gun pose, not held).
-        const gunNow = committed === "gun";
-        if (gunNow && !gunWasActive) {
-            if (router.activeId !== null) {
-                // In a sub-menu: gun returns to main menu
-                router.select(ctx, null);
-                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
-                sfx.hum();
-            } else if (carousel.isOpen) {
-                // Main carousel is open: gun closes it
-                carousel.close();
-            } else {
-                // No menu showing: gun opens main carousel
-                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
-                sfx.hum();
-            }
-        }
-        gunWasActive = gunNow;
+        execGunCommitted = committed === "gun";
     } else {
         execGestureName = "none";
         execPrevLm = null;
-        gunWasActive = false;
+        execGate.push("none");
     }
 
-    // Left-hand (nav) gesture is used for aiming the carousel glow.
-    // (Selection/advance are now driven by right hand through carousel.update())
+    // Left-hand (nav) gesture aims the carousel glow AND, when it too is a gun, forms the
+    // both-hands gun that toggles wireframe.
+    let navG: GestureState = NONE_GESTURE;
+    let navGunCommitted = false;
     if (nav) {
-        const navG = classify(nav.landmarks, nav.world, null);
+        navG = classify(nav.landmarks, nav.world, null);
+        navGunCommitted = navGate.push(navG.name) === "gun";
         // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
         fingertipToWorld(
             nav.landmarks[INDEX_TIP],
@@ -239,10 +247,34 @@ function driveCarousel(exec: HandPose | null, nav: HandPose | null, dtSeconds: n
             navTipWorld,
         );
         ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
+    } else {
+        navGate.push("none");
+    }
+
+    // Arbitrate the shared finger-gun pose: right gun alone toggles the carousel (as before);
+    // BOTH hands gunning toggles solid/shaded <-> wireframe for every shape the user has made.
+    const gunAction = gunArbiter.step(execGunCommitted, navGunCommitted);
+    if (gunAction === "carousel") {
+        if (router.activeId !== null) {
+            // In a sub-menu: gun returns to main menu
+            router.select(ctx, null);
+            carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+            sfx.hum();
+        } else if (carousel.isOpen) {
+            // Main carousel is open: gun closes it
+            carousel.close();
+        } else {
+            // No menu showing: gun opens main carousel
+            carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+            sfx.hum();
+        }
+    } else if (gunAction === "wireframe") {
+        setWireframe(ctx, !ctx.wireframe);
+        sfx.ding();
     }
 
     // Drive carousel with right-hand (advance) and left-hand (select) gestures.
-    carousel.update(navTipLocal, execG, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSeconds);
+    carousel.update(navTipLocal, execG, navG, dtSeconds);
 }
 
 // ---- role assignment (§3.2; ?singlehand collapses both roles onto one hand) -
@@ -312,12 +344,26 @@ startLoop((dtMs) => {
     viewMode.detectPartingCurtains(frame.Left, frame.Right, dtMs);
     viewMode.update(dtMs);
 
+    // 2.5) Camera Orbit Mode: in the idle state (no active tool, carousel closed) both hands
+    //      in a grab pose orbit the camera. Driven from the true Left/Right hands (bilateral),
+    //      cancelled the instant a tool or the carousel takes over. The eased visibility drives
+    //      the scene-center gizmo (here) and the mini-viewport (render section).
+    const idle = router.activeId === null && !carousel.isOpen;
+    if (idle) orbit.update(frame.Left, frame.Right, rig, dtMs);
+    else orbit.reset();
+    orbit_visual += ((orbit.active ? 1 : 0) - orbit_visual) * Math.min(1, dtMs / 120);
+    orbitGizmo.setOpacity(orbit_visual);
+
     // 3) Exec hand drives carousel toggle/advance; nav hand aims glow; active menu driven by router.
     driveCarousel(exec, nav, dtSeconds);
     router.update(ctx, exec, nav, dtMs);
 
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
+
+    // 4.5) Apply the camera rig (orbit state + idle breath) before any render pass reads the
+    //      camera. This is the single place the camera transform is written each frame (§2).
+    rig.update(dtMs);
 
     // 5) Render: the MAIN view (camera feed + composited objects, NEVER css3d), then a
     //    bottom-right black-scene preview (the same objects on #000814, camera bg hidden),
@@ -353,6 +399,12 @@ startLoop((dtMs) => {
     ctx.camera.layers.enable(LAYER.MENU);
     r.setScissorTest(false);
     r.setViewport(0, 0, W, H);
+
+    // Top-right orientation mini-viewport (Camera Orbit Mode): a scissored pass showing the
+    // axis triad at the live view angle. Only drawn while the orbit UI is visible, fading with
+    // the scene-center gizmo. Self-contained (restores scissor + full viewport internally).
+    if (orbit_visual > 0.02) miniView.render(r, ctx.camera, orbit_visual);
+
     // Restore the MAIN-view clear for the next frame's composer.render(): transparent in AR
     // (so the #camera video shows through), opaque #000814 in scene mode. The preview pass
     // above left an opaque clear colour set, so this MUST run every frame.
@@ -419,11 +471,14 @@ interface DaedalusDebug {
     router: MenuRouter;
     carousel: Carousel;
     viewMode: ViewModeController;
+    rig: CameraRig;
+    orbit: OrbitController;
     selectMenu(id: keyof typeof MenuId | string | null): void;
     setMorphT(t: number): void;
     injectPose(frame: PoseFrame | null): void;
     clearPose(): void;
     toggleView(): void;
+    toggleWire(): void;
     advance(): void;
     handScaleOf(pose: HandPose): number;
     MenuId: typeof MenuId;
@@ -435,6 +490,8 @@ const debug: DaedalusDebug = {
     router,
     carousel,
     viewMode,
+    rig,
+    orbit,
     selectMenu(id) {
         selectByName(id === null ? null : String(id));
     },
@@ -442,6 +499,7 @@ const debug: DaedalusDebug = {
     injectPose(frame) { injected = frame; },
     clearPose() { injected = null; },
     toggleView() { viewMode.toggle(); },
+    toggleWire() { setWireframe(ctx, !ctx.wireframe); },
     advance() { director.advanceSafety(); },
     handScaleOf(pose) { return handScale(pose.world); },
     MenuId,

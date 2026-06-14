@@ -39,10 +39,10 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
         "each spawn adds a new shape (the others stay)",
     ],
     [MenuId.SELECT]: [
-        "right fist steps the focus cursor to the next shape",
+        "right fist steps the focus cursor between shapes",
         "left fist toggles that shape in / out of the selection",
+        "left pinch marks it a red hole (cutter for INTERACT)",
         "focused shape pulses white · selected glow, the rest dim",
-        "the selection sticks — every edit tool acts on it",
     ],
     [MenuId.TRANSLATE]: [
         "right open palm grabs — shapes follow your hand",
@@ -70,9 +70,10 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
         "or just speak — DAEDALUS ices, sprinkles, and replies",
     ],
     [MenuId.INTERACT]: [
-        "combines the two selected shapes into one",
-        "right pinch cycles union · subtract · intersect (live preview)",
-        "left pinch applies — the two become one shape",
+        "combine all the selected shapes (live preview)",
+        "right pinch cycles union · subtract · intersect",
+        "UNION fuses the shapes and carves red holes out",
+        "left pinch to apply — they become one shape",
     ],
     [MenuId.DESTROY]: [
         "right pinch deletes every selected shape at once",

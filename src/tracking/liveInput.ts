@@ -33,13 +33,13 @@ const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/w
 
 // One Euro params. Image-space landmarks are normalized [0..1]; world landmarks
 // are metric (~10x larger units) so they take a proportionally larger min-cutoff
-// to suppress jitter without lag (§3.3). Tuned slightly snappier than the original
-// (min-cutoff 1.5→1.2, beta 0.02→0.04) so quick finger motion is not over-damped —
-// the higher beta raises the cutoff harder during fast motion, letting flicks through,
-// while the modest min-cutoff keeps rest jitter low (the SwipeDetector also rejects
-// zero-mean jitter, so this is safe).
+// to suppress jitter without lag (§3.3). IMAGE_BETA raised to 0.4 (was 0.04) so
+// fast wrist sweeps (dilate, translate) track tightly with low lag — the adaptive
+// cutoff rises ~10x harder during quick motion while rest-state jitter is still
+// gated by min-cutoff. SwipeDetector cooldown and the 5-frame fist debounce remain
+// the noise guards so extra pass-through here is safe.
 const IMAGE_MIN_CUTOFF = 1.2;
-const IMAGE_BETA = 0.04;
+const IMAGE_BETA = 0.4;
 const WORLD_MIN_CUTOFF = 15.0;
 const WORLD_BETA = 0.2;
 
