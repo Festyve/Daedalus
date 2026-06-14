@@ -1,13 +1,12 @@
-// §5 INTERACT — NEGATIVE shapes + N-ary boolean (CSG) on a minimal headless SceneContext.
+// §5 INTERACT — N-ary boolean (CSG) on a minimal headless SceneContext.
 //
-// Paradigm under test: a shape tagged NEGATIVE (a "hole" / cutter, drawn red) is SUBTRACTED by
-// UNION instead of added — so "mark one negative, then union" drills a hole. With the cutter left
-// positive, UNION fuses both. This verifies the carve at the geometry level (the previewed result's
-// bounding box), plus the negative-tag helpers + red highlight, without a renderer.
+// Verifies UNION at the geometry level (the previewed result's bounding box reaches both shapes'
+// extent → they fused) and that applying replaces the operands with the single result, without a
+// renderer.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as THREE from "three";
 import { createInteractMenu } from "../src/menu/interaction";
-import { isNegative, toggleNegative, refreshHighlight, selectedCount } from "../src/core/shapes";
+import { selectedCount } from "../src/core/shapes";
 import type { SceneContext, ScratchMath } from "../src/types";
 
 // ---- Headless DOM: a canvas (for the Carousel's CanvasTextures) + plain elements (for Panel) ----
@@ -59,8 +58,7 @@ function makeScratch(): ScratchMath {
 }
 
 // A spans x∈[-0.5,0.5]; B spans x∈[0.1,1.1] — overlap x∈[0.1,0.5].
-//   UNION (both positive)  → result reaches B's far edge (~x=1.1).
-//   UNION (B negative)     → A−B, the slab is carved away → result reaches only ~x=0.1.
+//   UNION → result reaches B's far edge (~x=1.1).
 function makeCtx(): { ctx: SceneContext; a: THREE.Mesh; b: THREE.Mesh } {
     const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 100);
     camera.position.set(0, 0, 5);
@@ -92,29 +90,8 @@ function previewMaxX(ctx: SceneContext, a: THREE.Mesh, b: THREE.Mesh): number {
     return preview!.geometry.boundingBox!.max.x;
 }
 
-describe("negative-tag helpers + red highlight", () => {
-    it("toggleNegative flips the userData flag both ways", () => {
-        const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
-        expect(isNegative(m)).toBe(false);
-        toggleNegative(m);
-        expect(isNegative(m)).toBe(true);
-        toggleNegative(m);
-        expect(isNegative(m)).toBe(false);
-    });
-
-    it("refreshHighlight tints a selected negative shape red", () => {
-        const { ctx, a } = makeCtx();
-        toggleNegative(a);
-        refreshHighlight(ctx);
-        const col = (a.material as THREE.MeshStandardMaterial).color;
-        expect(col.r).toBeGreaterThan(0.8);            // red dominant
-        expect(col.r).toBeGreaterThan(col.g + 0.3);
-        expect(col.r).toBeGreaterThan(col.b + 0.3);
-    });
-});
-
-describe("INTERACT UNION respects the NEGATIVE tag", () => {
-    it("both positive → UNION fuses (result spans both shapes)", () => {
+describe("INTERACT boolean (CSG)", () => {
+    it("UNION fuses the operands (result spans both shapes)", () => {
         const { ctx, a, b } = makeCtx();
         const tool = createInteractMenu();
         tool.enter(ctx);                                // default op = UNION
@@ -123,21 +100,8 @@ describe("INTERACT UNION respects the NEGATIVE tag", () => {
         tool.exit(ctx);
     });
 
-    it("B negative → UNION carves it out (result is the hole-bearing A−B)", () => {
-        const { ctx, a, b } = makeCtx();
-        toggleNegative(b);                              // B is now a cutter
-        const tool = createInteractMenu();
-        tool.enter(ctx);                                // UNION = fuse positives, carve negatives
-        const maxX = previewMaxX(ctx, a, b);
-        expect(maxX).toBeLessThan(0.6);                 // B's slab removed → far edge gone
-        tool.exit(ctx);
-        expect(a.visible).toBe(true);                   // operands restored on exit
-        expect(b.visible).toBe(true);
-    });
-
     it("a nav pinch applies: both operands are replaced by one selected result", () => {
         const { ctx, a, b } = makeCtx();
-        toggleNegative(b);
         const tool = createInteractMenu();
         tool.enter(ctx);
 

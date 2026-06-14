@@ -1,7 +1,7 @@
 // SELECT tool behavior on a minimal headless SceneContext.
 //
-// Paradigm under test (the fist-based controls): a LEFT-hand FIST steps the focus cursor to the
-// next shape, and a RIGHT-hand FIST toggles the focused shape in/out of the selection. Each gesture
+// Paradigm under test (the fist-based controls): a RIGHT-hand FIST steps the focus cursor to the
+// next shape, and a LEFT-hand FIST toggles the focused shape in/out of the selection. Each gesture
 // is debounced (5 frames) and fires on the rising edge, so one fist-close = one cursor step / one
 // toggle — holding the fist must not repeat, and you re-open then re-close to fire again.
 //

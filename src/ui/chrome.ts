@@ -12,7 +12,7 @@ import { T, TOOL_ACCENT, FONT, GLASS_BG, GLASS_BLUR, panelGlow } from "../render
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
 const MENU_INSTRUCTION: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: "right pinch to cycle shape · left pinch to spawn",
-    [MenuId.SELECT]: "right fist moves cursor · left fist selects · left pinch = hole",
+    [MenuId.SELECT]: "right fist moves cursor · left fist selects",
     [MenuId.TRANSLATE]: "right open palm to grab · right fist to lock",
     [MenuId.DILATE]: "both fists to grab · hands apart / together to scale",
     [MenuId.ROTATE]: "right pinch near the object · twist · release to latch",

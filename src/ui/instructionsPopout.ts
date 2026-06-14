@@ -41,7 +41,6 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.SELECT]: [
         "right fist steps the focus cursor between shapes",
         "left fist toggles that shape in / out of the selection",
-        "left pinch marks it a red hole (cutter for INTERACT)",
         "focused shape pulses white · selected glow, the rest dim",
     ],
     [MenuId.TRANSLATE]: [
@@ -72,7 +71,6 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.INTERACT]: [
         "combine all the selected shapes (live preview)",
         "right pinch cycles union · subtract · intersect",
-        "UNION fuses the shapes and carves red holes out",
         "left pinch to apply — they become one shape",
     ],
     [MenuId.DESTROY]: [
