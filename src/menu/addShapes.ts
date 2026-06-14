@@ -108,8 +108,8 @@ export function createAddShapesMenu(): MenuModule {
     const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     const FAR_TIP = new THREE.Vector3(10, 10, 0);
 
-    // Cache the current exec hand so onSelect can access it.
-    let currentExecHand: HandPose | null = null;
+    // Rising-edge latch for the left-squeeze spawn (handled here, not via carousel.onSelect).
+    let wasSpawn = false;
 
     function snapshotLandmarks(lm: Vec3[]): void {
         const n = Math.min(lm.length, prev_landmarks.length);
@@ -167,19 +167,11 @@ export function createAddShapesMenu(): MenuModule {
             ctx.camera.add(carousel.object);
             carousel.open(FAR_TIP);
 
-            // Wire up selection: left-hand pinch triggers onSelect when the carousel closes.
-            carousel.onSelect = (id) => {
-                if (currentExecHand) {
-                    fingertipToWorld(
-                        currentExecHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
-                        ctx.scratch.ray, ctx.scratch.plane, spawn_world,
-                    );
-                    spawnShape(id as ShapeKind, ctx, spawn_world);
-                }
-            };
-
-            currentExecHand = null;
+            // No carousel.onSelect: selecting a shape must NOT close the wheel. Spawning is handled
+            // directly in update() (left squeeze), so the wheel stays open and you can add several
+            // shapes in a row — it only closes when you leave ADD SHAPES.
             has_prev = false;
+            wasSpawn = false;
             spawn_mesh = null;
             spawn_t = 0;
         },
@@ -191,27 +183,37 @@ export function createAddShapesMenu(): MenuModule {
             // Advance any in-flight spawn scale-in first (keeps growing even if the hand drops).
             advanceSpawn(dt);
 
-            currentExecHand = exec;
-
             if (!exec) {
                 has_prev = false;
-                carousel.update(FAR_TIP, NONE_GESTURE, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSec);
+                wasSpawn = false;
+                // The wheel keeps drawing but never selects/closes (NONE select hand).
+                carousel.update(FAR_TIP, NONE_GESTURE, NONE_GESTURE, dtSec);
                 return;
             }
 
             const lm = exec.landmarks;
             const g = classify(lm, exec.world, has_prev ? prev_landmarks : null);
 
-            // Aim the carousel glow at the exec fingertip (camera-local).
+            // Aim the carousel glow at the exec fingertip (camera-local) — also the spawn origin.
             fingertipToWorld(
                 lm[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
                 ctx.scratch.ray, ctx.scratch.plane, tip_world,
             );
             ctx.camera.worldToLocal(tip_local.copy(tip_world));
 
-            // Pass both right-hand (exec) gesture for advancing and left-hand (nav) gesture for selecting.
+            // Right-hand (exec) gesture advances the wheel. The left gesture is handled HERE, not by
+            // the carousel (NONE passed as its select hand), so a spawn never closes the wheel.
+            carousel.update(tip_local, g, NONE_GESTURE, dtSec);
+
+            // Left squeeze (rising edge) → spawn the centered shape at the right fingertip, leaving
+            // the wheel open for the next spawn.
             const navG = nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE;
-            carousel.update(tip_local, g, navG, dtSec);
+            const spawning = navG.pinch > PINCH_ON;
+            if (spawning && !wasSpawn) {
+                spawn_world.copy(tip_world);
+                spawnShape(carousel.current as ShapeKind, ctx, spawn_world);
+            }
+            wasSpawn = spawning;
 
             snapshotLandmarks(lm);
         },
@@ -234,7 +236,7 @@ export function createAddShapesMenu(): MenuModule {
                 spawn_mesh = null;
             }
             spawn_t = 0;
-            currentExecHand = null;
+            wasSpawn = false;
             // Spawned mesh is intentionally retained as the selection — the user's creation.
         },
     };
