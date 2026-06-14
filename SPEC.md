@@ -721,7 +721,7 @@ daedalus/
 - [ ] All menu geometry renders above mesh (renderOrder=1, depthTest=false)
 
 **Tools:**
-- [ ] ADD SHAPES: mini carousel shows cube/sphere/tetrahedron; pinch spawns as active target
+- [ ] ADD SHAPES: mini carousel shows cube/sphere/cylinder; pinch spawns as active target
 - [ ] TRANSLATE: open hand moves object freely; fist locks position
 - [ ] DILATE: two-hand spread/pinch scales object; bounding box renders
 - [ ] ROTATE: pinch + twist rotates via quaternion; arcball renders; no gimbal lock

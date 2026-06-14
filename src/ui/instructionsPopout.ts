@@ -14,7 +14,7 @@
 // near-black panel, JetBrains Mono. Nothing here touches the Three.js scene, so the
 // Layer-0/Layer-1 depth rules (asMenuLayer) do not apply — this is Layer 2 DOM only.
 import { MenuId, MENU_ORDER, MENU_LABEL } from "../types";
-import { T, MENU_META, FONT } from "../render/tokens";
+import { T, MENU_META, FONT, GLASS_BG, GLASS_BLUR, panelGlow } from "../render/tokens";
 
 // One row of the reference: a gesture phrase paired with the action it triggers.
 interface ReferenceRow {
@@ -34,7 +34,7 @@ const NAV_GESTURES: ReferenceRow[] = [
 // Right hand executes unless a line says otherwise.
 const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.ADD_SHAPES]: [
-        "flick to cycle cube · sphere · tetrahedron",
+        "flick to cycle cube · sphere · cylinder",
         "pinch to pick · right pinch spawns at your hand",
         "each spawn adds a new shape (the others stay)",
     ],
@@ -82,7 +82,6 @@ const SYSTEM_GESTURES: ReferenceRow[] = [
     { gesture: "Speak while DECORATE is active", action: "talk to DAEDALUS AI" },
 ];
 
-const PANEL_BG = "#000814";   // near-black, matches T.bg (§14.1)
 const ROW_DIM = "rgba(255,255,255,0.55)";
 const HEAD_DIM = "rgba(255,255,255,0.4)";
 
@@ -200,15 +199,20 @@ export class InstructionsPopout {
         return wrap;
     }
 
-    // One tool block: accent-tinted label (from MENU_META) + its hint lines.
+    // One tool block: accent-tinted label (from MENU_META) + its hint lines. A left accent
+    // bar in the tool's own color turns the dense list into a scannable, color-keyed column.
     private buildToolBlock(id: MenuId): HTMLElement {
+        const accent = MENU_META[id].accent;
         const wrap = document.createElement("div");
         wrap.className = "daedalus-instr-tool";
+        wrap.style.borderLeft = `2px solid ${accent}`;
+        wrap.style.boxShadow = `-6px 0 14px -8px ${accent}`;
 
         const label = document.createElement("div");
         label.className = "daedalus-instr-tl";
         label.textContent = MENU_LABEL[id];
-        label.style.color = MENU_META[id].accent;
+        label.style.color = accent;
+        label.style.textShadow = `0 0 8px ${accent}55`;
         wrap.appendChild(label);
 
         for (const line of TOOL_HINTS[id]) {
@@ -232,50 +236,74 @@ export class InstructionsPopout {
 
     private css(): string {
         return `
+@keyframes daedalus-instr-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+@keyframes daedalus-instr-in {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
 #daedalus-instr-btn {
     position: fixed; right: 20px; bottom: 20px; z-index: 7;
-    width: 40px; height: 40px; padding: 0; line-height: 1;
+    width: 44px; height: 44px; padding: 0; line-height: 1;
     display: flex; align-items: center; justify-content: center;
-    font-family: ${FONT}; font-size: 19px; font-weight: 700;
-    color: ${T.cyan}; background: ${T.bgPanel};
-    border: 1px solid ${T.cyan}; border-radius: 0; cursor: pointer;
-    pointer-events: auto;
+    font-family: ${FONT}; font-size: 20px; font-weight: 700;
+    color: ${T.cyan}; background: ${GLASS_BG};
+    -webkit-backdrop-filter: ${GLASS_BLUR}; backdrop-filter: ${GLASS_BLUR};
+    border: 1px solid ${T.cyan}88; border-radius: 50%; cursor: pointer;
+    box-shadow: ${panelGlow(T.cyan)}; pointer-events: auto;
+    transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
-#daedalus-instr-btn:hover { background: ${T.cyan}; color: ${T.bg}; }
-#daedalus-instr-btn:focus-visible { outline: 1px solid ${T.cyan}; outline-offset: 2px; }
+#daedalus-instr-btn:hover {
+    background: ${T.cyan}; color: ${T.bg}; transform: translateY(-1px);
+    box-shadow: 0 0 26px ${T.cyan}88, 0 10px 28px rgba(0,0,0,0.5);
+}
+#daedalus-instr-btn:focus-visible { outline: 1px solid ${T.cyan}; outline-offset: 3px; }
 #daedalus-instr-modal {
-    position: fixed; right: 20px; bottom: 70px; z-index: 7;
+    position: fixed; right: 20px; bottom: 74px; z-index: 7;
     width: min(440px, 86vw); max-height: 78vh; overflow-y: auto;
-    background: ${PANEL_BG}; border: 1px solid ${T.cyan};
-    padding: 16px 20px 20px; pointer-events: auto;
+    background: ${GLASS_BG}; border: 1px solid ${T.cyan}66;
+    -webkit-backdrop-filter: ${GLASS_BLUR}; backdrop-filter: ${GLASS_BLUR};
+    border-radius: 14px;
+    padding: 18px 22px 22px; pointer-events: auto;
     font-family: ${FONT}; color: ${T.text};
-    box-shadow: 0 0 24px ${T.cyanDim};
+    box-shadow: ${panelGlow(T.cyan)};
+    animation: daedalus-instr-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    scrollbar-width: thin; scrollbar-color: ${T.cyan}55 transparent;
+}
+#daedalus-instr-modal::-webkit-scrollbar { width: 8px; }
+#daedalus-instr-modal::-webkit-scrollbar-thumb {
+    background: ${T.cyan}44; border-radius: 4px;
 }
 #daedalus-instr-modal.daedalus-instr-hidden { display: none; }
 .daedalus-instr-title {
-    font-size: 13px; letter-spacing: 0.18em; color: ${T.cyan}; margin: 0 0 6px;
+    font-size: 13px; letter-spacing: 0.2em; color: ${T.cyan};
+    margin: 0 0 14px; padding-bottom: 12px;
+    border-bottom: 1px solid ${T.cyan}33; text-shadow: 0 0 10px ${T.cyan}66;
 }
 .daedalus-instr-head {
     font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
-    color: ${HEAD_DIM}; margin: 16px 0 8px; font-weight: 700;
+    color: ${HEAD_DIM}; margin: 18px 0 9px; font-weight: 700;
 }
 .daedalus-instr-row {
-    display: flex; gap: 14px; font-size: 12px; line-height: 1.45; margin-bottom: 5px;
+    display: flex; gap: 14px; font-size: 12px; line-height: 1.45; margin-bottom: 6px;
 }
 .daedalus-instr-g { color: ${T.text}; flex: 1.3; }
 .daedalus-instr-a { color: ${ROW_DIM}; flex: 1; text-align: right; }
-.daedalus-instr-tool { margin-bottom: 11px; }
-.daedalus-instr-tl {
-    font-size: 12px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 2px;
+.daedalus-instr-tool {
+    margin-bottom: 12px; padding: 2px 0 2px 12px; border-radius: 0 4px 4px 0;
 }
-.daedalus-instr-th { font-size: 11px; color: ${ROW_DIM}; line-height: 1.4; }
+.daedalus-instr-tl {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.1em; margin-bottom: 3px;
+}
+.daedalus-instr-th { font-size: 11px; color: ${ROW_DIM}; line-height: 1.5; }
 .daedalus-instr-close {
-    position: absolute; top: 12px; right: 14px;
-    width: 22px; height: 22px; padding: 0; line-height: 1;
+    position: absolute; top: 14px; right: 16px;
+    width: 24px; height: 24px; padding: 0; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
     background: none; border: none; cursor: pointer; font-family: ${FONT};
     font-size: 20px; color: ${ROW_DIM};
+    transition: color 120ms ease, transform 120ms ease;
 }
-.daedalus-instr-close:hover { color: ${T.text}; }
+.daedalus-instr-close:hover { color: ${T.text}; transform: scale(1.15); }
 `;
     }
 }

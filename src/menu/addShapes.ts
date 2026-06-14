@@ -3,7 +3,7 @@
 //
 // Paradigm (SPEC §5.1, item 5):
 //   - A 3D CAROUSEL (the same wheel component as the tool menu) shows the primitives:
-//     Cube · Sphere · Tetra · Cylinder. The exec (right) hand SWIPES to spin the wheel and
+//     Cube · Sphere · Cylinder. The exec (right) hand SWIPES to spin the wheel and
 //     PINCHES to spawn the centered shape at the hand — so every after-the-edit-menu selection
 //     reads as the same carousel format.
 //   - The spawned shape immediately becomes the active sculpt target AND the sole selection.
@@ -28,12 +28,11 @@ import { classify } from "../gesture/detect";
 // Right INDEX_TIP landmark index (MediaPipe Hands), the spawn-origin fingertip (§12).
 const INDEX_TIP = 8;
 
-// The four primitives offered, in carousel order (SPEC §5.1).
-type ShapeKind = "cube" | "sphere" | "tetra" | "cylinder";
+// The three primitives offered, in carousel order (SPEC §5.1).
+type ShapeKind = "cube" | "sphere" | "cylinder";
 const SHAPES: ReadonlyArray<{ kind: ShapeKind; label: string; glyph: string }> = [
     { kind: "cube", label: "CUBE", glyph: "◼" },
     { kind: "sphere", label: "SPHERE", glyph: "●" },
-    { kind: "tetra", label: "TETRA", glyph: "▲" },
     { kind: "cylinder", label: "CYLINDER", glyph: "▮" },
 ];
 

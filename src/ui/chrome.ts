@@ -4,10 +4,9 @@
 //   - Top-right:   FPS via stats.js           (re-anchored, dimmed monochrome)
 // Three fixed regions only. The ❓ guide popout lives in ui/instructionsPopout.ts.
 // Render layers (§4.3) do not apply here: this is DOM, not scene geometry.
-import Stats from "stats.js";
 import type { Stage, ViewMode, GestureName } from "../types";
 import { MenuId, MENU_LABEL } from "../types";
-import { T, TOOL_ACCENT, FONT } from "../render/tokens";
+import { T, TOOL_ACCENT, FONT, GLASS_BG, GLASS_BLUR, panelGlow } from "../render/tokens";
 
 // One-line operating hint per tool, shown after the active-tool label (§14.3).
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
@@ -40,33 +39,81 @@ const GESTURE_VERB: Record<GestureName, string> = {
     flick: "flick",
 };
 
+// Ambient pulse for the live status dots, injected once. Slow opacity sine — deliberate,
+// never bouncy (§14.4). GPU-animated so the HUD draw loop stays allocation-free.
+const PULSE_ANIM = "daedalus-hud-pulse";
+function injectPulseOnce(): void {
+    if (document.getElementById(PULSE_ANIM)) return;
+    const style = document.createElement("style");
+    style.id = PULSE_ANIM;
+    style.textContent = `@keyframes ${PULSE_ANIM}{0%,100%{opacity:1}50%{opacity:0.3}}`;
+    document.head.appendChild(style);
+}
+
+// A small pulsing status dot (the JARVIS "system live" tell). Tinted by `color`.
+function makeDot(color: string): HTMLSpanElement {
+    const dot = document.createElement("span");
+    Object.assign(dot.style, {
+        width: "6px", height: "6px", borderRadius: "50%",
+        background: color, boxShadow: `0 0 7px ${color}`,
+        flex: "0 0 auto", display: "inline-block",
+        animation: `${PULSE_ANIM} 2.4s ease-in-out infinite`,
+    });
+    return dot;
+}
+
 export class Chrome {
     private readonly root: HTMLElement;
     private readonly stage_el: HTMLDivElement;
+    private readonly stageName_el: HTMLSpanElement;
+    private readonly stagePhase_el: HTMLSpanElement;
     private readonly count_el: HTMLDivElement;
     private readonly tool_el: HTMLDivElement;
     private readonly hint_el: HTMLDivElement;
     private readonly bottomPill: HTMLDivElement;
-    private readonly stats: Stats;
+    private readonly accentBar: HTMLDivElement;
+    private readonly fps_el: HTMLDivElement;
+    private readonly fpsNum_el: HTMLSpanElement;
+
+    // Self-measured, smoothed frame rate (EMA) for the custom FPS readout — replaces the
+    // stock stats.js panel so the meter matches the HUD typography instead of a gray box.
+    private lastBegin = 0;
+    private emaFps = 0;
 
     constructor() {
         const root = document.getElementById("chrome");
         if (!root) throw new Error("Chrome: #chrome element not found");
         this.root = root;
+        injectPulseOnce();
 
-        // Top-left: stage pill — dark backdrop so text reads over any camera content.
+        // Top-left: branded stage chip. A live status dot + "DAEDALUS" wordmark (bright) and
+        // the phase (dimmed) so the brand and the state read as a hierarchy, not one flat run.
         this.stage_el = document.createElement("div");
         Object.assign(this.stage_el.style, {
             position: "fixed", left: "16px", top: "16px",
+            display: "flex", alignItems: "center", gap: "9px",
             fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
             fontSize: "13px", fontWeight: "700",
             letterSpacing: "0.24em", textTransform: "uppercase",
             color: T.text,
-            padding: "7px 13px",
-            background: "rgba(0,4,12,0.92)",
-            borderRadius: "6px",
-            border: "1px solid rgba(255,255,255,0.16)",
+            padding: "8px 14px",
+            background: GLASS_BG,
+            backdropFilter: GLASS_BLUR, WebkitBackdropFilter: GLASS_BLUR,
+            borderRadius: "8px",
+            border: `1px solid ${T.cyan}40`,
+            boxShadow: panelGlow(T.cyan),
         });
+        this.stage_el.appendChild(makeDot(T.cyan));
+        this.stageName_el = document.createElement("span");
+        this.stageName_el.textContent = "DAEDALUS";
+        this.stageName_el.style.color = T.cyan;
+        this.stageName_el.style.textShadow = `0 0 8px ${T.cyan}66`;
+        const sep = document.createElement("span");
+        sep.textContent = "//";
+        sep.style.color = T.textDim;
+        this.stagePhase_el = document.createElement("span");
+        this.stagePhase_el.style.color = "rgba(255,255,255,0.82)";
+        this.stage_el.append(this.stageName_el, sep, this.stagePhase_el);
         this.root.appendChild(this.stage_el);
 
         // Top-center: selection counter pill. Hidden (display:none) when nothing is selected
@@ -79,25 +126,39 @@ export class Chrome {
             fontSize: "13px", fontWeight: "600",
             letterSpacing: "0.18em", textTransform: "uppercase",
             color: T.toolSelect,
-            padding: "7px 16px",
-            background: "rgba(0,4,12,0.92)",
-            borderRadius: "6px",
+            padding: "8px 18px",
+            background: GLASS_BG,
+            backdropFilter: GLASS_BLUR, WebkitBackdropFilter: GLASS_BLUR,
+            borderRadius: "8px",
             border: `1px solid ${T.toolSelect}55`,
+            boxShadow: panelGlow(T.toolSelect),
             display: "none",
         });
         this.root.appendChild(this.count_el);
 
         // Bottom-left: pill container holding the active-tool label stacked above the hint.
+        // A left accent bar carries the tool color so the active tool reads at a glance even
+        // before the eye reaches the label text. `overflow:hidden` clips the bar to the radius.
         this.bottomPill = document.createElement("div");
         Object.assign(this.bottomPill.style, {
             position: "fixed", left: "16px", bottom: "16px",
             fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
-            padding: "10px 16px",
-            background: "rgba(0,4,12,0.92)",
-            borderRadius: "8px",
+            padding: "11px 18px 11px 20px",
+            background: GLASS_BG,
+            backdropFilter: GLASS_BLUR, WebkitBackdropFilter: GLASS_BLUR,
+            borderRadius: "10px",
             border: `1px solid ${T.cyan}44`,
+            boxShadow: panelGlow(T.cyan),
+            overflow: "hidden",
         });
         this.root.appendChild(this.bottomPill);
+        this.accentBar = document.createElement("div");
+        Object.assign(this.accentBar.style, {
+            position: "absolute", left: "0", top: "0", bottom: "0",
+            width: "4px", background: T.cyan,
+            boxShadow: `0 0 10px ${T.cyan}`,
+        });
+        this.bottomPill.appendChild(this.accentBar);
 
         // Active tool name (accent-tinted, updated per-tool in render()).
         this.tool_el = document.createElement("div");
@@ -117,15 +178,30 @@ export class Chrome {
         });
         this.bottomPill.appendChild(this.hint_el);
 
-        // Top-right: stats.js FPS meter, re-anchored and dimmed to read as
-        // desaturated chrome rather than its stock neon-green panel.
-        this.stats = new Stats();
-        this.stats.showPanel(0); // 0 = FPS
-        const dom = this.stats.dom;
-        dom.style.cssText =
-            "position:fixed;top:18px;right:20px;left:auto;" +
-            "pointer-events:none;opacity:0.45;filter:grayscale(1);z-index:3";
-        this.root.appendChild(dom);
+        // Top-right: themed FPS readout — a pulsing dot + smoothed number, replacing the stock
+        // stats.js panel so the meter reads as chrome (mono, cyan) rather than a gray widget.
+        this.fps_el = document.createElement("div");
+        Object.assign(this.fps_el.style, {
+            position: "fixed", top: "16px", right: "16px",
+            display: "flex", alignItems: "center", gap: "8px",
+            fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
+            fontSize: "12px", fontWeight: "600", letterSpacing: "0.16em",
+            color: T.textDim,
+            padding: "8px 13px",
+            background: GLASS_BG,
+            backdropFilter: GLASS_BLUR, WebkitBackdropFilter: GLASS_BLUR,
+            borderRadius: "8px",
+            border: `1px solid ${T.cyan}2e`,
+            boxShadow: panelGlow(T.cyan),
+        });
+        this.fps_el.appendChild(makeDot(T.cyan));
+        this.fpsNum_el = document.createElement("span");
+        this.fpsNum_el.style.color = "rgba(255,255,255,0.88)";
+        this.fpsNum_el.textContent = "--";
+        const fpsUnit = document.createElement("span");
+        fpsUnit.textContent = "FPS";
+        this.fps_el.append(this.fpsNum_el, fpsUnit);
+        this.root.appendChild(this.fps_el);
 
         // Paint an initial empty-world state so the HUD is legible before the
         // first frame (world starts EMPTY, no active menu — §5.1).
@@ -152,7 +228,7 @@ export class Chrome {
     // Refresh the text content for a new HUD state. Cheap string assignment only;
     // safe to call every frame (no allocation, no layout thrash beyond text set).
     private render(state: { stage: Stage; activeMenu: MenuId | null; gesture?: GestureName; selectedCount?: number }): void {
-        this.stage_el.textContent = `DAEDALUS // ${state.stage}`;
+        this.stagePhase_el.textContent = state.stage;
 
         // Selection counter: show pill only when at least one shape is selected.
         const n = state.selectedCount ?? 0;
@@ -170,10 +246,16 @@ export class Chrome {
             this.tool_el.textContent = MENU_LABEL[state.activeMenu].toLowerCase();
             this.tool_el.style.color = accent;
             this.bottomPill.style.borderColor = accent + "55";
+            this.bottomPill.style.boxShadow = panelGlow(accent);
+            this.accentBar.style.background = accent;
+            this.accentBar.style.boxShadow = `0 0 10px ${accent}`;
         } else {
             this.tool_el.textContent = "no tool";
             this.tool_el.style.color = T.textDim;
             this.bottomPill.style.borderColor = T.cyan + "44";
+            this.bottomPill.style.boxShadow = panelGlow(T.cyan);
+            this.accentBar.style.background = T.textDim;
+            this.accentBar.style.boxShadow = "none";
         }
 
         // Always surface the current gesture: when a real pose is recognized, lead the
@@ -192,13 +274,21 @@ export class Chrome {
         this.render(s);
     }
 
-    // stats.js loop hooks: call begin() at the top of the frame and end() at the
-    // bottom so the meter samples the full frame interval.
+    // Loop hooks: begin() at the top of the frame samples the inter-frame interval and
+    // feeds the smoothed FPS readout; end() is kept for symmetry with the old stats.js
+    // contract (main.ts calls both). EMA smoothing avoids a number that flickers per frame.
     begin(): void {
-        this.stats.begin();
+        const now = performance.now();
+        if (this.lastBegin > 0) {
+            const dt = now - this.lastBegin;
+            if (dt > 0) {
+                const inst = 1000 / dt;
+                this.emaFps = this.emaFps === 0 ? inst : this.emaFps * 0.9 + inst * 0.1;
+                this.fpsNum_el.textContent = String(Math.round(this.emaFps));
+            }
+        }
+        this.lastBegin = now;
     }
 
-    end(): void {
-        this.stats.end();
-    }
+    end(): void {}
 }

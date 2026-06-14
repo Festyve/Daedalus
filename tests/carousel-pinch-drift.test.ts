@@ -55,19 +55,20 @@ describe("carousel left-hand pinch-select emits the centered tool", () => {
             drive(c, gesture(), 10); // finish open fade
 
             // Right-hand pinch until centered on DESTROY (settle between steps).
-            const PINCH_THRESHOLD = 0.6;
+            const PINCH_ON = 0.6;
+            const PINCH_RELEASE = 0.2;  // below PINCH_OFF (0.35) to fully disarm
             const ADVANCE_COOLDOWN_MS = 250;
             const FRAMES_FOR_COOLDOWN = Math.ceil(ADVANCE_COOLDOWN_MS / 16);
             for (let guard = 0; guard < 20 && activeOrderId(c) !== MenuId.DESTROY; guard++) {
-                drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
-                drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 2);
+                drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
+                drive(c, gesture({ name: "none", pinch: PINCH_RELEASE }), FRAMES_FOR_COOLDOWN + 2);
             }
             expect(activeOrderId(c)).toBe(MenuId.DESTROY);
 
             // Left-hand pinch to select. The right-hand may carry incidental motion (vx),
             // but selection must emit DESTROY, not be affected by the drift.
-            const rightG = gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1, vx: -0.6 });
-            const leftG = gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 });
+            const rightG = gesture({ name: "pinch", pinch: PINCH_ON + 0.1, vx: -0.6 });
+            const leftG = gesture({ name: "pinch", pinch: PINCH_ON + 0.1 });
             drive(c, rightG, 12, 16, leftG);
 
             expect(onSelect).toHaveBeenCalledTimes(1);

@@ -1,9 +1,11 @@
 // §5.3 DILATE — two-hand spread/together scaling.
 //
-// Both hands frame the object. The distance between the two wrists drives a uniform
-// scale: spreading the hands apart grows the object, bringing them together shrinks it.
-// On engage (both hands first present) we latch the starting wrist distance and the
-// object's current scale; thereafter
+// Both hands close into fists to frame the object. The distance between the two wrists
+// drives a uniform scale: spreading the hands apart grows the object, bringing them together
+// shrinks it. On engage (both hands close into fists) we latch the starting wrist distance
+// and the object's current scale; opening either hand latches and releases, so the user can
+// spread the hands back apart freely and close the fists again to keep scaling (ratchet) —
+// the spread-back no longer undoes the shrink. Thereafter while engaged
 //
 //     factor = ‖wristL − wristR‖ / startDist          (§5.3)
 //     mesh.scale = startScale · factor                (uniform)
@@ -22,10 +24,19 @@ import { MenuId } from "../types";
 import { asMenuLayer } from "../render/layers";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
+import { isFist } from "../gesture/predicates";
 import { selectedShapes, selectedCount, selectionCenter } from "../core/shapes";
 
 // MediaPipe wrist landmark index (image space, mirrored [0,1]).
 const WRIST = 0;
+
+// Fist clutch: BOTH hands must close into a fist to drive scaling; opening either hand
+// latches the current scale. This makes the gesture a ratchet — close both fists and bring
+// them together to shrink, open up, spread the hands apart freely to reposition, then close
+// the fists again to keep shrinking — instead of the spread-back undoing the shrink.
+// isFist() is a boolean predicate, so (like TRANSLATE's grab/lock) we debounce each
+// transition over a few frames: a single misclassified frame can't chatter the clutch.
+const COMMIT_FRAMES = 5;
 
 // Clamp the resulting object scale so a wild gesture can't invert or explode the mesh.
 const SCALE_MIN = 0.15;
@@ -45,7 +56,7 @@ const BOX_OPACITY = 0.4;
 const BOX_PAD = 0.08;
 
 const INSTRUCTIONS =
-    "SPREAD HANDS · SCALE UP<br>BRING TOGETHER · SCALE DOWN";
+    "CLOSE BOTH FISTS TO GRAB<br>SPREAD · UP&nbsp;&nbsp;TOGETHER · DOWN<br>OPEN HANDS TO LATCH";
 
 export function createDilateMenu(): MenuModule {
     const accent = MENU_META[MenuId.DILATE].accent;
@@ -62,6 +73,8 @@ export function createDilateMenu(): MenuModule {
     // the centroid AND its own scale multiply by the spread factor (with one shape, the distance
     // is 0 so it just scales in place).
     let engaged = false;
+    let fist_frames = 0;                     // consecutive frames BOTH hands held a fist
+    let open_frames = 0;                     // consecutive frames at least one hand opened
     let start_dist = MIN_DIST;              // ‖wristL − wristR‖ (image space) at engage
     let factor = 1;                          // latest applied scale factor (for the readout)
     const engageCenter = new Vector3();      // selection centroid at engage
@@ -123,7 +136,7 @@ export function createDilateMenu(): MenuModule {
             );
             return;
         }
-        const status = engaged ? "scaling" : "frame with both hands";
+        const status = engaged ? "scaling" : "close both fists to scale";
         panel.setBody(
             `<div style="font-size:64px;font-weight:700;letter-spacing:0.02em">` +
             `${factor.toFixed(2)}<span style="font-size:32px;opacity:0.6">x</span></div>` +
@@ -136,6 +149,8 @@ export function createDilateMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             engaged = false;
+            fist_frames = 0;
+            open_frames = 0;
             factor = 1;
             start_dist = MIN_DIST;
 
@@ -173,17 +188,32 @@ export function createDilateMenu(): MenuModule {
             const both = exec !== null && nav !== null;
 
             if (both) {
-                const cur = wristDist(exec!, nav!);
-                if (!engaged) {
+                // Fist clutch: both hands must be fists to grab, opening either hand releases.
+                // Debounce each transition over COMMIT_FRAMES so a single stray classification
+                // can't chatter the clutch (§12). Fist detection uses world landmarks + hand
+                // scale so it is size- and distance-invariant (§3.5), matching TRANSLATE.
+                const both_fist = isFist(exec!.world, exec!.handScale) &&
+                    isFist(nav!.world, nav!.handScale);
+                fist_frames = both_fist ? fist_frames + 1 : 0;
+                open_frames = both_fist ? 0 : open_frames + 1;
+
+                if (!engaged && fist_frames >= COMMIT_FRAMES) {
                     // Rising edge: latch the baseline distance + the group's poses so the factor
-                    // reads exactly 1.0 the instant both hands engage (§5.3).
+                    // reads exactly 1.0 the instant the fists grab (§5.3). The baseline is taken
+                    // from the CURRENT scale, so closing the fists again after spreading the
+                    // hands apart continues from where the last grab left off — the gesture
+                    // ratchets instead of undoing itself.
                     engaged = true;
-                    start_dist = cur;
+                    start_dist = wristDist(exec!, nav!);
                     factor = 1;
                     snapshotGroup(ctx);
-                } else {
+                } else if (engaged && open_frames >= COMMIT_FRAMES) {
+                    // Either hand opened: latch the current scale and release (§3.6).
+                    engaged = false;
+                } else if (engaged) {
                     // factor = ‖wristL − wristR‖ / startDist, applied about the engage centroid:
                     // each mesh's offset from the centroid AND its own scale multiply by factor.
+                    const cur = wristDist(exec!, nav!);
                     factor = Math.min(FACTOR_MAX, Math.max(FACTOR_MIN, cur / start_dist));
                     for (let i = 0; i < engagedMeshes.length; i++) {
                         const m = engagedMeshes[i];
@@ -196,6 +226,8 @@ export function createDilateMenu(): MenuModule {
             } else if (engaged) {
                 // A hand was lost: latch the current scale and disengage (§3.6).
                 engaged = false;
+                fist_frames = 0;
+                open_frames = 0;
             }
 
             syncBox(ctx);
