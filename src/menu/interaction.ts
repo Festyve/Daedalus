@@ -46,9 +46,16 @@ function blankVec(): Vec3 {
     return { x: 0, y: 0, z: 0 };
 }
 
-// Build a world-space CSG Brush from a mesh (its base geometry + world transform).
+// Build a world-space CSG Brush from a mesh. Strip all attributes except position/normal
+// so the CSG library only sees what evaluator.attributes lists — extra attributes (color,
+// morph targets) cause it to fail with "Cannot read properties of undefined".
 function brushOf(mesh: THREE.Mesh): Brush {
-    const b = new Brush(mesh.geometry);
+    const src = mesh.geometry;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", src.attributes.position);
+    if (src.attributes.normal) geo.setAttribute("normal", src.attributes.normal);
+    if (src.index) geo.setIndex(src.index);
+    const b = new Brush(geo);
     mesh.updateWorldMatrix(true, false);
     mesh.matrixWorld.decompose(b.position, b.quaternion, b.scale);
     b.updateMatrixWorld(true);
