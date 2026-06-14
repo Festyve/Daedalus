@@ -11,19 +11,19 @@ import { T, TOOL_ACCENT, FONT, GLASS_BG, GLASS_BLUR, panelGlow } from "../render
 // One-line operating hint per tool, shown after the active-tool label (§14.3).
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
 const MENU_INSTRUCTION: Record<MenuId, string> = {
-    [MenuId.ADD_SHAPES]: "point to aim · pinch to spawn",
+    [MenuId.ADD_SHAPES]: "right pinch to cycle shape · left pinch to spawn",
     [MenuId.SELECT]: "right fist moves cursor · left fist selects · left pinch = hole",
-    [MenuId.TRANSLATE]: "pinch an arrow · drag along its axis",
-    [MenuId.DILATE]: "pinch both hands · apart / together to scale",
-    [MenuId.ROTATE]: "pinch the ball · twist to rotate",
-    [MenuId.MORPH]: "both hands closed · jiggle to morph",
-    [MenuId.DECORATE]: "open palm for icing · pinch for sprinkles",
+    [MenuId.TRANSLATE]: "right open palm to grab · right fist to lock",
+    [MenuId.DILATE]: "both fists to grab · hands apart / together to scale",
+    [MenuId.ROTATE]: "right pinch near the object · twist · release to latch",
+    [MenuId.MORPH]: "both fists · jiggle to morph sphere → torus",
+    [MenuId.DECORATE]: "right palm to ice · right pinch for sprinkles · or speak",
     [MenuId.INTERACT]: "right pinch picks union / subtract / intersect · left pinch applies",
-    [MenuId.DESTROY]: "pinch to destroy the selected shape",
+    [MenuId.DESTROY]: "right pinch destroys all selected shapes",
 };
 
 // Instruction shown when no menu is active (world idle / carousel closed).
-const IDLE_INSTRUCTION = "left gun opens the menu wheel";
+const IDLE_INSTRUCTION = "right-hand gun opens the menu wheel";
 
 // Live-gesture readout (§14.3 "active gestures"): the committed pose, shown as a
 // leading badge on the instruction line so the HUD always reflects what DAEDALUS

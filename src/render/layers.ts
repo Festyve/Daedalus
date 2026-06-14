@@ -12,6 +12,10 @@ export const LAYER = {
 export function asMenuLayer(obj: THREE.Object3D): void {
     obj.traverse((o) => {
         o.renderOrder = LAYER.MENU;
+        // Put menu geometry on three.js camera-layer 1 so the corner-preview pass can
+        // exclude it (main camera enables both layers; the preview disables MENU) — the
+        // preview then shows only the sculpted objects, no carousel / affordance gizmos.
+        o.layers.set(LAYER.MENU);
         const mesh = o as THREE.Mesh;
         const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
         if (!mat) return;

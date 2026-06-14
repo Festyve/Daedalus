@@ -39,9 +39,9 @@ export interface CarouselItem {
 // ---- Layout (group-local units; tuned so a camera-parented group reads top-center) ----
 const ITEM_SPACING = 0.42;     // horizontal gap between adjacent tool centers
 const ITEM_SIZE = 0.34;        // edge length of each square tool tile
-const LABEL_W = 1.6;           // width of the name+icon label plane below the strip
-const LABEL_H = 0.40;          // height of the label plane
-const LABEL_DROP = 0.50;       // vertical offset of the label below the strip center
+const LABEL_W = 1.2;           // width of the name+icon label plane below the strip
+const LABEL_H = 0.30;          // height of the label plane (smaller — keeps 4:1 texture aspect)
+const LABEL_DROP = 0.38;       // vertical offset below the strip center (close under the tiles)
 const VISIBLE_RADIUS = 2;      // how many neighbors each side are rendered (2 = up to 5 tiles)
 
 // ---- Depth fade (§4.1) — opacity + scale by wheel-distance from the active tile, indexed
@@ -121,7 +121,8 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     const g = canvas.getContext("2d")!;
     g.clearRect(0, 0, TILE_PX, TILE_PX);
 
-    // Rounded-square frame — dark fill so tiles read clearly over any camera background.
+    // Rounded-square frame — black fill so each icon reads as a filled black tile with a
+    // bright outline, floating on a transparent background (no panel behind the strip).
     const pad = TILE_PX * 0.1;
     const r = TILE_PX * 0.18;
     const x0 = pad;
@@ -135,8 +136,8 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     g.arcTo(x0, y0 + h, x0, y0, r);
     g.arcTo(x0, y0, x0 + w, y0, r);
     g.closePath();
-    // Dark fill — stays dark regardless of material tint, giving contrast over any bg.
-    g.fillStyle = "rgba(0,8,20,0.96)";
+    // Black fill — stays black regardless of material tint, giving contrast over any bg.
+    g.fillStyle = "rgba(0,0,0,0.92)";
     g.fill();
     // Wide soft glow pass then tight bright pass builds a luminous border.
     g.shadowColor = "rgba(255,255,255,0.60)";
@@ -211,7 +212,8 @@ function drawLabel(canvas: HTMLCanvasElement, icon: string, label: string, accen
     const g = canvas.getContext("2d")!;
     g.clearRect(0, 0, LABEL_PX_W, LABEL_PX_H);
 
-    // Pill background for contrast over any camera content.
+    // Subtle dark pill behind the label — just enough backing to stay legible over the
+    // camera feed, without the heavy navy panel the carousel used to sit on.
     const ph = LABEL_PX_H * 0.72;
     const pw = LABEL_PX_W * 0.88;
     const px0 = (LABEL_PX_W - pw) / 2;
@@ -224,7 +226,7 @@ function drawLabel(canvas: HTMLCanvasElement, icon: string, label: string, accen
     g.arcTo(px0, py0 + ph, px0, py0, pr);
     g.arcTo(px0, py0, px0 + pw, py0, pr);
     g.closePath();
-    g.fillStyle = "rgba(0,8,20,0.96)";
+    g.fillStyle = "rgba(0,0,0,0.5)";
     g.fill();
     g.globalAlpha = 0.40;
     g.strokeStyle = accent;
@@ -263,8 +265,6 @@ export class Carousel {
     private readonly labelMat: THREE.MeshBasicMaterial;
     private readonly labelTex: THREE.CanvasTexture;
     private readonly labelCanvas: HTMLCanvasElement;
-    private readonly bgPanel: THREE.Mesh;        // dark backdrop behind the full strip for readability
-    private readonly bgMat: THREE.MeshBasicMaterial;
     private readonly ring: THREE.Mesh;          // glow halo pinned at screen-center behind the active tile
     private readonly ringMat: THREE.MeshBasicMaterial;
     private readonly ringTex: THREE.CanvasTexture;
@@ -302,22 +302,6 @@ export class Carousel {
 
         this.allIds = itemDefs.map((d) => d.id);
         this.order = [...this.allIds];
-
-        // Dark backdrop panel behind the entire strip — wider than the visible tile area so the
-        // carousel always reads against a consistent dark surface regardless of camera content.
-        const BG_W = VISIBLE_RADIUS * 2 * ITEM_SPACING + ITEM_SIZE * 2.6;
-        const BG_H = ITEM_SIZE * 1.82;
-        this.bgMat = new THREE.MeshBasicMaterial({
-            color: new THREE.Color(0, 8 / 255, 20 / 255),
-            transparent: true,
-            opacity: 0,
-            toneMapped: false,
-            depthTest: false,
-            depthWrite: false,
-        });
-        this.bgPanel = new THREE.Mesh(new THREE.PlaneGeometry(BG_W, BG_H), this.bgMat);
-        this.bgPanel.position.set(0, 0, -0.02);
-        this.object.add(this.bgPanel);
 
         // Centered-item glow ring: pinned at the group origin (screen-center) so it always
         // frames whichever tile is active. Added before the strip so the tile draws over it
@@ -632,8 +616,7 @@ export class Carousel {
         this.ringMat.opacity = (RING_BASE + this.glow * RING_GLOW) * ringBreathe * this.fade;
         this.ring.scale.setScalar((1 + this.glow * 0.08) * ringBreathe);
 
-        // ---- Background panel + label opacity track the fade ----
-        this.bgMat.opacity = 0.95 * this.fade;
+        // ---- Label opacity tracks the fade ----
         this.labelMat.opacity = this.fade;
 
         this.prevLeftPinch = leftG.pinch;
@@ -654,7 +637,5 @@ export class Carousel {
         this.ringTex.dispose();
         this.ringMat.dispose();
         this.ring.geometry.dispose();
-        this.bgMat.dispose();
-        this.bgPanel.geometry.dispose();
     }
 }

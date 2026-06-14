@@ -75,7 +75,7 @@ function makeCtx(): { ctx: SceneContext; a: THREE.Mesh; b: THREE.Mesh } {
     const ctx: SceneContext = {
         scene, camera, renderer: null as any,
         mesh: a, bvh: null, extraMeshes: [b], selected: [a, b], focusIndex: 0,
-        morphT: 0, stage: "EMPTY", viewMode: "scene", activeMenu: null,
+        morphT: 0, stage: "EMPTY", viewMode: "scene", activeMenu: null, wireframe: false,
         scratch: makeScratch(), interactionPlaneZ: 0,
     };
     return { ctx, a, b };

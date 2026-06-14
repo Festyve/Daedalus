@@ -30,6 +30,7 @@ import { startLoop } from "./core/loop";
 import { Director } from "./core/director";
 
 import { makeContext } from "./render/scene";
+import { LAYER } from "./render/layers";
 import { makeComposer, SCENE_BLOOM_STRENGTH } from "./render/post";
 import { drawSkeletons } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
@@ -109,6 +110,10 @@ const carousel = new Carousel();
 carousel.object.position.set(0, 0.9, -3.2);
 ctx.camera.add(carousel.object);
 ctx.scene.add(ctx.camera);
+// Menu/affordance geometry lives on the MENU render layer (§4.3). The main camera sees
+// BOTH layers; the corner-preview pass below disables MENU on the camera so the preview
+// renders only the sculpted objects (no carousels / arcball / bbox gizmos).
+ctx.camera.layers.enable(LAYER.MENU);
 carousel.onSelect = (id) => {
     sfx.ping();
     router.select(ctx, id as MenuId);
@@ -386,7 +391,12 @@ startLoop((dtMs) => {
     r.setScissor(vx, vy, cw, ch);
     r.setClearColor(0x000814, 1);
     r.clear();
+    // Hide menu-layer GUI (carousels + affordance gizmos) in the preview: the preview is a
+    // clean read of the objects only. Selection still reads here — it's Layer-0 ghosting on
+    // the shapes, not GUI. Re-enabled immediately so the next composer.render() shows the HUD.
+    ctx.camera.layers.disable(LAYER.MENU);
     r.render(ctx.scene, ctx.camera);
+    ctx.camera.layers.enable(LAYER.MENU);
     r.setScissorTest(false);
     r.setViewport(0, 0, W, H);
 
