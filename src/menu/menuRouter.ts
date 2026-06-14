@@ -12,9 +12,13 @@
 // tears the active panel down first.
 import type { MenuModule, MenuId, SceneContext, HandPose } from "../types";
 
+const COMMAND_COOLDOWN_MS = 250;
+
 export class MenuRouter {
     private readonly registry = {} as Record<MenuId, MenuModule>;
     private active: MenuModule | null = null;
+    private lastId: MenuId | null = null;
+    private lastIdMs = 0;
 
     // Register a tool module. Last registration for a given id wins. Registering the module
     // that is currently active does not re-enter it; the live instance keeps running until

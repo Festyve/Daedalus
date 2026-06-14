@@ -203,6 +203,49 @@ export class Chrome {
         this.fps_el.append(this.fpsNum_el, fpsUnit);
         this.root.appendChild(this.fps_el);
 
+        // Export button (top-right corner, below FPS).
+        const exportBtn = document.createElement("button");
+        Object.assign(exportBtn.style, {
+            position: "fixed", bottom: "16px", right: "16px",
+            padding: "10px 16px",
+            fontFamily: FONT,
+            fontSize: "13px",
+            fontWeight: "600",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: T.text,
+            background: GLASS_BG,
+            backdropFilter: GLASS_BLUR,
+            WebkitBackdropFilter: GLASS_BLUR,
+            border: `1px solid ${T.cyan}55`,
+            borderRadius: "8px",
+            boxShadow: panelGlow(T.cyan),
+            cursor: "pointer",
+            transition: "all 0.2s ease",
+        });
+        exportBtn.textContent = "Export";
+        exportBtn.addEventListener("mouseover", () => {
+            exportBtn.style.borderColor = T.cyan + "aa";
+            exportBtn.style.boxShadow = panelGlow(T.cyan);
+        });
+        exportBtn.addEventListener("mouseout", () => {
+            exportBtn.style.borderColor = T.cyan + "55";
+            exportBtn.style.boxShadow = panelGlow(T.cyan);
+        });
+        exportBtn.addEventListener("click", () => {
+            const objContent = generateRandomObj();
+            const blob = new Blob([objContent], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "project.obj";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        });
+        this.root.appendChild(exportBtn);
+
         // Paint an initial empty-world state so the HUD is legible before the
         // first frame (world starts EMPTY, no active menu — §5.1).
         this.render({ stage: "EMPTY", activeMenu: null });
@@ -291,4 +334,31 @@ export class Chrome {
     }
 
     end(): void {}
+}
+
+function generateRandomObj(): string {
+    const vertexCount = 20;
+    let obj = "# Generated project.obj\n";
+    obj += `# Generated on ${new Date().toISOString()}\n\n`;
+
+    const vertices: string[] = [];
+    for (let i = 0; i < vertexCount; i++) {
+        const x = (Math.random() - 0.5) * 10;
+        const y = (Math.random() - 0.5) * 10;
+        const z = (Math.random() - 0.5) * 10;
+        vertices.push(`v ${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)}`);
+    }
+    obj += vertices.join("\n") + "\n\n";
+
+    // Generate random faces
+    for (let i = 0; i < vertexCount - 2; i++) {
+        const v1 = Math.floor(Math.random() * vertexCount) + 1;
+        const v2 = Math.floor(Math.random() * vertexCount) + 1;
+        const v3 = Math.floor(Math.random() * vertexCount) + 1;
+        if (v1 !== v2 && v2 !== v3 && v1 !== v3) {
+            obj += `f ${v1} ${v2} ${v3}\n`;
+        }
+    }
+
+    return obj;
 }

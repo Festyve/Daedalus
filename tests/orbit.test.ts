@@ -133,17 +133,17 @@ describe("OrbitController — wrist-rotation orbit", () => {
         expect(rig.radiusValue).toBeCloseTo(r0, 9);
     });
 
-    it("wrist roll 90° rotates the mesh π/2 about the punch axis", () => {
+    it("wrist roll 90° rotates the mesh by twist gain (0.3 × π/2)", () => {
         const mesh = new THREE.Mesh(new THREE.BoxGeometry());
         const ctx = mockCtx(mesh);
         const rig = baseRig(); const orbit = new OrbitController();
         // Engage: punch = (0,0,1), side0 = (1,0,0)
         engage(orbit, rig, ctx);
         // Roll 90°: pinkyMCP moves from +X to +Y → side becomes (0,1,0)
-        // signedAngle((1,0,0), (0,1,0), (0,0,1)) = π/2
+        // signedAngle((1,0,0), (0,1,0), (0,0,1)) = π/2, scaled by TWIST_GAIN = 0.3
         orbit.update(closed("Left"), closed("Right", 0, 0, 1, 0, 1, 0), rig, ctx, 16);
         const angle = 2 * Math.acos(Math.min(1, Math.abs(mesh.quaternion.w)));
-        expect(angle).toBeCloseTo(Math.PI / 2, 4);
+        expect(angle).toBeCloseTo((Math.PI / 2) * 0.3, 4);
     });
 
     it("releases on a sustained open palm and locks the camera", () => {

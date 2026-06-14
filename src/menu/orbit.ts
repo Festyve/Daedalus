@@ -29,6 +29,9 @@ const COMMIT_FRAMES = 3;
 const AZIMUTH_GAIN = 1.0;
 const ELEVATION_GAIN = 1.0;
 
+// Wrist roll is more sensitive (smaller hand movements), so dampen it.
+const TWIST_GAIN = 0.3;
+
 // Module-level scratch — zero per-frame allocation.
 const _punch = new THREE.Vector3();
 const _side = new THREE.Vector3();
@@ -135,7 +138,7 @@ export class OrbitController {
         const delta_twist = twist - this.prev_twist;
         this.prev_twist = twist;
         if (ctx.mesh) {
-            ctx.mesh.rotateOnWorldAxis(this.punch0, delta_twist);
+            ctx.mesh.rotateOnWorldAxis(this.punch0, delta_twist * TWIST_GAIN);
         }
     }
 
