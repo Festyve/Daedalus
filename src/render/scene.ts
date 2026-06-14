@@ -17,7 +17,7 @@ import {
 import type { SceneContext, ScratchMath } from "../types";
 import { T } from "./tokens";
 import { LAYER } from "./layers";
-import { buildTorusMorph } from "./geometry";
+import { buildTorusMorph, makeTorusGeometry } from "./geometry";
 
 // ---- camera framing (§9.6: fixed framing, slight idle parallax) -------------
 const CAM_FOV = 45;
@@ -222,4 +222,64 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     ctx.bvh = bvh ?? null;
 
     return mesh;
+}
+
+// ---- sphere ⇄ seamless-torus swap (§7.2) ------------------------------------
+// The sphere→torus morph is a vertex warp of the icosphere, which is genus-0 and so can
+// only FAKE a torus — wrapping it into a genus-1 hole always tears a seam along the outer
+// rim (see geometry.ts). We let the vertex blend animate the squish, then once it
+// completes we swap the mesh's geometry to a genuine, seamless TorusGeometry for a clean
+// see-through donut. Dropping back below the threshold restores the sculptable icosphere.
+// Both geometries are cached on mesh.userData; ctx.bvh is repointed so raycasting and
+// selection follow the active geometry.
+const TORUS_SWAP_T = 0.95;
+
+// Swap the mesh onto the real torus (building + caching it, with its BVH, on first use).
+function showRealTorus(ctx: SceneContext, mesh: THREE.Mesh): void {
+    if (mesh.userData.shape === "torus") return;
+    patchPrototypes();
+    mesh.userData.sphereGeometry = mesh.geometry; // stash the sculptable base to restore later
+    let torus = mesh.userData.torusGeometry as THREE.BufferGeometry | undefined;
+    if (!torus) {
+        torus = makeTorusGeometry();
+        (torus as unknown as { computeBoundsTree: typeof computeBoundsTree }).computeBoundsTree();
+        mesh.userData.torusGeometry = torus;
+    }
+    mesh.geometry = torus;
+    mesh.updateMorphTargets(); // the real torus has no morph target → drops the stale blend slot
+    ctx.bvh = (torus as unknown as { boundsTree?: MeshBVH }).boundsTree ?? null;
+    mesh.userData.shape = "torus";
+}
+
+// Restore the sculptable icosphere (with its torus-blend morph slot) after a swap-back.
+function showSphere(ctx: SceneContext, mesh: THREE.Mesh): void {
+    if (mesh.userData.shape !== "torus") return;
+    const sphere = mesh.userData.sphereGeometry as THREE.BufferGeometry | undefined;
+    if (!sphere) {
+        mesh.userData.shape = "sphere";
+        return;
+    }
+    mesh.geometry = sphere;
+    mesh.updateMorphTargets(); // re-seeds morphTargetInfluences[0] from the icosphere's morph
+    ctx.bvh = (sphere as unknown as { boundsTree?: MeshBVH }).boundsTree ?? null;
+    mesh.userData.shape = "sphere";
+}
+
+/**
+ * Drive the sphere→torus morph for the PRIMARY mesh (§5.5 / §7.2). `t` is the raw 0..1
+ * progress (stored on ctx for the HUD / Director); `influence` is the eased blend the
+ * caller wants on the vertex morph below the swap point. At/above TORUS_SWAP_T the mesh is
+ * swapped to the seamless real torus; below it, the icosphere shows the eased vertex blend.
+ */
+export function setTorusMorph(ctx: SceneContext, t: number, influence: number): void {
+    ctx.morphT = t;
+    const mesh = ctx.mesh;
+    if (!mesh) return;
+    if (t >= TORUS_SWAP_T) {
+        showRealTorus(ctx, mesh);
+    } else {
+        showSphere(ctx, mesh);
+        const infl = mesh.morphTargetInfluences;
+        if (infl && infl.length > 0) infl[0] = influence;
+    }
 }

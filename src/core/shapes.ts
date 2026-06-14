@@ -199,6 +199,11 @@ export function setWireframe(ctx: SceneContext, on: boolean): void {
 export function removeShape(ctx: SceneContext, mesh: THREE.Mesh): void {
     ctx.scene.remove(mesh);
     mesh.geometry.dispose();
+    // The sphere⇄torus morph swap (scene.ts) caches the inactive geometry on userData; dispose it
+    // too so the swapped-out sphere/torus buffers don't leak when the shape is destroyed.
+    const ud = mesh.userData as { sphereGeometry?: THREE.BufferGeometry; torusGeometry?: THREE.BufferGeometry };
+    if (ud.sphereGeometry && ud.sphereGeometry !== mesh.geometry) ud.sphereGeometry.dispose();
+    if (ud.torusGeometry && ud.torusGeometry !== mesh.geometry) ud.torusGeometry.dispose();
     const mat = mesh.material;
     if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
     else mat.dispose();
