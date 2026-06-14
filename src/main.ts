@@ -32,6 +32,7 @@ import { Director } from "./core/director";
 import { makeContext } from "./render/scene";
 import { makeComposer, SCENE_BLOOM_STRENGTH } from "./render/post";
 import { drawSkeletons } from "./render/overlay";
+import { syncHoleLabels } from "./render/holeLabels";
 import { ViewModeController } from "./render/viewMode";
 
 import { Carousel } from "./menu/carousel";
@@ -313,6 +314,9 @@ startLoop((dtMs) => {
 
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
+
+    // 4b) Float a "HOLE" tag above every shape currently tagged as a cutter (§5 INTERACT).
+    syncHoleLabels(ctx);
 
     // 5) Render: the MAIN view (camera feed + composited objects, NEVER css3d), then a
     //    bottom-right black-scene preview (the same objects on #000814, camera bg hidden),

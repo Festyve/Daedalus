@@ -11,6 +11,8 @@ import {
     isGun,
     isFist,
     isOpenPalm,
+    isVSign,
+    isThreeFingers,
 } from "../src/gesture/predicates";
 import type { Vec3 } from "../src/types";
 
@@ -289,5 +291,50 @@ describe("isGun", () => {
     it("is false when the thumb is tucked down (not up)", () => {
         const lm = gunHand({ thumbUp: false });
         expect(isGun(lm, handScale(lm))).toBe(false);
+    });
+});
+
+// ---- V-sign + three-finger sign: per-finger control (index, middle, ring, pinky) ----
+function fingersHand(ext: [boolean, boolean, boolean, boolean]): Vec3[] {
+    const lm = blankHand();
+    lm[WRIST] = { x: 0, y: 0, z: 0 };
+    lm[MIDDLE_MCP] = { x: 0, y: 0.3, z: 0 };
+    const PAIRS: ReadonlyArray<[number, number]> = [
+        [INDEX_TIP, INDEX_PIP], [MIDDLE_TIP, MIDDLE_PIP], [RING_TIP, RING_PIP], [PINKY_TIP, PINKY_PIP],
+    ];
+    PAIRS.forEach(([tip, pip], i) => {
+        const fx = (i - 1.5) * 0.1;
+        lm[pip] = { x: fx, y: 0.5, z: 0 };
+        lm[tip] = { x: fx, y: ext[i] ? 0.9 : 0.25, z: 0 }; // extended → beyond pip; curled → short of it
+    });
+    lm[THUMB_TIP] = { x: 0.25, y: 0.15, z: 0 };
+    return lm;
+}
+
+describe("isVSign", () => {
+    it("true for index + middle up, ring + pinky curled", () => {
+        expect(isVSign(fingersHand([true, true, false, false]))).toBe(true);
+    });
+    it("false when ring is also extended (that is three fingers)", () => {
+        expect(isVSign(fingersHand([true, true, true, false]))).toBe(false);
+    });
+    it("false for a single pointing finger", () => {
+        expect(isVSign(fingersHand([true, false, false, false]))).toBe(false);
+    });
+    it("false for an open palm and for a fist", () => {
+        expect(isVSign(fingersHand([true, true, true, true]))).toBe(false);
+        expect(isVSign(fingersHand([false, false, false, false]))).toBe(false);
+    });
+});
+
+describe("isThreeFingers", () => {
+    it("true for index + middle + ring up, pinky curled", () => {
+        expect(isThreeFingers(fingersHand([true, true, true, false]))).toBe(true);
+    });
+    it("false for the V-sign (ring curled)", () => {
+        expect(isThreeFingers(fingersHand([true, true, false, false]))).toBe(false);
+    });
+    it("false when the pinky is also extended (open-ish)", () => {
+        expect(isThreeFingers(fingersHand([true, true, true, true]))).toBe(false);
     });
 });
