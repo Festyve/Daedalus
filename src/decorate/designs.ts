@@ -9,9 +9,10 @@
 //   SPRINKLES.rainbow → capsule, palette below, length 0.04, radius 0.008
 import type { IcingDesign, SprinkleDesign } from "../types";
 
-// Icing / glaze material presets (SPEC §8.2, §8.3).
-export const ICING: { jam: IcingDesign } = {
+// Icing / glaze material presets (SPEC §8.2, §8.3). `pink` is the hard-coded donut frosting.
+export const ICING: { jam: IcingDesign; pink: IcingDesign } = {
     jam: { color: "#8B0000", gloss: 0.8, dripStyle: "smooth" },
+    pink: { color: "#FF6FB5", gloss: 0.85, dripStyle: "smooth" },
 };
 
 // Sprinkle geometry presets (SPEC §8.2, §8.4).

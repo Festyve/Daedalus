@@ -93,10 +93,10 @@ const PINCH_OFF = 0.5;
 // MediaPipe index-fingertip landmark.
 const INDEX_TIP = 8;
 
-// Hardcoded decoration designs (§8.1, §8.2): JAM icing + rainbow sprinkles.
-const VOICE_ICING = ICING.jam;
+// Hardcoded decoration designs (§8.1, §8.2): PINK icing + rainbow sprinkles.
+const VOICE_ICING = ICING.pink;
 const VOICE_SPRINKLES = SPRINKLES.rainbow;
-const SMEAR_ICING = ICING.jam;
+const SMEAR_ICING = ICING.pink;
 const DROP_SPRINKLES = SPRINKLES.rainbow;
 
 /**
@@ -356,6 +356,17 @@ export function createDecorateMenu(): MenuModule {
     // and reliable; never blocked on the AI reply. No-op while the world is empty.
     function fireDecoration(ctx: SceneContext): void {
         if (!ctx.mesh || !ctx.bvh) return;
+        // The vertex-color icing MULTIPLIES the mesh's base albedo, and shapes ship a CYAN base — so
+        // pink would read muddy. Flag the mesh decorated and switch its base to white so the pink
+        // icing renders true; core/shapes.refreshHighlight keeps decorated meshes on a white base.
+        ctx.mesh.userData.decorated = true;
+        const mat = ctx.mesh.material as THREE.MeshStandardMaterial;
+        mat.color.setRGB(1, 1, 1);
+        // Frosting + dough are matte, not metallic — drop the metalness and the cyan emissive so the
+        // body reads a clean neutral grey (otherwise the lit white reflects a teal sheen).
+        mat.metalness = 0.0;
+        mat.roughness = 0.7;
+        mat.emissive.setRGB(0.04, 0.04, 0.05);
         ctx.mesh.updateWorldMatrix(true, false);
         ctx.mesh.getWorldPosition(ctx.scratch.v1);
         // Flood the crown: paint at the mesh center so the height-mask gate (§8.3) lets
@@ -392,8 +403,12 @@ export function createDecorateMenu(): MenuModule {
         // re-parents under whichever mesh is active on each drop (§8.4).
         sprinkles = new Sprinkles(ctx.scene);
 
-        // Start listening; onTranscript fires the decoration + scripted reply. The
-        // adapter degrades to no-ops when the browser lacks SpeechRecognition (§8.1).
+        // Hard-coded decoration: ice the shape pink + scatter sprinkles the moment DECORATE opens,
+        // so it always works (never blocked on speech recognition / a spoken prompt).
+        fireDecoration(ctx);
+
+        // Start listening too; a spoken prompt re-fires + streams a scripted reply. The adapter
+        // degrades to no-ops when the browser lacks SpeechRecognition (§8.1).
         speech = new SpeechInput((t) => onTranscript(ctx, t));
         speech.start();
     }

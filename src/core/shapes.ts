@@ -174,7 +174,13 @@ export function refreshHighlight(ctx: SceneContext): void {
         mat.transparent = !selected;
         mat.opacity = selected ? SELECTED_OPACITY : UNSELECTED_OPACITY;
         mat.depthWrite = selected;
-        mat.color.copy(primary ? WIRE_PRIMARY : selected ? WIRE_BASE : WIRE_DIM);
+        // A DECORATED mesh keeps a WHITE base so its per-vertex pink icing renders true (the cyan
+        // tiers would tint it muddy). Everything else uses the selection-tier tint.
+        if (m.userData.decorated === true) {
+            mat.color.setRGB(1, 1, 1);
+        } else {
+            mat.color.copy(primary ? WIRE_PRIMARY : selected ? WIRE_BASE : WIRE_DIM);
+        }
     }
 }
 

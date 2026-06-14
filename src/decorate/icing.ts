@@ -52,9 +52,13 @@ const EDGE_SMOOTH_ITERS = 3;
 // luminous red — NOT a wash toward grey/white (which desaturates to pink). The
 // wet/glassy sheen is added per-pixel in the matcap shader (render/scene.ts) too, so
 // the hue stays rich and the highlight stays specular.
+// Decorated meshes now render on a WHITE base (core/shapes), so the vertex colour renders true —
+// the old matcap brightening (SCREEN_LIFT / GLOSS_SPEC, which lifted toward white to survive a dark
+// blue-steel matcap MULTIPLY) is gone, since against white it just washes the icing pale. We keep
+// only a saturation push so the pink stays vivid under the scene lights.
 const SATURATE = 0.6;     // push channels away from their mean (richer, less grey)
-const SCREEN_LIFT = 0.35; // screen-style lift of darks toward the hue, not toward grey
-const GLOSS_SPEC = 0.5;   // max specular sheen toward white, scaled by design.gloss
+const SCREEN_LIFT = 0.0;  // (disabled — white base needs no lift toward the hue)
+const GLOSS_SPEC = 0.0;   // (disabled — white base needs no specular lift toward white)
 // A vertex straddles the boundary when its mask differs from a neighbour's by more
 // than this — those verts (plus their 1-ring) form the band we smooth.
 const BOUNDARY_DELTA = 0.05;
