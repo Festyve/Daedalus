@@ -27,7 +27,7 @@ import { MenuId } from "../types";
 import { T, FONT } from "../render/tokens";
 import { classify } from "../gesture/detect";
 import { fingertipToWorld } from "../math/coords";
-import { makeVoiceAdapter, SpeechInput } from "./voice";
+import { makeVoiceAdapter, SpeechInput, scriptReply } from "./voice";
 import { applyIcing, icingMask, resetIcing } from "./icing";
 import { Sprinkles } from "./sprinkles";
 import { ensureBVH } from "../render/scene";
@@ -394,7 +394,7 @@ export function createDecorateMenu(): MenuModule {
         fireDecoration(ctx, pickIcing(transcript));
 
         chat.beginAI();
-        voice.speak(transcriptReply(transcript));
+        voice.speak(scriptReply(transcript));
         void voice.respond(transcript, (chunk) => {
             chat?.appendAI(chunk);
         }).then(() => {
@@ -418,12 +418,9 @@ export function createDecorateMenu(): MenuModule {
         // active shape so icing/sprinkles work on the donut, not just the freshly-spawned sphere.
         ensureBVH(ctx);
 
-        // Decorate immediately with the default (strawberry/pink) so it always works — voice then
-        // re-flavours it ("chocolate" → brown, etc.). Never blocked on speech recognition.
-        fireDecoration(ctx, ICING.jam);
-
-        // Start listening; a spoken flavour re-fires the decoration + a scripted reply. The adapter
-        // degrades to no-ops when the browser lacks SpeechRecognition (§8.1).
+        // Decorate ONLY in response to a spoken flavour — nothing happens on open. onTranscript
+        // applies the flavour's icing + sprinkles + a matching reply. The adapter degrades to
+        // no-ops when the browser lacks SpeechRecognition (§8.1).
         speech = new SpeechInput((t) => onTranscript(ctx, t));
         speech.start();
     }
@@ -505,27 +502,5 @@ export function createDecorateMenu(): MenuModule {
     };
 }
 
-// Local mirror of the scripted-reply selection so TTS speaks the SAME line the chat
-// streams. The VoiceAdapter.respond() stream is the source of the on-screen text; this
-// keeps speak() in lockstep without exposing the adapter's internal reply table.
-function transcriptReply(transcript: string): string {
-    const hay = transcript.toLowerCase();
-    for (const rule of REPLY_RULES) {
-        if (rule.keywords.some((k) => hay.includes(k))) return rule.reply;
-    }
-    return DEFAULT_REPLY;
-}
-
-interface ReplyRule {
-    keywords: string[];
-    reply: string;
-}
-const REPLY_RULES: ReplyRule[] = [
-    { keywords: ["rainbow", "sprinkle"], reply: "On it — rainbow sprinkles and a glossy jam glaze, coming right up." },
-    { keywords: ["jam", "icing", "glaze", "frost"], reply: "Applying a rich jam icing across the top. Looking delicious already." },
-    { keywords: ["galaxy", "cosmic", "space", "star"], reply: "Cosmic mode: deep glaze and a scatter of star-bright sprinkles." },
-    { keywords: ["healthy", "diet", "sugar-free", "calorie"], reply: "I'm a torus decorator, not a miracle worker — adding extra sprinkles instead." },
-    { keywords: ["clear", "reset", "remove", "plain"], reply: "Wiping it back to a clean canvas. Ready when you are." },
-    { keywords: ["thank", "thanks", "nice", "love", "great"], reply: "My pleasure. This torus turned out beautifully." },
-];
-const DEFAULT_REPLY = "Decorating now — jam icing and a burst of rainbow sprinkles.";
+// (Reply selection now lives in voice.ts — imported as scriptReply — so TTS and the streamed chat
+// text can't drift, and a new flavour only has to be authored in one place.)

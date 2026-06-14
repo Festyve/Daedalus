@@ -166,13 +166,39 @@ interface ReplyRule {
     reply: string;
 }
 const REPLY_RULES: ReplyRule[] = [
+    // Flavour-specific (must come BEFORE the generic glaze/sprinkle rules so the flavour wins).
     {
-        keywords: ["rainbow", "sprinkle"],
-        reply: "On it — rainbow sprinkles and a glossy jam glaze, coming right up.",
+        keywords: ["chocolate", "choc", "fudge", "cocoa"],
+        reply: "Pouring on a rich chocolate glaze — dark, decadent, and finished with rainbow sprinkles.",
     },
     {
-        keywords: ["jam", "icing", "glaze", "frost"],
-        reply: "Applying a rich jam icing across the top. Looking delicious already.",
+        keywords: ["blueberry", "blue"],
+        reply: "A glossy blueberry-blue glaze, going on now, topped with rainbow sprinkles.",
+    },
+    {
+        keywords: ["lemon", "citrus"],
+        reply: "Zesty lemon glaze — bright, sunny yellow and tangy — with a scatter of sprinkles.",
+    },
+    {
+        keywords: ["matcha", "mint", "lime"],
+        reply: "A smooth matcha-green glaze, coming up, with rainbow sprinkles on top.",
+    },
+    {
+        keywords: ["grape", "purple", "violet"],
+        reply: "A bold grape glaze — deep purple — and a burst of rainbow sprinkles.",
+    },
+    {
+        keywords: ["strawberry", "berry", "jam", "pink"],
+        reply: "A sweet strawberry-pink glaze and a burst of rainbow sprinkles.",
+    },
+    // Generic / other intents.
+    {
+        keywords: ["rainbow", "sprinkle"],
+        reply: "On it — rainbow sprinkles over a glossy pink glaze, coming right up.",
+    },
+    {
+        keywords: ["icing", "glaze", "frost"],
+        reply: "Glazing it up now, with a burst of rainbow sprinkles.",
     },
     {
         keywords: ["galaxy", "cosmic", "space", "star"],
@@ -191,11 +217,11 @@ const REPLY_RULES: ReplyRule[] = [
         reply: "My pleasure. This torus turned out beautifully.",
     },
 ];
-const DEFAULT_REPLY = "Decorating now — jam icing and a burst of rainbow sprinkles.";
+const DEFAULT_REPLY = "Decorating now — a strawberry-pink glaze and a burst of rainbow sprinkles.";
 
 // Pick the canned reply for a transcript. Pure and case-insensitive; deterministic for
 // a given input (the property the voice unit test asserts).
-function scriptReply(transcript: string): string {
+export function scriptReply(transcript: string): string {
     const hay = transcript.toLowerCase();
     for (const rule of REPLY_RULES) {
         if (rule.keywords.some((k) => hay.includes(k))) return rule.reply;
