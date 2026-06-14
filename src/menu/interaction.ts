@@ -93,7 +93,7 @@ export function createInteractMenu(): MenuModule {
     }
 
     // Run the CSG op A⊕B on their BASE geometries in world space, returning a fresh
-    // world-space result geometry (white vertex colours added for the wireframe material),
+    // world-space result geometry (white vertex colours added for the solid lit material),
     // or null if the operation fails / produces nothing.
     function computeResult(): THREE.BufferGeometry | null {
         if (!opA || !opB) return null;
@@ -116,7 +116,7 @@ export function createInteractMenu(): MenuModule {
         // so its geometry lacks the prototype-patched computeBoundsTree the rest of the
         // pipeline relies on. Rebuild it as a fresh APP-three geometry from the raw arrays,
         // then mergeVertices to weld + index it (matching the indexed icosphere/box the
-        // sculpt + icing + BVH path expects). Seed a white colour buffer for the wireframe
+        // sculpt + icing + BVH path expects). Seed a white colour buffer for the solid lit
         // material (vertexColors:true) — the CSG result carries no colour attribute.
         const soup = new THREE.BufferGeometry();
         soup.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(rp.array), 3));
@@ -152,12 +152,15 @@ export function createInteractMenu(): MenuModule {
             return;
         }
         status = "";
-        const mat = new THREE.MeshBasicMaterial({
-            wireframe: true,
+        // Solid lit preview of the boolean result (matching the solid shapes), tinted in the
+        // INTERACT accent with a faint emissive so it reads clearly as the pending result.
+        const mat = new THREE.MeshStandardMaterial({
             color: new THREE.Color(accent),
-            transparent: true,
-            opacity: 1,
-            toneMapped: false,
+            vertexColors: true,
+            metalness: 0.25,
+            roughness: 0.45,
+            emissive: new THREE.Color(accent),
+            emissiveIntensity: 0.12,
         });
         preview = new THREE.Mesh(geo, mat);
         preview.renderOrder = 0;

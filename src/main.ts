@@ -30,7 +30,7 @@ import { startLoop } from "./core/loop";
 import { Director } from "./core/director";
 
 import { makeContext } from "./render/scene";
-import { makeComposer } from "./render/post";
+import { makeComposer, SCENE_BLOOM_STRENGTH } from "./render/post";
 import { drawSkeletons } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
 
@@ -109,7 +109,7 @@ carousel.onSelect = (id) => {
 };
 
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
-const { composer } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
+const { composer, setBloom } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
 
 // HUD chrome (§14.3) + the always-on ❓ gesture guide (§4.4) + the mock dev overlay.
 const chrome = new Chrome();
@@ -317,6 +317,9 @@ startLoop((dtMs) => {
     // 5) Render: the MAIN view (camera feed + composited objects, NEVER css3d), then a
     //    bottom-right black-scene preview (the same objects on #000814, camera bg hidden),
     //    then the green hand skeletons over the feed + HUD.
+    //    Bloom only in SCENE mode: its blur forces alpha=1, which would veil the transparent
+    //    camera-feed areas in AR mode (so AR keeps a clean alpha composite).
+    setBloom(viewMode.mode === "scene" ? SCENE_BLOOM_STRENGTH : 0);
     composer.render();
 
     // Corner black-scene preview: re-render the objects on opaque #000814 into a scissored

@@ -1,11 +1,11 @@
 // Rendering scene (SPEC §9.2, §9.6). Owns the WebGL2 renderer, the fixed-framing
-// camera with a slight idle parallax, the reusable scratch-math pool, and the
-// wireframe material. The world starts EMPTY: ctx.mesh / ctx.bvh are null until ADD
-// SHAPES calls attachMesh() to build the first sculptable object.
+// camera with a slight idle parallax, the reusable scratch-math pool, the scene
+// lighting rig, and the solid lit material. The world starts EMPTY: ctx.mesh / ctx.bvh
+// are null until ADD SHAPES calls attachMesh() to build the first sculptable object.
 //
 // Exports (the v5 contract — callers compile against these exactly):
 //   makeContext():SceneContext
-//   makeMatcapMaterial():THREE.MeshBasicMaterial
+//   makeMatcapMaterial():THREE.MeshStandardMaterial
 //   attachMesh(ctx, geometry):THREE.Mesh
 import * as THREE from "three";
 import {
@@ -48,21 +48,22 @@ function patchPrototypes(): void {
 }
 
 /**
- * Holographic wireframe material for the sculptable mesh (§9.2). A bright cyan
- * (T.cyan) wire mesh, unlit and toneMapped:false so the wire stays at full
- * intensity — the UnrealBloom pass (§9.4) then blooms the bright edges into a
- * glowing JARVIS hologram. vertexColors:true so the per-vertex icing buffer
- * (§8.3) tints the wires.
+ * Solid, lit blue-steel material for the sculptable mesh (§9.2, reworked). The mesh is no
+ * longer a transparent wireframe hologram: it is a SOLID surface shaded by the scene's
+ * artificial lights (makeContext) so it reads as a real 3D object — diffuse falloff on the
+ * shaded side, a specular highlight on the lit side, contact AO from the GTAO pass. A faint
+ * cyan emissive keeps the dark side readable (and on-brand) without washing the shading out.
+ * vertexColors:true is retained so the per-vertex icing buffer (§8.3) and the selection-tier
+ * tint (core/shapes.ts) still MULTIPLY through onto the albedo.
  */
-export function makeMatcapMaterial(): THREE.MeshBasicMaterial {
-    // Brighten the base wire toward a near-white cyan so the thin edges read
-    // clearly over the busy colour camera feed (and bloom harder via §9.4). Still
-    // cyan-ish, still unlit/toneMapped:false; vertexColors keeps the icing tints.
-    return new THREE.MeshBasicMaterial({
-        wireframe: true,
+export function makeMatcapMaterial(): THREE.MeshStandardMaterial {
+    return new THREE.MeshStandardMaterial({
         color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15),
         vertexColors: true,
-        toneMapped: false,
+        metalness: 0.25,
+        roughness: 0.45,
+        emissive: new THREE.Color(T.cyan),
+        emissiveIntensity: 0.06,
     });
 }
 
@@ -132,15 +133,35 @@ function startIdleParallax(camera: THREE.PerspectiveCamera): void {
 }
 
 /**
+ * Artificial lighting so the SOLID meshes read as 3D (§9.2 rework). A three-point-ish rig:
+ * a soft cool ambient lifts the shadow side off pure black; a bright warm key from the upper
+ * front-right casts the primary diffuse falloff + specular highlight; a cyan rim from
+ * behind-left picks out the silhouette against the dark background (the on-brand JARVIS edge
+ * glow, now from real lighting rather than a wire); a dim cool fill softens the key's shadow.
+ * Lights are static — no per-frame cost, zero allocation in the hot loop (§6.2, §11).
+ */
+function addLights(scene: THREE.Scene): void {
+    const ambient = new THREE.AmbientLight(0x8092a6, 0.55);
+    const key = new THREE.DirectionalLight(0xfff1de, 2.2);
+    key.position.set(4, 6, 5);
+    const rim = new THREE.DirectionalLight(T.cyan, 1.1);
+    rim.position.set(-5, 2, -4);
+    const fill = new THREE.DirectionalLight(0x6fa8ff, 0.5);
+    fill.position.set(-4, -1, 3);
+    scene.add(ambient, key, rim, fill);
+}
+
+/**
  * Construct the single shared-state channel every module reads/writes (§3.4).
  * The world starts EMPTY (§5.1): mesh and bvh are null until ADD SHAPES calls
- * attachMesh(). No lights are added — the wireframe material is unlit.
+ * attachMesh(). The scene is lit by addLights() so the solid meshes shade in 3D.
  */
 export function makeContext(): SceneContext {
     const renderer = makeRenderer();
     const camera = makeCamera();
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(T.bg);
+    addLights(scene);
 
     window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -173,7 +194,7 @@ export function makeContext(): SceneContext {
  * wire it into the context (§5.1, §6.1). This is the ONLY path that creates the
  * first mesh — until it runs, ctx.mesh is null and every module no-ops.
  *
- * - Mesh uses the holographic wireframe material (vertexColors for icing).
+ * - Mesh uses the solid lit blue-steel material (vertexColors for icing).
  * - renderOrder=0, depthTest/Write=true (scene layer; menus stay above via §4.3).
  * - BVH built once and stored on both ctx.bvh and geometry.boundsTree so the
  *   SculptEngine / icing reuse it instead of rebuilding (dirty-region refit only).
@@ -194,7 +215,7 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     const mesh = new THREE.Mesh(geometry, makeMatcapMaterial());
     mesh.renderOrder = LAYER.SCENE;
 
-    const mat = mesh.material as THREE.MeshBasicMaterial;
+    const mat = mesh.material as THREE.MeshStandardMaterial;
     mat.depthTest = true;
     mat.depthWrite = true;
 

@@ -73,7 +73,6 @@ export class ViewModeController {
     private readonly renderer: THREE.WebGLRenderer;
     private readonly getVideo: () => HTMLVideoElement | null;
     private readonly bgColor: THREE.Color;   // scene-mode clear (#000814)
-    private readonly blackBg: THREE.Color;   // AR-mode clear (black; screen-blend reveals the feed)
 
     // Parting-curtains detection state (scalars only — no per-frame alloc).
     private prevLeft: HandSample = { x: 0, valid: false };
@@ -102,8 +101,7 @@ export class ViewModeController {
         this.renderer = renderer;
         this.getVideo = getVideo;
         this.bgColor = new THREE.Color(T.bg);
-        this.blackBg = new THREE.Color(0x000000);
-        // Start in AR: clear black so the canvas's screen-blend reveals the #camera video.
+        // Start in AR: clear transparent so the #camera video shows through the empty areas.
         this.applyMode();
     }
 
@@ -115,18 +113,18 @@ export class ViewModeController {
     }
 
     /**
-     * Apply the current mode's render state. In AR the scene clears to BLACK and the #camera
-     * video is shown: the canvas uses `mix-blend-mode: screen` (styles.css), so black drops out
-     * and the live feed shows through untouched while the bright wireframe composites on top. In
-     * scene mode the clear is #000814 and the video is hidden (screen-over-#000 is a no-op, so the
-     * scene view is unchanged). Idempotent — safe to call every frame.
+     * Apply the current mode's render state. In AR the scene background is cleared TRANSPARENT
+     * (alpha 0) and the #camera video is shown BEHIND the canvas (styles.css, normal blend): the
+     * solid lit geometry composites OPAQUELY over the feed where it is drawn, and the transparent
+     * empty areas reveal the live feed untouched. In scene mode the clear is opaque #000814 and
+     * the video is hidden. Idempotent — safe to call every frame.
      */
     private applyMode(): void {
         const video = this.getVideo();
         if (this.mode === "ar") {
             if (video) { video.style.display = "block"; this.videoShown = true; }
-            this.scene.background = this.blackBg;
-            this.renderer.setClearColor(0x000000, 1);
+            this.scene.background = null;
+            this.renderer.setClearColor(0x000000, 0);
         } else {
             if (video) video.style.display = "none";
             this.scene.background = this.bgColor;
@@ -137,10 +135,11 @@ export class ViewModeController {
     /**
      * Re-apply ONLY the renderer clear colour for the current mode. main.ts calls this after its
      * corner-preview pass (which sets the #000814 clear colour) so the next frame's composer
-     * clears correctly: black in AR (screen-blend reveals the feed), #000814 in scene mode.
+     * clears correctly: TRANSPARENT in AR (alpha 0, so the #camera feed shows through the empty
+     * areas), opaque #000814 in scene mode.
      */
     syncClear(): void {
-        if (this.mode === "ar") this.renderer.setClearColor(0x000000, 1);
+        if (this.mode === "ar") this.renderer.setClearColor(0x000000, 0);
         else this.renderer.setClearColor(this.bgColor, 1);
     }
 

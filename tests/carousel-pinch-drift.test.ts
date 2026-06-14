@@ -57,10 +57,11 @@ describe("carousel left-hand pinch-select emits the centered tool", () => {
             // Right-hand pinch until centered on DESTROY (settle between steps).
             const PINCH_ON = 0.6;
             const PINCH_RELEASE = 0.2;  // below PINCH_OFF (0.35) to fully disarm
+            const PINCH_ARM_FRAMES = 2; // consecutive frames above PINCH_ON required to trigger
             const ADVANCE_COOLDOWN_MS = 250;
             const FRAMES_FOR_COOLDOWN = Math.ceil(ADVANCE_COOLDOWN_MS / 16);
             for (let guard = 0; guard < 20 && activeOrderId(c) !== MenuId.DESTROY; guard++) {
-                drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
+                drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), PINCH_ARM_FRAMES);
                 drive(c, gesture({ name: "none", pinch: PINCH_RELEASE }), FRAMES_FOR_COOLDOWN + 2);
             }
             expect(activeOrderId(c)).toBe(MenuId.DESTROY);
