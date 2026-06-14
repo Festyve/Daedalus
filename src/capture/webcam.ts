@@ -10,6 +10,18 @@
 
 // Request the user camera and resolve once the returned <video> is actually
 // playing. Tries `width`x`height` first (default 720p), falls back to 640x480.
+// Timeout after 10s if the device doesn't respond (protects against hung camera drivers).
+const GET_USER_MEDIA_TIMEOUT_MS = 10000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+            setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs)
+        ),
+    ]);
+}
+
 export async function startWebcam(width = 1280, height = 720): Promise<HTMLVideoElement> {
     const existing = document.getElementById("camera");
     if (existing) existing.remove();
@@ -24,14 +36,20 @@ export async function startWebcam(width = 1280, height = 720): Promise<HTMLVideo
 
     let stream: MediaStream;
     try {
-        stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "user", width: { ideal: width }, height: { ideal: height } },
-        });
+        stream = await withTimeout(
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "user", width: { ideal: width }, height: { ideal: height } },
+            }),
+            GET_USER_MEDIA_TIMEOUT_MS
+        );
     } catch {
         // Permission may still be granted but the resolution unsupported — retry at VGA.
-        stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-        });
+        stream = await withTimeout(
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+            }),
+            GET_USER_MEDIA_TIMEOUT_MS
+        );
     }
 
     video.srcObject = stream;
