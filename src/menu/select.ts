@@ -30,6 +30,9 @@ import {
 // Focus-cursor pulse colour (the shape the left fist would toggle shimmers toward white).
 const WHITE = new THREE.Color(0xffffff);
 
+// Frames a fist must be held before it fires an action. Reduces accidental triggers.
+const FIST_CONFIRM_FRAMES = 12;
+
 // Finger tip/PIP pairs (index→pinky) for the closed-hand test. A hand counts as a "fist"
 // when all four of these fingers are curled (tip nearer the wrist than its PIP). We
 // deliberately IGNORE the thumb — same as DILATE: predicates.isFist() (and so
@@ -60,6 +63,8 @@ export function createSelectMenu(): MenuModule {
     let navGate = new GestureDebouncer();     // left hand → toggle select (fist)
     let execWasFist = false;
     let navWasFist = false;
+    let execFistFrames = 0;        // frames right fist has been held
+    let navFistFrames = 0;         // frames left fist has been held
 
     // Make the focused shape shimmer toward white so the user can see what the left fist will
     // toggle — even when it is currently unselected (then we also lift its opacity above the
@@ -119,6 +124,8 @@ export function createSelectMenu(): MenuModule {
             navGate = new GestureDebouncer();
             execWasFist = false;
             navWasFist = false;
+            execFistFrames = 0;
+            navFistFrames = 0;
             // Park the focus cursor on the primary selection if there is one.
             if (ctx.mesh) ctx.focusIndex = Math.max(0, allShapes(ctx).indexOf(ctx.mesh));
             refreshHighlight(ctx);
@@ -136,26 +143,34 @@ export function createSelectMenu(): MenuModule {
             refreshHighlight(ctx);
             applyFocusPulse(ctx);
 
-            // Right (exec) fist (rising edge) → move the focus cursor to the next shape. Each hand's
-            // pose feeds the shared 5-frame debouncer — "none" when the hand is gone, so a stale fist
-            // never lingers across a tracking gap — and one fist-close = one step.
+            // Right (exec) fist → move the focus cursor to the next shape. Fist must be held for
+            // FIST_CONFIRM_FRAMES before the action fires to prevent accidental triggers.
             const execFist = execGate.push(exec && handClosed(exec.world) ? "fist" : "none") === "fist";
-            if (execFist && !execWasFist) {
-                moveFocus(ctx, 1);
-                paint(ctx);
-            }
-            execWasFist = execFist;
-
-            // Left (nav) hand FIST (rising edge) → toggle the focused shape in/out of the selection.
-            const navFist = navGate.push(nav && handClosed(nav.world) ? "fist" : "none") === "fist";
-            if (navFist && !navWasFist) {
-                const f = focusedShape(ctx);
-                if (f) {
-                    toggleSelect(ctx, f);
+            if (execFist) {
+                execFistFrames++;
+                if (execFistFrames === FIST_CONFIRM_FRAMES) {
+                    moveFocus(ctx, 1);
                     paint(ctx);
                 }
+            } else {
+                execFistFrames = 0;
             }
-            navWasFist = navFist;
+
+            // Left (nav) hand FIST → toggle the focused shape in/out of the selection. Fist must be
+            // held for FIST_CONFIRM_FRAMES before the action fires.
+            const navFist = navGate.push(nav && handClosed(nav.world) ? "fist" : "none") === "fist";
+            if (navFist) {
+                navFistFrames++;
+                if (navFistFrames === FIST_CONFIRM_FRAMES) {
+                    const f = focusedShape(ctx);
+                    if (f) {
+                        toggleSelect(ctx, f);
+                        paint(ctx);
+                    }
+                }
+            } else {
+                navFistFrames = 0;
+            }
         },
 
         exit(ctx: SceneContext): void {
