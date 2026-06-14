@@ -16,8 +16,8 @@ export type GunAction = "carousel" | "wireframe" | null;
 // Frames a lone right gun is held before it commits to "carousel". Must comfortably exceed the
 // frame gap between the two hands' debounced gun commits when both are raised together, so a
 // genuine both-gun is never misread as a carousel toggle. The 5-frame gesture debounce
-// (detect.ts) means hands raised together commit within ~1-2 frames; 6 leaves margin.
-const CONFIRM_FRAMES = 6;
+// (detect.ts) means hands raised together commit within ~1-2 frames; 12 provides more margin.
+const CONFIRM_FRAMES = 12;
 
 export class GunArbiter {
     private execHeld = false;   // right gun committed on the previous frame (rising-edge detect)
