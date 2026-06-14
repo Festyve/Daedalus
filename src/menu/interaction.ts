@@ -1,8 +1,11 @@
 // INTERACT tool (multi-shape CSG, §5 extended). Combines the two SELECTED shapes (A, B) using a
-// boolean operation — union, subtract, or intersect — and shows a LIVE PREVIEW of the result.
-// The operation is picked from a 3D CAROUSEL (item 5: the same wheel component) that the nav
-// hand SWIPES; an exec-hand pinch APPLIES it: A and B are removed and replaced by the single
-// resulting shape, which becomes the new selection.
+// boolean operation — subtract, union, or intersect — and shows a LIVE PREVIEW of the result.
+//
+// No pinch anywhere (consistent with SELECT): a horizontal SWIPE of the nav (left) index finger
+// cycles the operation (the preview rebuilds live), and a GRAB (close the nav hand into a fist)
+// APPLIES it: A and B are removed and replaced by the single resulting shape, which becomes the
+// new selection. SUBTRACT is the default — it carves the second shape out of the first, drilling
+// a HOLE — so "negate two shapes" is the first thing you see.
 //
 // CSG runs through three-bvh-csg (built on the same three-mesh-bvh already vendored). It
 // operates on each shape's BASE geometry in world space (morph blend is ignored), which is
@@ -10,35 +13,27 @@
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
-import type { GestureState, HandPose, MenuModule, SceneContext, Vec3 } from "../types";
+import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
-import { Carousel, type CarouselItem } from "./carousel";
 import { classify } from "../gesture/detect";
+import { SwipeDetector } from "../gesture/swipe";
 import { attachMesh } from "../render/scene";
 import { selectedShapes, selectedCount, removeShape, selectOnly } from "../core/shapes";
 import { sfx } from "../audio/sfx";
 
-// Boolean operations offered, in carousel order.
+// Boolean operations offered, in swipe order. SUBTRACT leads: it is the hole-maker the tool is
+// built around (carve B out of A). verb is shown under the big op label in the panel.
 const OPS: ReadonlyArray<{ key: number; label: string; verb: string; icon: string }> = [
-    { key: ADDITION, label: "UNION", verb: "merge", icon: "∪" },
-    { key: SUBTRACTION, label: "SUBTRACT", verb: "carve B out of A", icon: "⊖" },
-    { key: INTERSECTION, label: "INTERSECT", verb: "keep the overlap", icon: "∩" },
+    { key: SUBTRACTION, label: "SUBTRACT", verb: "carve the 2nd shape out of the 1st — drills a hole", icon: "⊖" },
+    { key: ADDITION, label: "UNION", verb: "fuse both shapes into one solid", icon: "∪" },
+    { key: INTERSECTION, label: "INTERSECT", verb: "keep only the volume they share", icon: "∩" },
 ];
 
-// Carousel item per op (id = OPS index as a string). All share the INTERACT accent.
-const OP_ITEMS: CarouselItem[] = OPS.map((op, i) => ({
-    id: String(i),
-    icon: op.icon,
-    label: op.label,
-    accent: MENU_META[MenuId.INTERACT].accent,
-}));
-
-// Where the op sub-carousel sits in camera-local space (top-center, like the tool wheel).
-const CAROUSEL_POS = new THREE.Vector3(0, 0.9, -3.2);
-
-const PINCH_ON = 0.7;
+// A grab (fist) applies only after this many steady fist frames, so the curl that starts a fist
+// never fires twice and a swipe's brief finger motion never reads as a grab (§12 debounce).
+const GRAB_FRAMES = 5;
 
 function blankVec(): Vec3 {
     return { x: 0, y: 0, z: 0 };
@@ -49,13 +44,12 @@ export function createInteractMenu(): MenuModule {
     const label = MENU_META[MenuId.INTERACT].label;
 
     let panel: Panel | null = null;
-    let carousel: Carousel | null = null;
-    let opIndex = 0;
+    let opIndex = 0;              // 0 = SUBTRACT (default)
     let hasNavPrev = false;
-    let currentExecHand: HandPose | null = null;
-
-    const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
-    const FAR_TIP = new THREE.Vector3(10, 10, 0);
+    let grabStreak = 0;          // consecutive nav-fist frames (applies at GRAB_FRAMES)
+    let wasGrabbing = false;     // committed-grab rising-edge latch (one apply per fist)
+    let applied = false;         // true once the boolean committed — operands are gone
+    const swipe = new SwipeDetector();
 
     // The two operands captured on enter, the live preview mesh, and a status message.
     let opA: THREE.Mesh | null = null;
@@ -166,25 +160,72 @@ export function createInteractMenu(): MenuModule {
         opB.visible = false;
     }
 
+    // Commit the previewed boolean: keep the result geometry, delete the two operands, and make
+    // the result the sole selection. After this the tool has no operands left (applied = true).
+    function applyResult(ctx: SceneContext): void {
+        if (!preview || !opA || !opB) return;
+        const geo = clearPreview(true);      // keep the result geometry
+        const a = opA, b = opB;
+        opA = null;
+        opB = null;
+        if (geo) {
+            removeShape(ctx, a);
+            removeShape(ctx, b);
+            const result = attachMesh(ctx, geo); // result becomes ctx.mesh
+            selectOnly(ctx, result);             // and the sole selection (count = 1)
+            sfx.ding();
+        }
+        applied = true;
+        paint(ctx);
+    }
+
+    // The three ops as a compact pill row, the active one lit in the accent. Pure string build.
+    function opRow(): string {
+        return (
+            `<div style="display:flex;gap:6px">` +
+            OPS.map((o, i) => {
+                const on = i === opIndex;
+                const bg = on ? accent : "rgba(255,255,255,0.06)";
+                const fg = on ? "#001018" : "rgba(255,255,255,0.6)";
+                const glow = on ? `box-shadow:0 0 10px ${accent}` : "";
+                return (
+                    `<span style="flex:1;text-align:center;padding:5px 4px;border-radius:7px;` +
+                    `font-size:11px;font-weight:700;background:${bg};color:${fg};${glow}">` +
+                    `${o.icon} ${o.label}</span>`
+                );
+            }).join("") +
+            `</div>`
+        );
+    }
+
     function paint(ctx: SceneContext): void {
         if (!panel) return;
+        if (applied) {
+            panel.setBody(
+                `<div style="font-size:13px;color:${accent};line-height:1.6">` +
+                `<b>Combined.</b> The result is now your single selected shape.<br>` +
+                `<span style="color:rgba(255,255,255,0.5)">Select two shapes again to make another.</span></div>`,
+            );
+            return;
+        }
         if (selectedCount(ctx) < 2) {
             panel.setBody(
                 `<div style="font-size:12px;color:rgba(255,255,255,0.7);line-height:1.6">` +
-                `INTERACT needs <b>two selected shapes</b>. Use SELECT to pinch a second shape ` +
+                `INTERACT needs <b>two selected shapes</b>. Use SELECT to grab a second shape ` +
                 `into the selection, then come back to combine them.</div>`,
             );
             return;
         }
         const op = OPS[opIndex];
         const note = status
-            ? `<div style="font-size:11px;color:#FF9090;margin-top:6px">${status}</div>`
-            : `<div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:6px">previewing — pinch (exec) to apply</div>`;
+            ? `<div style="font-size:11px;color:#FF9090;margin-top:2px">${status}</div>`
+            : `<div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:2px">live preview — grab to apply</div>`;
         panel.setBody(
             `<div style="display:flex;flex-direction:column;gap:10px">` +
+                opRow() +
                 `<div style="font-size:22px;font-weight:700;color:${accent};text-shadow:0 0 12px ${accent}">${op.label}</div>` +
-                `<div style="font-size:11px;color:rgba(255,255,255,0.55)">${op.verb} (selected ⊕ next)</div>` +
-                `<div style="font-size:10.5px;color:rgba(255,255,255,0.4)">swipe nav to change operation</div>` +
+                `<div style="font-size:11px;color:rgba(255,255,255,0.55)">${op.verb}</div>` +
+                `<div style="font-size:10.5px;color:rgba(255,255,255,0.4)">swipe nav to change · grab (fist) to apply</div>` +
                 note +
             `</div>`,
         );
@@ -195,44 +236,19 @@ export function createInteractMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
-            panel.setInstructions("<b>RIGHT PINCH</b> change operation &nbsp;·&nbsp; <b>LEFT SQUEEZE</b> apply");
+            panel.setInstructions("<b>SWIPE</b> change operation &nbsp;·&nbsp; <b>GRAB (fist)</b> apply");
             opIndex = 0;
             hasNavPrev = false;
-            currentExecHand = null;
+            grabStreak = 0;
+            wasGrabbing = false;
+            applied = false;
             status = "";
+            swipe.reset();
             const sel = selectedShapes(ctx);
             if (sel.length >= 2) {
                 opA = sel[0]; // primary selected
                 opB = sel[1]; // second selected
                 rebuildPreview(ctx);
-                // Op picker carousel (only meaningful with two operands).
-                carousel = new Carousel(OP_ITEMS);
-                carousel.object.position.copy(CAROUSEL_POS);
-                ctx.camera.add(carousel.object);
-                carousel.open(FAR_TIP);
-
-                // Wire up selection: left-hand pinch applies the operation.
-                carousel.onSelect = () => {
-                    if (!currentExecHand || !preview || !opA || !opB) return;
-                    const geo = clearPreview(true);      // keep the result geometry
-                    const a = opA, b = opB;
-                    opA = null;
-                    opB = null;
-                    if (geo && a && b) {
-                        removeShape(ctx, a);
-                        removeShape(ctx, b);
-                        const result = attachMesh(ctx, geo); // result becomes ctx.mesh
-                        selectOnly(ctx, result);             // and the sole selection (count = 1)
-                        sfx.ding();
-                    }
-                    // The operands are gone — tear down the op wheel until the user re-enters.
-                    if (carousel) {
-                        ctx.camera.remove(carousel.object);
-                        carousel.dispose();
-                        carousel = null;
-                    }
-                    paint(ctx);
-                };
             } else {
                 opA = null;
                 opB = null;
@@ -241,33 +257,43 @@ export function createInteractMenu(): MenuModule {
             panel.show();
         },
 
-        update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
+        // The nav (left) hand drives INTERACT: swipe cycles the op, a fist applies. The exec hand
+        // is unused here (it stays free for the global gun = return to the tool wheel).
+        update(ctx: SceneContext, _exec: HandPose | null, nav: HandPose | null, dt: number): void {
             if (!panel) return;
-            if (!opA || !opB || !carousel) return; // nothing to combine
-            const dtSec = dt / 1000;
+            if (applied || !opA || !opB) {        // nothing to combine (waiting / already done)
+                if (!nav) hasNavPrev = false;
+                return;
+            }
 
-            currentExecHand = exec;
+            if (!nav) {
+                hasNavPrev = false;
+                grabStreak = 0;
+                wasGrabbing = false;
+                swipe.reset();
+                return;
+            }
 
-            // Right-hand (exec) pinch advances the carousel; when opIndex changes, rebuild preview.
-            const execG = exec ? classify(exec.landmarks, exec.world, null) : NONE_GESTURE;
+            const g = classify(nav.landmarks, nav.world, hasNavPrev ? prevLandmarks : null);
 
-            // Left-hand (nav) gesture for selection is handled via carousel.onSelect.
-            const navG = nav ? classify(nav.landmarks, nav.world, hasNavPrev ? prevLandmarks : null) : NONE_GESTURE;
-            carousel.update(FAR_TIP, execG, navG, dtSec);
-
-            // Track operation changes when the carousel advances.
-            const centered = Number(carousel.current);
-            if (centered !== opIndex) {
-                opIndex = centered;
+            // Swipe → cycle the operation (wraps), rebuild the live preview, repaint.
+            const dir = swipe.update(g.vx, dt);
+            if (dir !== 0) {
+                opIndex = (opIndex + (dir > 0 ? 1 : -1) + OPS.length) % OPS.length;
                 rebuildPreview(ctx);
                 paint(ctx);
             }
 
-            if (nav) {
-                snapshot(nav.landmarks);
-            } else {
-                hasNavPrev = false;
+            // Grab (fist) → apply, committed after GRAB_FRAMES steady fist frames and latched on
+            // the rising edge so one closed fist applies exactly once.
+            grabStreak = g.name === "fist" ? Math.min(GRAB_FRAMES, grabStreak + 1) : 0;
+            const grabbing = grabStreak >= GRAB_FRAMES;
+            if (grabbing && !wasGrabbing) {
+                applyResult(ctx);
             }
+            wasGrabbing = grabbing;
+
+            snapshot(nav.landmarks);
         },
 
         exit(ctx: SceneContext): void {
@@ -277,18 +303,14 @@ export function createInteractMenu(): MenuModule {
             if (opB) opB.visible = true;
             opA = null;
             opB = null;
-            if (carousel) {
-                ctx.camera.remove(carousel.object);
-                carousel.dispose();
-                carousel = null;
-            }
-            currentExecHand = null;
             if (panel) {
                 panel.hide();
                 panel.destroy();
                 panel = null;
             }
             hasNavPrev = false;
+            grabStreak = 0;
+            wasGrabbing = false;
         },
     };
 }

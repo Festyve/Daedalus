@@ -18,7 +18,7 @@ const MENU_INSTRUCTION: Record<MenuId, string> = {
     [MenuId.ROTATE]: "pinch the ball · twist to rotate",
     [MenuId.MORPH]: "both hands closed · jiggle to morph",
     [MenuId.DECORATE]: "open palm for icing · pinch for sprinkles",
-    [MenuId.INTERACT]: "swipe to pick union / subtract / intersect · pinch to apply",
+    [MenuId.INTERACT]: "swipe to pick subtract / union / intersect · grab (fist) to apply",
     [MenuId.DESTROY]: "pinch to destroy the selected shape",
 };
 

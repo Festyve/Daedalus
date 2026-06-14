@@ -65,9 +65,10 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
         "fires icing + sprinkles, streams a spoken reply",
     ],
     [MenuId.INTERACT]: [
-        "combine the selected shape with the next one",
-        "swipe to pick union · subtract · intersect (live preview)",
-        "pinch to apply — the two become one shape",
+        "with two shapes selected, combine them (live preview)",
+        "swipe to pick subtract · union · intersect",
+        "subtract carves the 2nd out of the 1st — drills a hole",
+        "grab (make a fist) to apply — the two become one shape",
     ],
     [MenuId.DESTROY]: [
         "pinch to delete the currently selected shape",

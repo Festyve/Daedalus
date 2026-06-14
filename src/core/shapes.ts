@@ -20,8 +20,10 @@ import type { SceneContext } from "../types";
 import { T } from "../render/tokens";
 
 // Ghosted (unselected) vs full (selected) opacity. Selection persists across tools, so the cue
-// must read without any active tool.
-const UNSELECTED_OPACITY = 0.26;
+// must read without any active tool. Unselected is kept clearly visible (not a faint ghost) so
+// every shape stays readable on screen; the selected/unselected split is carried by the brighter
+// tint + depth-write below, not by making the rest nearly invisible.
+const UNSELECTED_OPACITY = 0.6;
 const SELECTED_OPACITY = 1.0;
 
 // Wireframe tints by selection tier. WIRE_BASE matches makeMatcapMaterial's colour; decoration
@@ -29,7 +31,7 @@ const SELECTED_OPACITY = 1.0;
 // lifted (primary), full (selected) or dimmed (unselected). No extra render passes, so the tier
 // shows identically in the main AR view and the corner preview.
 const WIRE_BASE = new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15);
-const WIRE_DIM = WIRE_BASE.clone().multiplyScalar(0.45);
+const WIRE_DIM = WIRE_BASE.clone().multiplyScalar(0.7);
 const WIRE_PRIMARY = WIRE_BASE.clone().lerp(new THREE.Color(T.white), 0.55);
 
 // Scratch for selectionCenter (no per-frame allocation, §6.2).
