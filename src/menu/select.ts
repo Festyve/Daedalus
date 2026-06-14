@@ -1,19 +1,20 @@
-// SELECT tool (multi-selection, §5 extended). Builds the SELECTION SET that the edit tools act
-// on. A horizontal SWIPE of the navigation (left) index finger moves a FOCUS CURSOR through the
-// shapes; a PINCH toggles the focused shape in/out of the selection. The focused shape pulses so
-// you can see what a pinch will toggle; selected shapes are drawn bright, the rest ghosted (see
-// core/shapes.refreshHighlight). The selection persists after you leave SELECT, so the next tool
-// edits the shapes you chose, and the on-screen counter (ui/chrome) shows how many are selected.
+// SELECT tool (multi-selection). Builds the SELECTION SET that the edit tools act on, using the
+// fist controls — the SAME hands as the main tool menu: the RIGHT hand moves through the shapes and
+// the LEFT hand commits. A RIGHT-hand FIST steps a FOCUS CURSOR to the next shape; a LEFT-hand FIST
+// toggles the focused shape in/out of the selection. Close the left fist again to keep adding
+// shapes; open the main menu (right-hand gun) when the selection is done. The focused shape pulses
+// so you can see what the next left-fist will toggle; selected shapes are drawn bright, the rest
+// ghosted (see core/shapes.refreshHighlight). The selection persists after you leave SELECT, so the
+// next tool edits the shapes you chose, and the on-screen counter (ui/chrome) shows how many.
 //
-// One swipe = one cursor step via the shared SwipeDetector (gesture/swipe.ts); one pinch = one
-// toggle via rising-edge latching.
+// Each hand's fist is debounced (gesture/detect.GestureDebouncer, 5 frames) and fires on the rising
+// edge, so one fist-close = one cursor step / one toggle.
 import * as THREE from "three";
-import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
+import type { HandPose, MenuModule, SceneContext } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
-import { classify } from "../gesture/detect";
-import { SwipeDetector } from "../gesture/swipe";
+import { classify, GestureDebouncer } from "../gesture/detect";
 import {
     allShapes,
     shapeCount,
@@ -25,43 +26,24 @@ import {
     refreshHighlight,
 } from "../core/shapes";
 
-// Rising-edge pinch closure that toggles the focused shape. Lowered (vs the old 0.7) so the
-// non-dominant nav hand commits a toggle as easily as the exec hand applies an edit.
-const PINCH_TOGGLE = 0.6;
-
-// Focus-cursor pulse colour (the shape a pinch would toggle shimmers toward white).
+// Focus-cursor pulse colour (the shape the left fist would toggle shimmers toward white).
 const WHITE = new THREE.Color(0xffffff);
-
-// One reusable Vec3 (plain object — landmarks are bare Vec3, not THREE.Vector3).
-function blankVec(): Vec3 {
-    return { x: 0, y: 0, z: 0 };
-}
 
 export function createSelectMenu(): MenuModule {
     const accent = MENU_META[MenuId.SELECT].accent;
     const label = MENU_META[MenuId.SELECT].label;
 
     let panel: Panel | null = null;
-    let hasPrev = false;          // whether prevLandmarks holds a valid previous frame
-    let wasPinched = false;       // pinch rising-edge latch
     let pulseMs = 0;              // focus-cursor pulse phase
-    const swipe = new SwipeDetector();
+    // Per-hand discrete-pose debouncers + rising-edge latches (one action per fist-close).
+    let execGate = new GestureDebouncer();   // right hand → cycle
+    let navGate = new GestureDebouncer();     // left hand → toggle
+    let execWasFist = false;
+    let navWasFist = false;
 
-    // Reused previous-frame nav landmarks for the swipe velocity (no per-frame alloc).
-    const prevLandmarks: Vec3[] = Array.from({ length: 21 }, blankVec);
-
-    function snapshot(lm: Vec3[]): void {
-        const n = Math.min(lm.length, prevLandmarks.length);
-        for (let i = 0; i < n; i++) {
-            prevLandmarks[i].x = lm[i].x;
-            prevLandmarks[i].y = lm[i].y;
-            prevLandmarks[i].z = lm[i].z;
-        }
-        hasPrev = true;
-    }
-
-    // Make the focused shape shimmer toward white so the user can see what a pinch will toggle —
-    // even when it is currently unselected (then we also lift its opacity above the ghost floor).
+    // Make the focused shape shimmer toward white so the user can see what the left fist will
+    // toggle — even when it is currently unselected (then we also lift its opacity above the
+    // ghost floor).
     function applyFocusPulse(ctx: SceneContext): void {
         const f = focusedShape(ctx);
         if (!f) return;
@@ -99,8 +81,8 @@ export function createSelectMenu(): MenuModule {
                 `</div>` +
                 `<div style="font-size:11px;color:rgba(255,255,255,0.55);line-height:1.5">` +
                     (total === 1
-                        ? "Pinch to select / deselect this shape. Spawn more shapes to build a multi-selection."
-                        : "Swipe your nav (left) index finger to move the cursor · pinch to add / remove the cursor's shape.") +
+                        ? "Close your left fist to select / deselect this shape. Spawn more shapes to build a multi-selection."
+                        : "Close your right fist to move the cursor · close your left fist to add / remove the cursor's shape.") +
                 `</div>` +
             `</div>`,
         );
@@ -111,10 +93,11 @@ export function createSelectMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
-            hasPrev = false;
-            wasPinched = false;
             pulseMs = 0;
-            swipe.reset();
+            execGate = new GestureDebouncer();
+            navGate = new GestureDebouncer();
+            execWasFist = false;
+            navWasFist = false;
             // Park the focus cursor on the primary selection if there is one.
             if (ctx.mesh) ctx.focusIndex = Math.max(0, allShapes(ctx).indexOf(ctx.mesh));
             refreshHighlight(ctx);
@@ -122,8 +105,9 @@ export function createSelectMenu(): MenuModule {
             panel.show();
         },
 
-        // The nav (left) hand drives selection here; the exec hand is unused.
-        update(ctx: SceneContext, _exec: HandPose | null, nav: HandPose | null, dt: number): void {
+        // Right fist steps the focus cursor; left fist toggles the focused shape — the same hands as
+        // the main menu (right moves through, left commits). Both hands are handled independently.
+        update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
             if (!panel) return;
             pulseMs += dt;
 
@@ -131,34 +115,26 @@ export function createSelectMenu(): MenuModule {
             refreshHighlight(ctx);
             applyFocusPulse(ctx);
 
-            if (!nav) {
-                hasPrev = false;
-                wasPinched = false;
-                swipe.reset();
-                return;
-            }
-
-            const g = classify(nav.landmarks, nav.world, hasPrev ? prevLandmarks : null);
-
-            // Swipe → move the focus cursor one shape (g.vx > 0 = rightward → next).
-            const dir = swipe.update(g.vx, dt);
-            if (dir !== 0) {
-                moveFocus(ctx, dir > 0 ? 1 : -1);
+            // Right (exec) fist (rising edge) → move the focus cursor to the next shape. Each hand's
+            // pose feeds the shared 5-frame debouncer — "none" when the hand is gone, so a stale fist
+            // never lingers across a tracking gap — and one fist-close = one step.
+            const execFist = execGate.push(exec ? classify(exec.landmarks, exec.world, null).name : "none") === "fist";
+            if (execFist && !execWasFist) {
+                moveFocus(ctx, 1);
                 paint(ctx);
             }
+            execWasFist = execFist;
 
-            // Pinch (rising edge) → toggle the focused shape in/out of the selection.
-            const pinchedNow = g.pinch > PINCH_TOGGLE;
-            if (pinchedNow && !wasPinched) {
+            // Left (nav) fist (rising edge) → toggle the focused shape in/out of the selection.
+            const navFist = navGate.push(nav ? classify(nav.landmarks, nav.world, null).name : "none") === "fist";
+            if (navFist && !navWasFist) {
                 const f = focusedShape(ctx);
                 if (f) {
                     toggleSelect(ctx, f);
                     paint(ctx);
                 }
             }
-            wasPinched = pinchedNow;
-
-            snapshot(nav.landmarks);
+            navWasFist = navFist;
         },
 
         exit(ctx: SceneContext): void {
@@ -167,7 +143,6 @@ export function createSelectMenu(): MenuModule {
                 panel.destroy();
                 panel = null;
             }
-            hasPrev = false;
             // Restore the plain tier highlight (drop the focus shimmer) for the next tool.
             refreshHighlight(ctx);
         },

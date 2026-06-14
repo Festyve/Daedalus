@@ -114,8 +114,11 @@ export function createAddShapesMenu(): MenuModule {
     const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     const FAR_TIP = new THREE.Vector3(10, 10, 0);
 
-    // Cache the spawning hand so onSelect can spawn at the correct position.
+    // Cache the spawning (left) hand so the spawn lands at the correct position.
     let spawnHand: HandPose | null = null;
+    // Rising-edge latch for the left-squeeze spawn. Spawning is handled in update() (not via
+    // carousel.onSelect), so it never closes the wheel — you can add several shapes in a row.
+    let wasSpawn = false;
 
     function snapshotLandmarks(lm: Vec3[]): void {
         const n = Math.min(lm.length, prev_landmarks.length);
@@ -173,20 +176,13 @@ export function createAddShapesMenu(): MenuModule {
             ctx.camera.add(carousel.object);
             carousel.open(FAR_TIP);
 
-            // Wire up selection: your left-hand pinch triggers onSelect when the carousel closes.
-            carousel.onSelect = (id) => {
-                if (spawnHand) {
-                    fingertipToWorld(
-                        spawnHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
-                        ctx.scratch.ray, ctx.scratch.plane, spawn_world,
-                    );
-                    spawnShape(id as ShapeKind, ctx, spawn_world);
-                }
-            };
-
+            // No carousel.onSelect: selecting must NOT close the wheel. Spawning is handled directly
+            // in update() (left squeeze), so the shape wheel stays open and you can add several
+            // shapes in a row — it only closes when you leave ADD SHAPES.
             spawnHand = null;
             has_prev = false;
             spawn_armed = false;
+            wasSpawn = false;
             spawn_mesh = null;
             spawn_t = 0;
         },
@@ -200,15 +196,27 @@ export function createAddShapesMenu(): MenuModule {
 
             spawnHand = nav;
 
-            // Arm the spawn once the left hand has opened. Until then, feed the carousel a NONE
-            // gesture for the select channel so the fist held from entering can't spawn a shape.
+            // Arm the spawn once the left hand has opened, so the fist held from entering the tool
+            // (the tool-select gesture) can't immediately spawn a shape.
             const navG = nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE;
             if (!spawn_armed && navG.pinch < PINCH_OPEN) spawn_armed = true;
-            const selectG = spawn_armed ? navG : NONE_GESTURE;
+
+            // Left squeeze (armed, rising edge) → spawn the centered shape at the left fingertip,
+            // handled HERE rather than via the carousel's select channel, so the wheel stays open.
+            const spawning = spawn_armed && navG.pinch > PINCH_ON;
+            if (spawning && !wasSpawn && spawnHand) {
+                fingertipToWorld(
+                    spawnHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
+                    ctx.scratch.ray, ctx.scratch.plane, spawn_world,
+                );
+                spawnShape(carousel.current as ShapeKind, ctx, spawn_world);
+            }
+            wasSpawn = spawning;
 
             if (!exec) {
                 has_prev = false;
-                carousel.update(FAR_TIP, NONE_GESTURE, selectG, dtSec);
+                // The wheel keeps drawing but never selects/closes (NONE select channel).
+                carousel.update(FAR_TIP, NONE_GESTURE, NONE_GESTURE, dtSec);
                 return;
             }
 
@@ -222,8 +230,9 @@ export function createAddShapesMenu(): MenuModule {
             );
             ctx.camera.worldToLocal(tip_local.copy(tip_world));
 
-            // Pass right-hand (exec) gesture for advancing and left-hand (nav) gesture for spawning.
-            carousel.update(tip_local, g, selectG, dtSec);
+            // Right-hand (exec) gesture advances the wheel; NONE for the select channel so a spawn
+            // never closes it.
+            carousel.update(tip_local, g, NONE_GESTURE, dtSec);
 
             snapshotLandmarks(exec.landmarks);
         },
@@ -247,6 +256,7 @@ export function createAddShapesMenu(): MenuModule {
             }
             spawn_t = 0;
             spawnHand = null;
+            wasSpawn = false;
             // Spawned mesh is intentionally retained as the selection — the user's creation.
         },
     };
