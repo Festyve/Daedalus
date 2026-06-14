@@ -22,64 +22,70 @@ interface ReferenceRow {
     action: string;
 }
 
-// Global, menu-independent navigation gestures (left hand drives the wheel; §4.1).
+// Global, menu-independent navigation gestures (right hand opens + steps, left selects; §4.1).
 const NAV_GESTURES: ReferenceRow[] = [
-    { gesture: "Left hand “gun” — index out, thumb up", action: "open the menu wheel" },
-    { gesture: "Aim the left index at a tile", action: "highlight that menu" },
-    { gesture: "Left pinch", action: "select the highlighted menu" },
-    { gesture: "Left fist", action: "close the wheel" },
+    { gesture: "Right hand “gun” — index out, thumb up", action: "open the wheel · gun again closes / backs out" },
+    { gesture: "Right pinch", action: "step to the next tool" },
+    { gesture: "Left pinch", action: "select the centered tool" },
+    { gesture: "Aim the left index at the wheel", action: "glow the centered tile" },
 ];
 
 // Per-tool operating instructions, one entry per authoritative MenuId (§5.1–§5.6).
 // Right hand executes unless a line says otherwise.
 const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.ADD_SHAPES]: [
-        "flick to cycle cube · sphere · cylinder",
-        "pinch to pick · right pinch spawns at your hand",
+        "right pinch cycles cube · sphere · cylinder",
+        "left pinch spawns the centered shape at your left hand",
         "each spawn adds a new shape (the others stay)",
     ],
     [MenuId.SELECT]: [
-        "swipe left/right to cycle which shape is selected",
-        "the selected shape glows; the others dim",
-        "every edit tool then acts on the selected shape",
+        "right fist steps the focus cursor to the next shape",
+        "left fist toggles that shape in / out of the selection",
+        "focused shape pulses white · selected glow, the rest dim",
+        "the selection sticks — every edit tool acts on it",
     ],
     [MenuId.TRANSLATE]: [
-        "right open palm — object follows your hand",
-        "close to a fist — lock it in place",
+        "right open palm grabs — shapes follow your hand",
+        "right fist locks them in place",
+        "free movement, no arrows · the whole selection moves",
     ],
     [MenuId.DILATE]: [
-        "pinch with BOTH hands near the object",
-        "spread apart to grow · bring together to shrink",
+        "close BOTH hands into fists to grab the selection",
+        "spread hands apart to grow · together to shrink",
+        "open either hand to latch · re-close to keep scaling",
     ],
     [MenuId.ROTATE]: [
         "right pinch near the object to grab it",
-        "twist to rotate · release to latch",
+        "twist your hand to rotate the selection",
+        "release the pinch to latch it in place",
     ],
     [MenuId.MORPH]: [
-        "both hands curl around the object",
-        "orbit them in a circle to morph sphere → torus",
-        "unwind the circle to reverse it",
+        "make a fist with BOTH hands around the object",
+        "jiggle or shake — any direction advances the morph",
+        "release to pause · progress is kept, never reverses",
     ],
     [MenuId.DECORATE]: [
-        "speak to DAEDALUS to decorate (voice + AI chat)",
-        "fires icing + sprinkles, streams a spoken reply",
+        "right open palm (or point) smears icing under your fingertip",
+        "right pinch drops rainbow sprinkles on the icing",
+        "or just speak — DAEDALUS ices, sprinkles, and replies",
     ],
     [MenuId.INTERACT]: [
-        "combine the selected shape with the next one",
-        "swipe to pick union · subtract · intersect (live preview)",
-        "pinch to apply — the two become one shape",
+        "combines the two selected shapes into one",
+        "right pinch cycles union · subtract · intersect (live preview)",
+        "left pinch applies — the two become one shape",
     ],
     [MenuId.DESTROY]: [
-        "pinch to delete the currently selected shape",
-        "the next shape (if any) becomes selected",
+        "right pinch deletes every selected shape at once",
+        "needs a shape selected — pick them in SELECT first",
+        "nothing stays selected afterward",
     ],
 };
 
 // The bilateral view-mode toggle (§0.7) and the voice channel (§8). These sit outside
 // the per-tool list because they are always available regardless of the active menu.
 const SYSTEM_GESTURES: ReferenceRow[] = [
-    { gesture: "Both palms open, sweep apart (“parting curtains”)", action: "toggle Scene ↔ AR view" },
-    { gesture: "Speak while DECORATE is active", action: "talk to DAEDALUS AI" },
+    { gesture: "Both palms open near center, sweep apart", action: "toggle Scene ↔ AR view" },
+    { gesture: "Speak while DECORATE is active", action: "talk to DAEDALUS (also decorates)" },
 ];
 
 const ROW_DIM = "rgba(255,255,255,0.55)";
@@ -159,11 +165,11 @@ export class InstructionsPopout {
         title.textContent = "✦ GESTURE GUIDE";
         frag.appendChild(title);
 
-        frag.appendChild(this.buildRowSection("Navigation · left hand", NAV_GESTURES));
+        frag.appendChild(this.buildRowSection("Navigation · menu wheel", NAV_GESTURES));
 
         const toolsHead = document.createElement("h3");
         toolsHead.className = "daedalus-instr-head";
-        toolsHead.textContent = "Tools · right hand executes";
+        toolsHead.textContent = "Tools · per-tool gestures";
         frag.appendChild(toolsHead);
         for (const id of MENU_ORDER) {
             frag.appendChild(this.buildToolBlock(id));
