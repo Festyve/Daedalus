@@ -55,7 +55,7 @@ function patchPrototypes(): void {
  * tint (core/shapes.ts) still MULTIPLY through onto the albedo.
  */
 export function makeMatcapMaterial(): THREE.MeshStandardMaterial {
-    return new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15),
         vertexColors: true,
         metalness: 0.25,
@@ -63,6 +63,22 @@ export function makeMatcapMaterial(): THREE.MeshStandardMaterial {
         emissive: new THREE.Color(T.cyan),
         emissiveIntensity: 0.06,
     });
+    // Icing glow (§8.3 / DECORATE). vertexColors MULTIPLY the cyan body, so jam-red ×
+    // cyan collapses to a dull near-grey/green patch — the painted icing is invisible.
+    // Add the icing's own CHROMA (its colour above its grey floor, which is exactly zero
+    // on the untouched white base) as emissive, so decoration self-glows in its true hue
+    // (red jam, etc.) on top of the body colour instead of being multiplied away.
+    mat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+            "#include <emissivemap_fragment>",
+            `#include <emissivemap_fragment>
+            #ifdef USE_COLOR
+                float icingFloor = min(min(vColor.r, vColor.g), vColor.b);
+                totalEmissiveRadiance += (vColor.rgb - vec3(icingFloor)) * 6.0;
+            #endif`,
+        );
+    };
+    return mat;
 }
 
 // Allocate the reused scratch-math pool once (§6.2, §11): zero per-frame
@@ -282,4 +298,23 @@ export function setTorusMorph(ctx: SceneContext, t: number, influence: number): 
         const infl = mesh.morphTargetInfluences;
         if (infl && infl.length > 0) infl[0] = influence;
     }
+}
+
+/**
+ * Repoint ctx.bvh at the PRIMARY mesh's bounds tree, rebuilding it if missing. MORPH's
+ * exit() disposes its sculpt engine, which NULLS the geometry's boundsTree and ctx.bvh;
+ * the torus swap also moves the active geometry. Tools that raycast/paint against ctx.bvh
+ * (DECORATE icing, §8.3) call this so they work on the current shape — donut included —
+ * regardless of what the previous tool left behind.
+ */
+export function ensureBVH(ctx: SceneContext): void {
+    const mesh = ctx.mesh;
+    if (!mesh) {
+        ctx.bvh = null;
+        return;
+    }
+    patchPrototypes();
+    const geo = mesh.geometry as unknown as { boundsTree?: MeshBVH | null; computeBoundsTree: typeof computeBoundsTree };
+    if (!geo.boundsTree) geo.computeBoundsTree();
+    ctx.bvh = geo.boundsTree ?? null;
 }

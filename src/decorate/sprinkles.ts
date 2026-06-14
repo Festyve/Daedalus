@@ -32,9 +32,6 @@ const OVERSAMPLE = 4;
 // Min spacing between accepted sprinkles, as a multiple of the design length.
 // Keeps capsules from visually overlapping without leaving big gaps.
 const SPACING_FACTOR = 1.15;
-// Below this total iced weight the surface is effectively bare — drop nothing so
-// sprinkles never land on unfrosted steel.
-const MASK_EPSILON = 1e-4;
 // Scale-in pop: instances grow 0 → 1 over this many seconds with a confetti
 // burst (overshoot past 1, settle back) so each drop reads as a celebratory pop.
 const SCALE_IN_SECONDS = 0.28;
@@ -188,11 +185,7 @@ export class Sprinkles {
         const targetAttr = geo.morphAttributes.position?.[0] as THREE.BufferAttribute | undefined;
         const t = mesh.morphTargetInfluences?.[0] ?? 0;
         const vertCount = basePos.count;
-
-        // Reject an all-bare mask: no iced surface ⇒ no sprinkles.
-        let maskSum = 0;
-        for (let v = 0; v < vertCount && v < mask.length; v++) maskSum += mask[v];
-        if (maskSum <= MASK_EPSILON) return null;
+        if (vertCount === 0) return null;
 
         // Resolved positions: base + t·(target − base). Falls back to base when no
         // morph target is present.
@@ -204,11 +197,13 @@ export class Sprinkles {
             resolved[i] = targetArr ? b + t * (targetArr[i] - b) : b;
         }
 
-        // Weight attribute: the sampler reads only `.x` per vertex, so a 1-item
-        // attribute carries the iced weight directly. Copy (don't alias) the mask
-        // so later icing edits can't desync the built distribution.
+        // Weight attribute (the sampler reads only `.x` per vertex). A uniform base of 1
+        // spreads sprinkles across the WHOLE surface — not just the jammed top crown — so
+        // they cover every part of the donut; the icing mask adds a gentle bias so the
+        // glazed region reads a touch denser. Copy (don't alias) so later icing edits can't
+        // desync the built distribution.
         const weights = new Float32Array(vertCount);
-        for (let v = 0; v < vertCount; v++) weights[v] = v < mask.length ? mask[v] : 0;
+        for (let v = 0; v < vertCount; v++) weights[v] = 1 + (v < mask.length ? mask[v] : 0);
 
         const sampleGeo = new THREE.BufferGeometry();
         sampleGeo.setAttribute("position", new THREE.BufferAttribute(resolved, 3));
