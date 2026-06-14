@@ -114,21 +114,7 @@ export function createInteractMenu(): MenuModule {
             // primary-minus-the-rest, INTERSECT keeps the shared overlap.
             acc = brushOf(operands[0]);
             for (let i = 1; i < operands.length; i++) {
-                const other = brushOf(operands[i]);
-                const evalForOp = new Evaluator();
-                evalForOp.useGroups = false;
-                evalForOp.attributes = ["position", "normal"];
-                acc = evalForOp.evaluate(acc, other, op);
-                if (!acc.geometry.attributes.position) {
-                    console.warn(`[${opLabel}] No position attribute after evaluate step ${i}`);
-                    return null;
-                }
-                const posCount = (acc.geometry.attributes.position as THREE.BufferAttribute).count;
-                console.log(`[${opLabel}] After step ${i}: position count = ${posCount}`);
-                if (posCount === 0) {
-                    console.warn(`[${opLabel}] Empty geometry after step ${i}`);
-                    return null;
-                }
+                acc = evaluator.evaluate(acc, brushOf(operands[i]), op);
             }
         } catch (err) {
             console.error(`[${opLabel}] Exception in CSG operation:`, err);
