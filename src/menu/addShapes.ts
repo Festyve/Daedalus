@@ -58,6 +58,9 @@ const PINCH_ON = 0.7;
 // so that carried-over fist can't immediately spawn a shape.
 const PINCH_OPEN = 0.4;
 
+// Frames the right hand must squeeze before spawning. Makes shape placement deliberate.
+const SPAWN_CONFIRM_FRAMES = 12;
+
 // Spawn scale-in: a freshly spawned shape grows 0→1 so it "arrives" rather than popping in
 // (§14.4). Fast (220ms) with a restrained ease-out-back settle.
 const SPAWN_MS = 220;
@@ -99,6 +102,7 @@ export function createAddShapesMenu(): MenuModule {
     let carousel: Carousel | null = null;
     let has_prev = false;         // whether prev_landmarks holds a valid previous frame
     let spawn_armed = false;      // false until the spawn (left) hand has opened once since enter()
+    let spawn_squeeze_frames = 0; // frames right hand has been squeezing to spawn
 
     // Spawn scale-in animation state.
     let spawn_mesh: THREE.Mesh | null = null;
@@ -184,7 +188,7 @@ export function createAddShapesMenu(): MenuModule {
             carousel.open(FAR_TIP);
 
             // No carousel.onSelect: selecting must NOT close the wheel. Spawning is handled directly
-            // in update() (left squeeze), so the shape wheel stays open and you can add several
+            // in update() (right squeeze), so the shape wheel stays open and you can add several
             // shapes in a row — it only closes when you leave ADD SHAPES.
             spawnHand = null;
             has_prev = false;
@@ -192,6 +196,7 @@ export function createAddShapesMenu(): MenuModule {
             wasSpawn = false;
             spawn_mesh = null;
             spawn_t = 0;
+            spawn_squeeze_frames = 0;
         },
 
         update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
@@ -208,20 +213,27 @@ export function createAddShapesMenu(): MenuModule {
             const navG = nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE;
             if (!spawn_armed && navG.pinch < PINCH_OPEN) spawn_armed = true;
 
-            // Left squeeze (armed, rising edge) → spawn the centered shape at the left fingertip,
+            // Right squeeze (armed, confirmed) → spawn the centered shape at the right fingertip,
             // handled HERE rather than via the carousel's select channel, so the wheel stays open.
+            // Requires SPAWN_CONFIRM_FRAMES of sustained squeeze to prevent accidental spawns.
             // 1000 ms cooldown per shape kind prevents palm oscillation from flooding spawns.
             const current_kind = carousel.current as ShapeKind;
             const spawning = spawn_armed && navG.pinch > PINCH_ON;
+            if (spawning) {
+                spawn_squeeze_frames++;
+            } else {
+                spawn_squeeze_frames = 0;
+            }
             const now = performance.now();
             const on_cooldown = now - (last_spawn_ms[current_kind] ?? 0) < SPAWN_COOLDOWN_MS;
-            if (spawning && !wasSpawn && spawnHand && !on_cooldown) {
+            if (spawn_squeeze_frames === SPAWN_CONFIRM_FRAMES && spawnHand && !on_cooldown) {
                 fingertipToWorld(
                     spawnHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
                     ctx.scratch.ray, ctx.scratch.plane, spawn_world,
                 );
                 spawnShape(current_kind, ctx, spawn_world);
                 last_spawn_ms[current_kind] = now;
+                spawn_squeeze_frames = 0;  // reset after spawning
             }
             wasSpawn = spawning;
 

@@ -16,30 +16,39 @@ export type GunAction = "carousel" | "wireframe" | null;
 // Frames a lone right gun is held before it commits to "carousel". Must comfortably exceed the
 // frame gap between the two hands' debounced gun commits when both are raised together, so a
 // genuine both-gun is never misread as a carousel toggle. The 5-frame gesture debounce
-// (detect.ts) means hands raised together commit within ~1-2 frames; 6 leaves margin.
-const CONFIRM_FRAMES = 6;
+// (detect.ts) means hands raised together commit within ~1-2 frames; 12 provides more margin.
+const CONFIRM_FRAMES = 12;
 
 export class GunArbiter {
     private execHeld = false;   // right gun committed on the previous frame (rising-edge detect)
     private bothHeld = false;   // both-gun latched — held true until at least one gun releases
     private pending = 0;        // frames left before a lone right gun fires "carousel"
     private armed = false;      // a lone-right confirmation countdown is in flight
+    private bothPending = 0;    // frames left before both-gun fires "wireframe"
+    private bothArmed = false;  // a both-gun confirmation countdown is in flight
 
     /** Advance one frame with this frame's committed gun booleans; returns the action to fire. */
     step(execGun: boolean, navGun: boolean): GunAction {
         // Both guns: the dominant gesture. Fire "wireframe" once per episode (rising edge of
-        // both-held) and cancel any pending carousel so the shared right gun can't double-act.
+        // both-held), after a confirmation window to prevent accidental triggers.
         if (execGun && navGun) {
             this.armed = false;
             this.pending = 0;
             this.execHeld = true;
             if (!this.bothHeld) {
                 this.bothHeld = true;
+                this.bothArmed = true;
+                this.bothPending = CONFIRM_FRAMES;
+            }
+            if (this.bothArmed && --this.bothPending <= 0) {
+                this.bothArmed = false;
                 return "wireframe";
             }
             return null;
         }
         this.bothHeld = false;
+        this.bothArmed = false;
+        this.bothPending = 0;
 
         // Right gun alone: start the confirmation countdown on its rising edge, then commit to
         // "carousel" if the left hand never joins before the window closes.
