@@ -39,9 +39,9 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
         "each spawn adds a new shape (the others stay)",
     ],
     [MenuId.SELECT]: [
-        "swipe left/right to cycle which shape is selected",
-        "the selected shape glows; the others dim",
-        "every edit tool then acts on the selected shape",
+        "right fist moves the cursor between shapes",
+        "left fist adds / removes the cursor's shape",
+        "left pinch marks it a red hole (cutter for INTERACT)",
     ],
     [MenuId.TRANSLATE]: [
         "right open palm — object follows your hand",
@@ -65,9 +65,10 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
         "fires icing + sprinkles, streams a spoken reply",
     ],
     [MenuId.INTERACT]: [
-        "combine the selected shape with the next one",
-        "swipe to pick union · subtract · intersect (live preview)",
-        "pinch to apply — the two become one shape",
+        "combine all the selected shapes (live preview)",
+        "right pinch cycles union · subtract · intersect",
+        "UNION fuses the shapes and carves red holes out",
+        "left pinch to apply — they become one shape",
     ],
     [MenuId.DESTROY]: [
         "pinch to delete the currently selected shape",
