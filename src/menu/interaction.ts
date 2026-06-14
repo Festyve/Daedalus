@@ -110,9 +110,7 @@ export function createInteractMenu(): MenuModule {
         // Fold the operands primary-first under the chosen op: UNION fuses, SUBTRACT does
         // primary-minus-the-rest, INTERSECT keeps the shared overlap.
         let acc: Brush = brushOf(operands[0]);
-        for (let i = 1; i < operands.length; i++) {
-            acc = evaluator.evaluate(acc, brushOf(operands[i]), op) as Brush;
-        }
+        for (let i = 1; i < operands.length; i++) acc = evaluator.evaluate(acc, brushOf(operands[i]), op);
 
         const rp = acc.geometry.attributes.position as THREE.BufferAttribute | undefined;
         if (!rp || rp.count === 0) return null;
