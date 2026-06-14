@@ -147,7 +147,7 @@ function makeCtx(shapes: number): { ctx: SceneContext; meshes: THREE.Mesh[] } {
     const ctx: SceneContext = {
         scene: new THREE.Scene(), camera, renderer: null as any,
         mesh: null, bvh: null, extraMeshes: [...meshes], selected: [], focusIndex: 0,
-        morphT: 0, stage: "EMPTY", viewMode: "scene", activeMenu: null,
+        morphT: 0, stage: "EMPTY", viewMode: "scene", wireframe: false, activeMenu: null,
         scratch: makeScratch(), interactionPlaneZ: 0,
     };
     return { ctx, meshes };

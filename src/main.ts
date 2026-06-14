@@ -47,8 +47,9 @@ import { createInteractMenu } from "./menu/interaction";
 import { createDestroyMenu } from "./menu/destroy";
 
 import { classify, GestureDebouncer } from "./gesture/detect";
+import { GunArbiter } from "./gesture/gunArbiter";
 import { handScale } from "./gesture/predicates";
-import { selectedCount } from "./core/shapes";
+import { selectedCount, setWireframe } from "./core/shapes";
 import { eligibleTools } from "./render/tokens";
 
 import { Chrome } from "./ui/chrome";
@@ -181,49 +182,37 @@ async function initInput(): Promise<void> {
 const navTipWorld = new THREE.Vector3();
 const navTipLocal = new THREE.Vector3();
 const execGate = new GestureDebouncer();  // debounce exec-hand discrete poses
+const navGate = new GestureDebouncer();   // debounce nav-hand discrete poses (for the both-gun toggle)
 let execPrevLm: HandPose["landmarks"] | null = null; // prev exec landmarks for gesture classify
 let execGestureName = "none";              // last committed exec gesture (for the dev overlay)
-let gunWasActive = false;                  // rising-edge tracker for gun toggle
+// Disambiguates the shared finger-gun pose: right gun alone -> carousel; both guns -> wireframe.
+const gunArbiter = new GunArbiter();
 
 function driveCarousel(exec: HandPose | null, nav: HandPose | null, dtSeconds: number): void {
     const NONE_GESTURE = { name: "none" as const, extended: 0, pinch: 0, spread: 0, vx: 0 };
 
-    // Classify right-hand (exec) gesture for toggle.
+    // Classify right-hand (exec) gesture; track whether a gun is committed this frame.
     let execG: GestureState = NONE_GESTURE;
+    let execGunCommitted = false;
     if (exec) {
         execG = classify(exec.landmarks, exec.world, execPrevLm);
         execPrevLm = exec.landmarks;
         const committed = execGate.push(execG.name);
         execGestureName = committed;
-
-        // Right-hand gun toggles on rising edge only (new gun pose, not held).
-        const gunNow = committed === "gun";
-        if (gunNow && !gunWasActive) {
-            if (router.activeId !== null) {
-                // In a sub-menu: gun returns to main menu
-                router.select(ctx, null);
-                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
-                sfx.hum();
-            } else if (carousel.isOpen) {
-                // Main carousel is open: gun closes it
-                carousel.close();
-            } else {
-                // No menu showing: gun opens main carousel
-                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
-                sfx.hum();
-            }
-        }
-        gunWasActive = gunNow;
+        execGunCommitted = committed === "gun";
     } else {
         execGestureName = "none";
         execPrevLm = null;
-        gunWasActive = false;
+        execGate.push("none");
     }
 
-    // Left-hand (nav) gesture is used for aiming the carousel glow.
-    // (Selection/advance are now driven by right hand through carousel.update())
+    // Left-hand (nav) gesture aims the carousel glow AND, when it too is a gun, forms the
+    // both-hands gun that toggles wireframe.
+    let navG: GestureState = NONE_GESTURE;
+    let navGunCommitted = false;
     if (nav) {
-        const navG = classify(nav.landmarks, nav.world, null);
+        navG = classify(nav.landmarks, nav.world, null);
+        navGunCommitted = navGate.push(navG.name) === "gun";
         // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
         fingertipToWorld(
             nav.landmarks[INDEX_TIP],
@@ -234,10 +223,34 @@ function driveCarousel(exec: HandPose | null, nav: HandPose | null, dtSeconds: n
             navTipWorld,
         );
         ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
+    } else {
+        navGate.push("none");
+    }
+
+    // Arbitrate the shared finger-gun pose: right gun alone toggles the carousel (as before);
+    // BOTH hands gunning toggles solid/shaded <-> wireframe for every shape the user has made.
+    const gunAction = gunArbiter.step(execGunCommitted, navGunCommitted);
+    if (gunAction === "carousel") {
+        if (router.activeId !== null) {
+            // In a sub-menu: gun returns to main menu
+            router.select(ctx, null);
+            carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+            sfx.hum();
+        } else if (carousel.isOpen) {
+            // Main carousel is open: gun closes it
+            carousel.close();
+        } else {
+            // No menu showing: gun opens main carousel
+            carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+            sfx.hum();
+        }
+    } else if (gunAction === "wireframe") {
+        setWireframe(ctx, !ctx.wireframe);
+        sfx.ding();
     }
 
     // Drive carousel with right-hand (advance) and left-hand (select) gestures.
-    carousel.update(navTipLocal, execG, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSeconds);
+    carousel.update(navTipLocal, execG, navG, dtSeconds);
 }
 
 // ---- role assignment (§3.2; ?singlehand collapses both roles onto one hand) -
@@ -414,6 +427,7 @@ interface DaedalusDebug {
     injectPose(frame: PoseFrame | null): void;
     clearPose(): void;
     toggleView(): void;
+    toggleWire(): void;
     advance(): void;
     handScaleOf(pose: HandPose): number;
     MenuId: typeof MenuId;
@@ -432,6 +446,7 @@ const debug: DaedalusDebug = {
     injectPose(frame) { injected = frame; },
     clearPose() { injected = null; },
     toggleView() { viewMode.toggle(); },
+    toggleWire() { setWireframe(ctx, !ctx.wireframe); },
     advance() { director.advanceSafety(); },
     handScaleOf(pose) { return handScale(pose.world); },
     MenuId,
