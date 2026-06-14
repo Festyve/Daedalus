@@ -22,13 +22,13 @@
 // guarded; the Sprinkles controller (which parents to ctx.mesh) is built lazily the
 // first time a mesh exists and rebuilt if the mesh identity changes.
 import * as THREE from "three";
-import type { MenuModule, SceneContext, HandPose } from "../types";
+import type { MenuModule, SceneContext, HandPose, IcingDesign } from "../types";
 import { MenuId } from "../types";
 import { T, FONT } from "../render/tokens";
 import { classify } from "../gesture/detect";
 import { fingertipToWorld } from "../math/coords";
-import { makeVoiceAdapter, SpeechInput } from "./voice";
-import { applyIcing, icingMask } from "./icing";
+import { makeVoiceAdapter, SpeechInput, scriptReply } from "./voice";
+import { applyIcing, icingMask, resetIcing } from "./icing";
 import { Sprinkles } from "./sprinkles";
 import { ensureBVH } from "../render/scene";
 import { ICING, SPRINKLES } from "./designs";
@@ -94,8 +94,8 @@ const PINCH_OFF = 0.5;
 // MediaPipe index-fingertip landmark.
 const INDEX_TIP = 8;
 
-// Hardcoded decoration designs (§8.1, §8.2): JAM icing + rainbow sprinkles.
-const VOICE_ICING = ICING.jam;
+// Decoration designs (§8.1, §8.2). The icing flavour/colour is chosen per spoken word (pickIcing);
+// these are the sprinkle + hand-smear defaults.
 const VOICE_SPRINKLES = SPRINKLES.rainbow;
 const SMEAR_ICING = ICING.jam;
 const DROP_SPRINKLES = SPRINKLES.rainbow;
@@ -358,15 +358,32 @@ export function createDecorateMenu(): MenuModule {
     // Fire the hardcoded decoration on the real mesh (§8.1 step 3): flood JAM icing
     // across the crown, then scatter rainbow sprinkles on the iced region. Deterministic
     // and reliable; never blocked on the AI reply. No-op while the world is empty.
-    function fireDecoration(ctx: SceneContext): void {
+    function fireDecoration(ctx: SceneContext, icing: IcingDesign): void {
         if (!ctx.mesh || !ctx.bvh) return;
         ctx.mesh.updateWorldMatrix(true, false);
         ctx.mesh.getWorldPosition(ctx.scratch.v1);
-        // Flood the crown: paint at the mesh center so the height-mask gate (§8.3) lets
-        // icing stick across the whole top with a noisy drip boundary below the line.
-        applyIcing(ctx.mesh, ctx.bvh, ctx.scratch.v1, 4.0, VOICE_ICING);
-        // Drop sprinkles on the freshly-iced region (mask weights the surface sampler).
-        if (sprinkles) sprinkles.dropBatch(ctx.mesh, icingMask(ctx.mesh), VOICE_SPRINKLES, VOICE_SPRINKLE_COUNT);
+        // Reset first so a NEW flavour replaces the old colour (icing only ever raises the mask, so
+        // re-painting an already-iced crown with a different colour would otherwise do nothing).
+        resetIcing(ctx.mesh);
+        // Flood the crown: paint at the mesh center so the height-mask gate (§8.3) lets icing stick
+        // across the whole top with a noisy drip boundary below the line.
+        applyIcing(ctx.mesh, ctx.bvh, ctx.scratch.v1, 4.0, icing);
+        // Fresh sprinkles each time so a re-flavour reads clean rather than piling up.
+        if (sprinkles) {
+            sprinkles.clear();
+            sprinkles.dropBatch(ctx.mesh, icingMask(ctx.mesh), VOICE_SPRINKLES, VOICE_SPRINKLE_COUNT);
+        }
+    }
+
+    // Map a spoken transcript to an icing flavour by keyword; defaults to strawberry/pink.
+    function pickIcing(transcript: string): IcingDesign {
+        const t = transcript.toLowerCase();
+        if (/choc|fudge|brown|cocoa/.test(t)) return ICING.chocolate;
+        if (/blue\s?berry|blue/.test(t)) return ICING.blueberry;
+        if (/lemon|yellow|citrus/.test(t)) return ICING.lemon;
+        if (/matcha|mint|green|lime/.test(t)) return ICING.matcha;
+        if (/grape|purple|violet/.test(t)) return ICING.grape;
+        return ICING.jam; // jam / strawberry / pink / berry / anything else
     }
 
     // Handle a finalized voice transcript (§8.1): show it, fire the decoration NOW,
@@ -374,10 +391,10 @@ export function createDecorateMenu(): MenuModule {
     function onTranscript(ctx: SceneContext, transcript: string): void {
         if (!chat) return;
         chat.addUser(transcript);
-        fireDecoration(ctx);
+        fireDecoration(ctx, pickIcing(transcript));
 
         chat.beginAI();
-        voice.speak(transcriptReply(transcript));
+        voice.speak(scriptReply(transcript));
         void voice.respond(transcript, (chunk) => {
             chat?.appendAI(chunk);
         }).then(() => {
@@ -401,8 +418,9 @@ export function createDecorateMenu(): MenuModule {
         // active shape so icing/sprinkles work on the donut, not just the freshly-spawned sphere.
         ensureBVH(ctx);
 
-        // Start listening; onTranscript fires the decoration + scripted reply. The
-        // adapter degrades to no-ops when the browser lacks SpeechRecognition (§8.1).
+        // Decorate ONLY in response to a spoken flavour — nothing happens on open. onTranscript
+        // applies the flavour's icing + sprinkles + a matching reply. The adapter degrades to
+        // no-ops when the browser lacks SpeechRecognition (§8.1).
         speech = new SpeechInput((t) => onTranscript(ctx, t));
         speech.start();
     }
@@ -484,27 +502,5 @@ export function createDecorateMenu(): MenuModule {
     };
 }
 
-// Local mirror of the scripted-reply selection so TTS speaks the SAME line the chat
-// streams. The VoiceAdapter.respond() stream is the source of the on-screen text; this
-// keeps speak() in lockstep without exposing the adapter's internal reply table.
-function transcriptReply(transcript: string): string {
-    const hay = transcript.toLowerCase();
-    for (const rule of REPLY_RULES) {
-        if (rule.keywords.some((k) => hay.includes(k))) return rule.reply;
-    }
-    return DEFAULT_REPLY;
-}
-
-interface ReplyRule {
-    keywords: string[];
-    reply: string;
-}
-const REPLY_RULES: ReplyRule[] = [
-    { keywords: ["rainbow", "sprinkle"], reply: "On it — rainbow sprinkles and a glossy jam glaze, coming right up." },
-    { keywords: ["jam", "icing", "glaze", "frost"], reply: "Applying a rich jam icing across the top. Looking delicious already." },
-    { keywords: ["galaxy", "cosmic", "space", "star"], reply: "Cosmic mode: deep glaze and a scatter of star-bright sprinkles." },
-    { keywords: ["healthy", "diet", "sugar-free", "calorie"], reply: "I'm a torus decorator, not a miracle worker — adding extra sprinkles instead." },
-    { keywords: ["clear", "reset", "remove", "plain"], reply: "Wiping it back to a clean canvas. Ready when you are." },
-    { keywords: ["thank", "thanks", "nice", "love", "great"], reply: "My pleasure. This torus turned out beautifully." },
-];
-const DEFAULT_REPLY = "Decorating now — jam icing and a burst of rainbow sprinkles.";
+// (Reply selection now lives in voice.ts — imported as scriptReply — so TTS and the streamed chat
+// text can't drift, and a new flavour only has to be authored in one place.)
