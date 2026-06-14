@@ -33,6 +33,10 @@ import { makeContext } from "./render/scene";
 import { makeComposer, SCENE_BLOOM_STRENGTH } from "./render/post";
 import { drawSkeletons } from "./render/overlay";
 import { ViewModeController } from "./render/viewMode";
+import { CameraRig } from "./render/cameraRig";
+import { makeAxisTriad } from "./render/axisTriad";
+import { MiniView } from "./render/miniView";
+import { asMenuLayer } from "./render/layers";
 
 import { Carousel } from "./menu/carousel";
 import { MenuRouter } from "./menu/menuRouter";
@@ -45,6 +49,7 @@ import { createMorphMenu } from "./menu/morph";
 import { createDecorateMenu } from "./decorate/chatPanel";
 import { createInteractMenu } from "./menu/interaction";
 import { createDestroyMenu } from "./menu/destroy";
+import { OrbitController } from "./menu/orbit";
 
 import { classify, GestureDebouncer } from "./gesture/detect";
 import { handScale } from "./gesture/predicates";
@@ -107,6 +112,20 @@ carousel.onSelect = (id) => {
     sfx.ping();
     router.select(ctx, id as MenuId);
 };
+
+// ---- Camera Orbit Mode (Part 1) -------------------------------------------
+// The rig owns the camera as spherical orbit state (replacing scene.ts's old idle-parallax
+// rAF) and is driven from the master loop below. In the idle state (no active tool, carousel
+// closed) both hands in a grab pose engage OrbitController, which orbits the rig. A scene-
+// center axis gizmo (Layer 1, above the mesh) and a top-right orientation mini-viewport fade
+// in while orbiting.
+const rig = new CameraRig(ctx.camera);
+const orbit = new OrbitController();
+const orbitGizmo = makeAxisTriad(2.0, 0.02);
+asMenuLayer(orbitGizmo.group);
+ctx.scene.add(orbitGizmo.group);
+const miniView = new MiniView();
+let orbit_visual = 0; // eased 0..1 visibility shared by the gizmo + mini-view (~120ms ramp)
 
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
 const { composer, setBloom } = makeComposer(ctx.renderer, ctx.scene, ctx.camera);
@@ -307,12 +326,26 @@ startLoop((dtMs) => {
     viewMode.detectPartingCurtains(frame.Left, frame.Right, dtMs);
     viewMode.update(dtMs);
 
+    // 2.5) Camera Orbit Mode: in the idle state (no active tool, carousel closed) both hands
+    //      in a grab pose orbit the camera. Driven from the true Left/Right hands (bilateral),
+    //      cancelled the instant a tool or the carousel takes over. The eased visibility drives
+    //      the scene-center gizmo (here) and the mini-viewport (render section).
+    const idle = router.activeId === null && !carousel.isOpen;
+    if (idle) orbit.update(frame.Left, frame.Right, rig, dtMs);
+    else orbit.reset();
+    orbit_visual += ((orbit.active ? 1 : 0) - orbit_visual) * Math.min(1, dtMs / 120);
+    orbitGizmo.setOpacity(orbit_visual);
+
     // 3) Exec hand drives carousel toggle/advance; nav hand aims glow; active menu driven by router.
     driveCarousel(exec, nav, dtSeconds);
     router.update(ctx, exec, nav, dtMs);
 
     // 4) Director milestones from observable ctx, then sync the displayed stage.
     syncDirector();
+
+    // 4.5) Apply the camera rig (orbit state + idle breath) before any render pass reads the
+    //      camera. This is the single place the camera transform is written each frame (§2).
+    rig.update(dtMs);
 
     // 5) Render: the MAIN view (camera feed + composited objects, NEVER css3d), then a
     //    bottom-right black-scene preview (the same objects on #000814, camera bg hidden),
@@ -343,6 +376,12 @@ startLoop((dtMs) => {
     r.render(ctx.scene, ctx.camera);
     r.setScissorTest(false);
     r.setViewport(0, 0, W, H);
+
+    // Top-right orientation mini-viewport (Camera Orbit Mode): a scissored pass showing the
+    // axis triad at the live view angle. Only drawn while the orbit UI is visible, fading with
+    // the scene-center gizmo. Self-contained (restores scissor + full viewport internally).
+    if (orbit_visual > 0.02) miniView.render(r, ctx.camera, orbit_visual);
+
     // Restore the MAIN-view clear for the next frame's composer.render(): transparent in AR
     // (so the #camera video shows through), opaque #000814 in scene mode. The preview pass
     // above left an opaque clear colour set, so this MUST run every frame.
@@ -409,6 +448,8 @@ interface DaedalusDebug {
     router: MenuRouter;
     carousel: Carousel;
     viewMode: ViewModeController;
+    rig: CameraRig;
+    orbit: OrbitController;
     selectMenu(id: keyof typeof MenuId | string | null): void;
     setMorphT(t: number): void;
     injectPose(frame: PoseFrame | null): void;
@@ -425,6 +466,8 @@ const debug: DaedalusDebug = {
     router,
     carousel,
     viewMode,
+    rig,
+    orbit,
     selectMenu(id) {
         selectByName(id === null ? null : String(id));
     },

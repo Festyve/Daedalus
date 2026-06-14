@@ -37,6 +37,12 @@ export class MenuRouter {
     // - An unknown id (not registered) is treated like null: exit current, leave none
     //   active, rather than throwing — a stray selection must never crash the frame loop.
     select(ctx: SceneContext, id: MenuId | null): void {
+        if (id !== null) {
+            const now = performance.now();
+            if (id === this.lastId && now - this.lastIdMs < COMMAND_COOLDOWN_MS) return;
+            this.lastId = id;
+            this.lastIdMs = now;
+        }
         const next = id === null ? null : this.registry[id] ?? null;
         if (next === this.active) {
             // Already on the requested tool (or already idle for an unknown/null id):
