@@ -59,7 +59,7 @@ import { sfx } from "./audio/sfx";
 
 import { fingertipToWorld } from "./math/coords";
 import { MenuId, MENU_ORDER } from "./types";
-import type { Handedness, HandPose, InputSource, PoseFrame, SceneContext } from "./types";
+import type { Handedness, HandPose, InputSource, PoseFrame, SceneContext, GestureState } from "./types";
 
 // MediaPipe index of the navigation index fingertip (carousel aim, §4.1, §12).
 const INDEX_TIP = 8;
@@ -176,53 +176,68 @@ async function initInput(): Promise<void> {
     }
 }
 
-// ---- carousel navigation (nav / Left hand) ---------------------------------
+// ---- carousel navigation (both hands) ---------------------------------
 // Reused scratch — zero per-frame allocation in the carousel-drive path.
 const navTipWorld = new THREE.Vector3();
 const navTipLocal = new THREE.Vector3();
-const navGate = new GestureDebouncer();   // debounce nav-hand discrete poses (§12)
-let navPrevLm: HandPose["landmarks"] | null = null; // prev nav landmarks for flick vx
-let navGestureName = "none";              // last committed nav gesture (for the dev overlay)
+const execGate = new GestureDebouncer();  // debounce exec-hand discrete poses
+let execPrevLm: HandPose["landmarks"] | null = null; // prev exec landmarks for gesture classify
+let execGestureName = "none";              // last committed exec gesture (for the dev overlay)
+let gunWasActive = false;                  // rising-edge tracker for gun toggle
 
-function driveCarousel(nav: HandPose | null, dtSeconds: number): void {
-    if (!nav) {
-        navPrevLm = null;
-        navGestureName = "none";
-        // Still advance the carousel's own animation (fade/close) with a null gesture.
-        carousel.update(navTipLocal, { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 }, dtSeconds);
-        return;
+function driveCarousel(exec: HandPose | null, nav: HandPose | null, dtSeconds: number): void {
+    const NONE_GESTURE = { name: "none" as const, extended: 0, pinch: 0, spread: 0, vx: 0 };
+
+    // Classify right-hand (exec) gesture for toggle.
+    let execG: GestureState = NONE_GESTURE;
+    if (exec) {
+        execG = classify(exec.landmarks, exec.world, execPrevLm);
+        execPrevLm = exec.landmarks;
+        const committed = execGate.push(execG.name);
+        execGestureName = committed;
+
+        // Right-hand gun toggles on rising edge only (new gun pose, not held).
+        const gunNow = committed === "gun";
+        if (gunNow && !gunWasActive) {
+            if (router.activeId !== null) {
+                // In a sub-menu: gun returns to main menu
+                router.select(ctx, null);
+                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+                sfx.hum();
+            } else if (carousel.isOpen) {
+                // Main carousel is open: gun closes it
+                carousel.close();
+            } else {
+                // No menu showing: gun opens main carousel
+                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+                sfx.hum();
+            }
+        }
+        gunWasActive = gunNow;
+    } else {
+        execGestureName = "none";
+        execPrevLm = null;
+        gunWasActive = false;
     }
 
-    const g = classify(nav.landmarks, nav.world, navPrevLm);
-    navPrevLm = nav.landmarks;
-    const committed = navGate.push(g.name);
-    navGestureName = committed;
-
-    // Finger gun opens the wheel. Opening tears down the active menu/panel (§4.2) so a
-    // panel and the wheel are never on screen together. The wheel shows only the tools that
-    // make sense for the current selection count (0 / 1 / 2+ → different variants, item 6).
-    if (committed === "gun" && !carousel.isOpen) {
-        carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
-        router.select(ctx, null);
-        sfx.hum();
-    }
-    // Fist dismisses the wheel with no selection.
-    if (committed === "fist" && carousel.isOpen) {
-        carousel.close();
+    // Left-hand (nav) gesture is used for aiming the carousel glow.
+    // (Selection/advance are now driven by right hand through carousel.update())
+    if (nav) {
+        const navG = classify(nav.landmarks, nav.world, null);
+        // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
+        fingertipToWorld(
+            nav.landmarks[INDEX_TIP],
+            ctx.camera,
+            ctx.interactionPlaneZ,
+            ctx.scratch.ray,
+            ctx.scratch.plane,
+            navTipWorld,
+        );
+        ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
     }
 
-    // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
-    fingertipToWorld(
-        nav.landmarks[INDEX_TIP],
-        ctx.camera,
-        ctx.interactionPlaneZ,
-        ctx.scratch.ray,
-        ctx.scratch.plane,
-        navTipWorld,
-    );
-    ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
-
-    carousel.update(navTipLocal, g, dtSeconds);
+    // Drive carousel with right-hand (advance) and left-hand (select) gestures.
+    carousel.update(navTipLocal, execG, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSeconds);
 }
 
 // ---- role assignment (§3.2; ?singlehand collapses both roles onto one hand) -
@@ -292,8 +307,8 @@ startLoop((dtMs) => {
     viewMode.detectPartingCurtains(frame.Left, frame.Right, dtMs);
     viewMode.update(dtMs);
 
-    // 3) Nav hand drives the carousel + selection; exec hand drives the active menu.
-    driveCarousel(nav, dtSeconds);
+    // 3) Exec hand drives carousel toggle/advance; nav hand aims glow; active menu driven by router.
+    driveCarousel(exec, nav, dtSeconds);
     router.update(ctx, exec, nav, dtMs);
 
     // 4) Director milestones from observable ctx, then sync the displayed stage.
@@ -341,7 +356,7 @@ startLoop((dtMs) => {
     });
     devOverlay.update({
         frame,
-        gesture: navGestureName,
+        gesture: execGestureName,
         tool: router.activeId,
         morphT: ctx.morphT,
         fps: dtMs > 0 ? 1000 / dtMs : 0,

@@ -51,12 +51,10 @@ export function createInteractMenu(): MenuModule {
     let panel: Panel | null = null;
     let carousel: Carousel | null = null;
     let opIndex = 0;
-    let hasPrev = false;
-    let wasPinched = false;
+    let hasNavPrev = false;
+    let currentExecHand: HandPose | null = null;
 
-    // Sanitized gesture handed to the op carousel: only vx (swipe) is live; pinch/name zeroed so
-    // the wheel never pinch-selects or fist-closes (apply is the exec pinch, handled below).
-    const wheel_gesture: GestureState = { name: "point", extended: 1, pinch: 0, spread: 0, vx: 0 };
+    const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     const FAR_TIP = new THREE.Vector3(10, 10, 0);
 
     // The two operands captured on enter, the live preview mesh, and a status message.
@@ -79,7 +77,7 @@ export function createInteractMenu(): MenuModule {
             prevLandmarks[i].y = lm[i].y;
             prevLandmarks[i].z = lm[i].z;
         }
-        hasPrev = true;
+        hasNavPrev = true;
     }
 
     // Dispose the live preview mesh (its geometry is owned by the preview unless we keep it
@@ -197,9 +195,10 @@ export function createInteractMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
+            panel.setInstructions("<b>RIGHT PINCH</b> change operation &nbsp;·&nbsp; <b>LEFT SQUEEZE</b> apply");
             opIndex = 0;
-            hasPrev = false;
-            wasPinched = false;
+            hasNavPrev = false;
+            currentExecHand = null;
             status = "";
             const sel = selectedShapes(ctx);
             if (sel.length >= 2) {
@@ -211,42 +210,10 @@ export function createInteractMenu(): MenuModule {
                 carousel.object.position.copy(CAROUSEL_POS);
                 ctx.camera.add(carousel.object);
                 carousel.open(FAR_TIP);
-            } else {
-                opA = null;
-                opB = null;
-            }
-            paint(ctx);
-            panel.show();
-        },
 
-        update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
-            if (!panel) return;
-            if (!opA || !opB || !carousel) return; // nothing to combine
-            const dtSec = dt / 1000;
-
-            // Nav swipe spins the op carousel; when the centered op changes, rebuild the preview.
-            if (nav) {
-                const g = classify(nav.landmarks, nav.world, hasPrev ? prevLandmarks : null);
-                wheel_gesture.vx = g.vx;
-                carousel.update(FAR_TIP, wheel_gesture, dtSec);
-                const centered = Number(carousel.current);
-                if (centered !== opIndex) {
-                    opIndex = centered;
-                    rebuildPreview(ctx);
-                    paint(ctx);
-                }
-                snapshot(nav.landmarks);
-            } else {
-                hasPrev = false;
-                wheel_gesture.vx = 0;
-                carousel.update(FAR_TIP, wheel_gesture, dtSec); // keep the fade/idle animation alive
-            }
-
-            // Exec pinch applies the operation: A and B become the single result shape.
-            if (exec) {
-                const pinch = classify(exec.landmarks, exec.world).pinch;
-                const pinchedNow = pinch > PINCH_ON;
-                if (pinchedNow && !wasPinched && preview) {
+                // Wire up selection: left-hand pinch applies the operation.
+                carousel.onSelect = () => {
+                    if (!currentExecHand || !preview || !opA || !opB) return;
                     const geo = clearPreview(true);      // keep the result geometry
                     const a = opA, b = opB;
                     opA = null;
@@ -265,10 +232,41 @@ export function createInteractMenu(): MenuModule {
                         carousel = null;
                     }
                     paint(ctx);
-                }
-                wasPinched = pinchedNow;
+                };
             } else {
-                wasPinched = false;
+                opA = null;
+                opB = null;
+            }
+            paint(ctx);
+            panel.show();
+        },
+
+        update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
+            if (!panel) return;
+            if (!opA || !opB || !carousel) return; // nothing to combine
+            const dtSec = dt / 1000;
+
+            currentExecHand = exec;
+
+            // Right-hand (exec) pinch advances the carousel; when opIndex changes, rebuild preview.
+            const execG = exec ? classify(exec.landmarks, exec.world, null) : NONE_GESTURE;
+
+            // Left-hand (nav) gesture for selection is handled via carousel.onSelect.
+            const navG = nav ? classify(nav.landmarks, nav.world, hasNavPrev ? prevLandmarks : null) : NONE_GESTURE;
+            carousel.update(FAR_TIP, execG, navG, dtSec);
+
+            // Track operation changes when the carousel advances.
+            const centered = Number(carousel.current);
+            if (centered !== opIndex) {
+                opIndex = centered;
+                rebuildPreview(ctx);
+                paint(ctx);
+            }
+
+            if (nav) {
+                snapshot(nav.landmarks);
+            } else {
+                hasNavPrev = false;
             }
         },
 
@@ -284,12 +282,13 @@ export function createInteractMenu(): MenuModule {
                 carousel.dispose();
                 carousel = null;
             }
+            currentExecHand = null;
             if (panel) {
                 panel.hide();
                 panel.destroy();
                 panel = null;
             }
-            hasPrev = false;
+            hasNavPrev = false;
         },
     };
 }

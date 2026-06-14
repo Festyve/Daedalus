@@ -28,9 +28,9 @@ const SELECTED_OPACITY = 1.0;
 // (per-vertex colour) still multiplies through, so a decorated shape keeps its look — it is just
 // lifted (primary), full (selected) or dimmed (unselected). No extra render passes, so the tier
 // shows identically in the main AR view and the corner preview.
-const WIRE_BASE = new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.35);
-const WIRE_DIM = WIRE_BASE.clone().multiplyScalar(0.5);
-const WIRE_PRIMARY = WIRE_BASE.clone().lerp(new THREE.Color(T.white), 0.45);
+const WIRE_BASE = new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15);
+const WIRE_DIM = WIRE_BASE.clone().multiplyScalar(0.45);
+const WIRE_PRIMARY = WIRE_BASE.clone().lerp(new THREE.Color(T.white), 0.55);
 
 // Scratch for selectionCenter (no per-frame allocation, §6.2).
 const TMP_POS = new THREE.Vector3();

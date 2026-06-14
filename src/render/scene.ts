@@ -60,7 +60,7 @@ export function makeMatcapMaterial(): THREE.MeshBasicMaterial {
     // cyan-ish, still unlit/toneMapped:false; vertexColors keeps the icing tints.
     return new THREE.MeshBasicMaterial({
         wireframe: true,
-        color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.35),
+        color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15),
         vertexColors: true,
         toneMapped: false,
     });

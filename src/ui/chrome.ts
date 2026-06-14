@@ -63,7 +63,7 @@ export class Chrome {
             letterSpacing: "0.24em", textTransform: "uppercase",
             color: T.text,
             padding: "7px 13px",
-            background: "rgba(0,8,20,0.76)",
+            background: "rgba(0,4,12,0.92)",
             borderRadius: "6px",
             border: "1px solid rgba(255,255,255,0.16)",
         });
@@ -80,7 +80,7 @@ export class Chrome {
             letterSpacing: "0.18em", textTransform: "uppercase",
             color: T.toolSelect,
             padding: "7px 16px",
-            background: "rgba(0,8,20,0.76)",
+            background: "rgba(0,4,12,0.92)",
             borderRadius: "6px",
             border: `1px solid ${T.toolSelect}55`,
             display: "none",
@@ -93,7 +93,7 @@ export class Chrome {
             position: "fixed", left: "16px", bottom: "16px",
             fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
             padding: "10px 16px",
-            background: "rgba(0,8,20,0.80)",
+            background: "rgba(0,4,12,0.92)",
             borderRadius: "8px",
             border: `1px solid ${T.cyan}44`,
         });

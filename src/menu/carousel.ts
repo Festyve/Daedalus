@@ -1,19 +1,17 @@
 // §4.1 — Horizontal tool carousel, top-center of screen. Pure Three.js geometry on
-// Layer 1 (renderOrder=1, depthTest=false, depthWrite=false via asMenuLayer). The LEFT
-// hand drives it: finger gun opens it (handled by the caller, which calls open()), a
-// horizontal flick navigates next/prev with wrap, a pinch selects the centered tool, a
-// fist dismisses with no selection.
+// Layer 1 (renderOrder=1, depthTest=false, depthWrite=false via asMenuLayer). Driven by:
+//   - RIGHT hand gun: toggle menu (handled by caller via open/close)
+//   - RIGHT hand pinch: advance to next element (binary gesture with 250ms cooldown)
+//   - LEFT hand pinch: select centered element (fires onSelect then closes)
 //
 // Visual model (§4.1, §14.4):
-//   - 6 tools in a horizontal strip. Active tool centered, full-brightness cyan. The wheel
+//   - Elements in a horizontal strip. Active element centered, full-brightness accent. The wheel
 //     shows up to two neighbors each side, smaller and dimmer the further out (a depth-faded
 //     strip); everything past that is hidden.
-//   - The active tool's name + icon are drawn centered below the strip.
-//   - An index-finger swipe (index-tip horizontal velocity, supplied as g.vx) slides to the
-//     next/prev tool — swiping left drags the strip left so the tool on the right slides to
-//     center. The index wraps (6→1, 1→6). The slide is a 100ms ease-out snap.
-//   - Pinch fires onSelect(id) then closes the carousel with an 80ms fade.
-//   - Fist closes the carousel with no selection.
+//   - The active element's name + icon are drawn centered below the strip.
+//   - Right-hand pinch advances to the next element. The slide is a 100ms ease-out snap
+//     with wrap-around (last → first).
+//   - Left-hand pinch fires onSelect(id) then closes the carousel with an 80ms fade.
 //   - Idle (non-active) items breathe on a slow 2s sine pulse; the active item also gets a
 //     proximity glow that brightens as the navigation fingertip nears the strip.
 //
@@ -27,7 +25,6 @@ import type { GestureState } from "../types";
 import { MENU_ORDER } from "../types";
 import { MENU_META, T, FONT } from "../render/tokens";
 import { asMenuLayer } from "../render/layers";
-import { SwipeDetector } from "../gesture/swipe";
 
 // A carousel entry. The wheel is generic over these, so the SAME component renders the tool
 // wheel, the ADD SHAPES shape picker, and the INTERACT operation picker (item 5). `id` is an
@@ -270,12 +267,16 @@ export class Carousel {
     private slideFrom = 0;                       // strip x-offset at start of current snap
     private slideTo = 0;                         // target strip x-offset
     private slideMs = SNAP_MS;                   // elapsed → done when ≥ SNAP_MS
-    private readonly swipe = new SwipeDetector(); // robust windowed swipe → one step per sweep
+
+    private advanceCooldown = 0;                 // advance pinch cooldown (ms)
+    private selectCooldown = 0;                  // select pinch cooldown (ms)
+    private rightPinchLatched = false;           // right-pinch edge tracking for advance
+    private leftPinchLatched = false;            // left-pinch edge tracking for select
 
     private fade = 0;                            // 0 hidden .. 1 fully shown
     private fadeDir: 0 | 1 | -1 = 0;             // 0 idle, +1 opening, -1 closing
     private pendingSelect = false;               // close was triggered by a pinch-select
-    private pinchLatched = false;                // pinch edge tracking
+    private selectedId: string | null = null;    // id latched at pinch time (decision time)
 
     private pulseMs = 0;                          // ambient pulse phase accumulator
     private glow = 0;                             // 0..1 proximity glow toward active tile
@@ -430,8 +431,11 @@ export class Carousel {
         this.object.visible = true;
         this.fadeDir = 1;
         this.pendingSelect = false;
-        this.pinchLatched = false;
-        this.swipe.reset();
+        this.leftPinchLatched = false;
+        this.rightPinchLatched = false;
+        this.advanceCooldown = 0;
+        this.selectCooldown = 0;
+        this.selectedId = null;
         this.glow = 0;
         this.tmpLocal.copy(atTip); // touch atTip so callers can rely on it being read
         // Adopt the eligible subset (fall back to all items) and center on its first item.
@@ -451,11 +455,11 @@ export class Carousel {
     }
 
     /**
-     * Per-frame drive. `navTip` is the navigation (left) index-fingertip position in the
-     * carousel group's local space (caller transforms world→local before passing it in);
-     * `g` is the current gesture state of the navigation hand; `dt` is seconds.
+     * Per-frame drive. `navTip` is the index-fingertip position in carousel group's local space;
+     * `rightG` is right-hand gesture state (gun to toggle, pinch to advance);
+     * `leftG` is left-hand gesture state (pinch to select); `dt` is seconds.
      */
-    update(navTip: THREE.Vector3, g: GestureState, dt: number): void {
+    update(navTip: THREE.Vector3, rightG: GestureState, leftG: GestureState, dt: number): void {
         const dtMs = dt * 1000;
 
         // ---- Fade (open/close) ----
@@ -471,7 +475,11 @@ export class Carousel {
                 this.object.visible = false;
                 if (this.pendingSelect) {
                     this.pendingSelect = false;
-                    this.onSelect?.(this.order[this.active]);
+                    // Emit the id latched at pinch time, NOT order[active] now: a pinch's
+                    // incidental horizontal drift can re-step active before this fires, which
+                    // would wrap the last tile (DESTROY) back to ADD_SHAPES.
+                    this.onSelect?.(this.selectedId ?? this.order[this.active]);
+                    this.selectedId = null;
                 }
                 return; // fully closed: nothing else to drive this frame
             }
@@ -479,28 +487,39 @@ export class Carousel {
 
         if (!this.object.visible) return;
 
+        // ---- Cooldown tick-down ----
+        if (this.advanceCooldown > 0) {
+            this.advanceCooldown = Math.max(0, this.advanceCooldown - dtMs);
+        }
+        if (this.selectCooldown > 0) {
+            this.selectCooldown = Math.max(0, this.selectCooldown - dtMs);
+        }
+
         // ---- Gesture handling (only while open and not mid-close) ----
         if (this.isOpen) {
-            // Fist → dismiss, no selection.
-            if (g.name === "fist") {
+            // Left-hand pinch (rising edge) → select centered element with cooldown.
+            const leftPinching = leftG.pinch > PINCH_SELECT;
+            if (leftPinching && !this.leftPinchLatched && this.selectCooldown === 0) {
+                this.leftPinchLatched = true;
+                this.selectCooldown = 250;  // 250ms cooldown
+                this.pendingSelect = true;
+                this.selectedId = this.order[this.active]; // latch the centered element NOW
                 this.close();
-            } else {
-                // Pinch (rising edge) → select centered tool, then close with select pending.
-                const pinching = g.name === "pinch" || g.pinch > PINCH_SELECT;
-                if (pinching && !this.pinchLatched) {
-                    this.pinchLatched = true;
-                    this.pendingSelect = true;
-                    this.close();
-                } else if (!pinching) {
-                    this.pinchLatched = false;
-                }
+            } else if (!leftPinching) {
+                this.leftPinchLatched = false;
+            }
 
-                // Index swipe → one tool per swipe via the shared SwipeDetector (integrates
-                // g.vx over a window, so a small finger flick registers and one sweep is one
-                // step). g.vx > 0 is rightward; swiping LEFT (dir < 0) drags the strip left so
-                // the tool on the right slides to center → step +1; rightward → -1.
-                const dir = this.swipe.update(g.vx, dtMs);
-                if (dir !== 0) this.step(dir > 0 ? -1 : 1);
+            // Right-hand pinch (rising edge) → advance one element to the right with cooldown.
+            // Skip while a selection is committing: a pinch's drift must not re-step after latching.
+            if (!this.pendingSelect) {
+                const rightPinching = rightG.pinch > PINCH_SELECT;
+                if (rightPinching && !this.rightPinchLatched && this.advanceCooldown === 0) {
+                    this.rightPinchLatched = true;
+                    this.advanceCooldown = 250;  // 250ms cooldown
+                    this.step(1);  // advance by 1 to the right
+                } else if (!rightPinching) {
+                    this.rightPinchLatched = false;
+                }
             }
         }
 

@@ -92,24 +92,24 @@ export function createAddShapesMenu(): MenuModule {
     // Module-local live state.
     let panel: Panel | null = null;
     let carousel: Carousel | null = null;
-    let was_pinched = false;      // pinch edge tracking (rising edge spawns)
     let has_prev = false;         // whether prev_landmarks holds a valid previous frame
 
     // Spawn scale-in animation state.
     let spawn_mesh: THREE.Mesh | null = null;
     let spawn_t = 0;
 
-    // Pre-allocated previous-frame landmark snapshot (21 Vec3) for the swipe velocity vx.
+    // Pre-allocated previous-frame landmark snapshot (21 Vec3) for gesture classify.
     const prev_landmarks: Vec3[] = Array.from({ length: 21 }, blankVec);
 
     // Reused scratch (no per-frame allocation).
     const spawn_world = new THREE.Vector3();
     const tip_world = new THREE.Vector3();
     const tip_local = new THREE.Vector3();
-    // Sanitized gesture handed to the carousel: only vx (swipe) is live; pinch/name are zeroed so
-    // the wheel never pinch-selects or fist-closes (we own the pinch → spawn here).
-    const wheel_gesture: GestureState = { name: "point", extended: 1, pinch: 0, spread: 0, vx: 0 };
+    const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     const FAR_TIP = new THREE.Vector3(10, 10, 0);
+
+    // Cache the current exec hand so onSelect can access it.
+    let currentExecHand: HandPose | null = null;
 
     function snapshotLandmarks(lm: Vec3[]): void {
         const n = Math.min(lm.length, prev_landmarks.length);
@@ -154,10 +154,10 @@ export function createAddShapesMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
-            panel.setInstructions(PANEL_INSTRUCTIONS);
+            panel.setInstructions("<b>RIGHT PINCH</b> advance shape &nbsp;·&nbsp; <b>LEFT SQUEEZE</b> spawn");
             panel.setBody(
                 `<div style="font-size:12px;color:rgba(255,255,255,0.6);line-height:1.6">` +
-                `Swipe your exec (right) index finger to spin the shape wheel, then pinch to ` +
+                `Pinch your right hand to advance shapes, then squeeze your left hand to ` +
                 `spawn the centered shape at your hand.</div>`,
             );
             panel.show();
@@ -167,51 +167,51 @@ export function createAddShapesMenu(): MenuModule {
             ctx.camera.add(carousel.object);
             carousel.open(FAR_TIP);
 
-            was_pinched = false;
+            // Wire up selection: left-hand pinch triggers onSelect when the carousel closes.
+            carousel.onSelect = (id) => {
+                if (currentExecHand) {
+                    fingertipToWorld(
+                        currentExecHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
+                        ctx.scratch.ray, ctx.scratch.plane, spawn_world,
+                    );
+                    spawnShape(id as ShapeKind, ctx, spawn_world);
+                }
+            };
+
+            currentExecHand = null;
             has_prev = false;
             spawn_mesh = null;
             spawn_t = 0;
         },
 
-        update(ctx: SceneContext, exec: HandPose | null, _nav: HandPose | null, dt: number): void {
+        update(ctx: SceneContext, exec: HandPose | null, nav: HandPose | null, dt: number): void {
             if (!panel || !carousel) return;
             const dtSec = dt / 1000;
 
             // Advance any in-flight spawn scale-in first (keeps growing even if the hand drops).
             advanceSpawn(dt);
 
+            currentExecHand = exec;
+
             if (!exec) {
-                was_pinched = false;
                 has_prev = false;
-                wheel_gesture.vx = 0;
-                carousel.update(FAR_TIP, wheel_gesture, dtSec); // keep the fade/idle animation alive
+                carousel.update(FAR_TIP, NONE_GESTURE, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSec);
                 return;
             }
 
             const lm = exec.landmarks;
-            const s = handScale(exec.world);
             const g = classify(lm, exec.world, has_prev ? prev_landmarks : null);
 
-            // Aim the carousel glow at the exec fingertip (camera-local), then drive it with the
-            // swipe-only gesture so it spins one shape per flick.
+            // Aim the carousel glow at the exec fingertip (camera-local).
             fingertipToWorld(
                 lm[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
                 ctx.scratch.ray, ctx.scratch.plane, tip_world,
             );
             ctx.camera.worldToLocal(tip_local.copy(tip_world));
-            wheel_gesture.vx = g.vx;
-            carousel.update(tip_local, wheel_gesture, dtSec);
 
-            // PINCH rising edge → spawn the centered shape at the fingertip world position.
-            const pinched_now = pinchAmount(lm, s) > PINCH_ON;
-            if (pinched_now && !was_pinched) {
-                fingertipToWorld(
-                    lm[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
-                    ctx.scratch.ray, ctx.scratch.plane, spawn_world,
-                );
-                spawnShape(carousel.current as ShapeKind, ctx, spawn_world);
-            }
-            was_pinched = pinched_now;
+            // Pass both right-hand (exec) gesture for advancing and left-hand (nav) gesture for selecting.
+            const navG = nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE;
+            carousel.update(tip_local, g, navG, dtSec);
 
             snapshotLandmarks(lm);
         },
@@ -227,7 +227,6 @@ export function createAddShapesMenu(): MenuModule {
                 panel.destroy();
                 panel = null;
             }
-            was_pinched = false;
             has_prev = false;
             // Snap any still-arriving shape to full scale so it is never left mid-scale-in.
             if (spawn_mesh) {
@@ -235,6 +234,7 @@ export function createAddShapesMenu(): MenuModule {
                 spawn_mesh = null;
             }
             spawn_t = 0;
+            currentExecHand = null;
             // Spawned mesh is intentionally retained as the selection — the user's creation.
         },
     };
