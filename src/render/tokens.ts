@@ -52,6 +52,20 @@ export const MENU_META: Record<MenuId, { icon: string; accent: string; label: st
 
 export const FONT = "'JetBrains Mono', monospace";
 
+// Shared "holographic glass" panel treatment (§1.2 north star: translucent / glowing /
+// weightless). The DECORATE chat panel established this look; these helpers let every HUD
+// surface — stage pill, tool pill, gesture guide — read as the same projected glass so the
+// chrome stops looking like a set of unrelated boxes. accent must be a 6-digit hex (the
+// `${accent}NN` suffixes build 8-digit RGBA hex); all tool accents in `T` qualify.
+export const GLASS_BG = "rgba(0,8,20,0.78)";
+export const GLASS_BLUR = "blur(9px) saturate(1.15)";
+
+/** Outer accent halo + faint inner wash + soft black drop, so a panel glows as if projected
+ *  rather than sitting flat on the canvas. Kept low-alpha — restraint reads as expensive. */
+export function panelGlow(accent: string): string {
+    return `0 0 22px ${accent}22, inset 0 0 18px ${accent}12, 0 10px 28px rgba(0,0,0,0.5)`;
+}
+
 // How many shapes must be SELECTED for each tool to make sense (§5, items 6). The tool
 // carousel shows only the tools whose [min,max] bracket the current selection count, so it
 // presents three natural variants:
