@@ -28,7 +28,7 @@ import { T, FONT } from "../render/tokens";
 import { classify } from "../gesture/detect";
 import { fingertipToWorld } from "../math/coords";
 import { makeVoiceAdapter, SpeechInput } from "./voice";
-import { applyIcing, icingMask } from "./icing";
+import { applyIcing, applyFullIcing, icingMask } from "./icing";
 import { Sprinkles } from "./sprinkles";
 import { ICING, SPRINKLES } from "./designs";
 
@@ -84,8 +84,8 @@ function ensureHoloStyle(): void {
 const SMEAR_RADIUS = 0.28;
 // Sprinkles dropped per pinch (a small handful; well under the §8.4 ~1500 cap).
 const DROP_COUNT = 60;
-// Sprinkles flooded on the immediate voice-triggered decoration.
-const VOICE_SPRINKLE_COUNT = 240;
+// Sprinkles flooded on the decoration — denser now that they scatter over the whole glaze.
+const VOICE_SPRINKLE_COUNT = 360;
 // Pinch closure (0..1) above which a sprinkle drop edge-triggers; with hysteresis so
 // one pinch yields exactly one drop.
 const PINCH_ON = 0.7;
@@ -367,12 +367,9 @@ export function createDecorateMenu(): MenuModule {
         mat.metalness = 0.0;
         mat.roughness = 0.7;
         mat.emissive.setRGB(0.04, 0.04, 0.05);
-        ctx.mesh.updateWorldMatrix(true, false);
-        ctx.mesh.getWorldPosition(ctx.scratch.v1);
-        // Flood the crown: paint at the mesh center so the height-mask gate (§8.3) lets
-        // icing stick across the whole top with a noisy drip boundary below the line.
-        applyIcing(ctx.mesh, ctx.bvh, ctx.scratch.v1, 4.0, VOICE_ICING);
-        // Drop sprinkles on the freshly-iced region (mask weights the surface sampler).
+        // Glaze the WHOLE donut pink (a full coat all around, not just the crown).
+        applyFullIcing(ctx.mesh, VOICE_ICING);
+        // Scatter big rainbow sprinkles over the whole glazed surface (mask is 1 everywhere now).
         if (sprinkles) sprinkles.dropBatch(ctx.mesh, icingMask(ctx.mesh), VOICE_SPRINKLES, VOICE_SPRINKLE_COUNT);
     }
 

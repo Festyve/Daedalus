@@ -408,6 +408,30 @@ export function applyIcing(
 }
 
 /**
+ * Fully glaze the mesh — every vertex iced (mask = 1), the whole surface set to the design
+ * colour. Unlike applyIcing (height-gated crown + drips), this is a complete coat "all around"
+ * the donut. The full mask also means the sprinkle sampler scatters over the entire surface.
+ */
+export function applyFullIcing(mesh: THREE.Mesh, design: IcingDesign): void {
+    const geometry = mesh.geometry;
+    const positions = (geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
+    const vertCount = positions.length / 3;
+    const state = stateFor(geometry);
+    const colorAttr = colorAttribute(geometry, vertCount);
+    const colors = colorAttr.array as Float32Array;
+
+    DESIGN_COLOR.set(design.color);
+    computeDisplayColor(design);
+    const dr = DISPLAY_COLOR.r, dg = DISPLAY_COLOR.g, db = DISPLAY_COLOR.b;
+    for (let vi = 0; vi < vertCount; vi++) {
+        state.mask[vi] = 1;
+        const i = vi * 3;
+        colors[i] = dr; colors[i + 1] = dg; colors[i + 2] = db;
+    }
+    colorAttr.needsUpdate = true;
+}
+
+/**
  * Per-vertex iced weight (0 = bare, 1 = fully iced) for this mesh's geometry
  * (SPEC §8.3 / §8.4). The sprinkle sampler weights surface sampling by this mask
  * so sprinkles land on iced regions only. Lazily derived from the geometry's

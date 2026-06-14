@@ -19,8 +19,8 @@ export const ICING: { jam: IcingDesign; pink: IcingDesign } = {
 export const SPRINKLES: { rainbow: SprinkleDesign } = {
     rainbow: {
         geometry: "capsule",
-        palette: ["#FF3E9A", "#FFE642", "#42CFFF", "#8BFF42", "#FF6B42"],
-        length: 0.04,
-        radius: 0.008,
+        palette: ["#FF3E9A", "#FFE642", "#42CFFF", "#8BFF42", "#FF6B42", "#B86BFF"],
+        length: 0.11,
+        radius: 0.026,
     },
 };
