@@ -25,9 +25,10 @@ import type { IcingDesign } from "../types";
 
 // ---- Tunables (SPEC §8.3) -------------------------------------------------------
 
-// Icing line on the mesh's own up-axis (local +Y; the torus hole axis is +Y, so
-// "top" is the upper crown — see render/geometry.ts). At/above this line icing
-// sticks fully; below it only the noisy drip boundary lets icing through.
+// Icing line on the mesh's own up-axis (local +Y = up). The donut stands upright with
+// its hole along +Z (facing the camera — see render/geometry.ts), so "top" is the upper
+// crown of the ring. At/above this line icing sticks fully; below it only the noisy drip
+// boundary lets icing through.
 const Y_ICING_LINE = 0.0;
 // How far below the icing line a drip streak can still reach (object units).
 const DRIP_REACH = 0.55;
