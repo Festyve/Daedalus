@@ -162,6 +162,7 @@ export function makeContext(): SceneContext {
         morphT: 0,
         stage: "EMPTY",
         viewMode: "scene",
+        wireframe: false,
         activeMenu: null,
         scratch: makeScratch(),
         interactionPlaneZ: 0,
@@ -197,6 +198,9 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     const mat = mesh.material as THREE.MeshStandardMaterial;
     mat.depthTest = true;
     mat.depthWrite = true;
+    // Match the world's current render mode so a shape spawned while in wireframe arrives
+    // as wireframe rather than solid (the both-hands-gun toggle flips ctx.wireframe).
+    mat.wireframe = ctx.wireframe;
 
     // The Mesh constructor seeds morphTargetInfluences from geometry.morphAttributes;
     // guarantee the [0] slot (torus blend, §7.2) exists for setMorphT / the MORPH tool.

@@ -125,6 +125,7 @@ export interface SceneContext {
     morphT: number;                 // current torus blend 0..1
     stage: Stage;
     viewMode: ViewMode;
+    wireframe: boolean;             // false = solid/shaded, true = wireframe mesh (both-hands gun toggle)
     activeMenu: MenuId | null;
     scratch: ScratchMath;           // reused objects (§6.2)
     interactionPlaneZ: number;      // object depth for unprojection (§12)

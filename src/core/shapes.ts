@@ -179,6 +179,19 @@ export function refreshHighlight(ctx: SceneContext): void {
 }
 
 /**
+ * Set the render mode for EVERY shape in the scene: solid/shaded (on=false) or wireframe
+ * mesh (on=true). Records the choice on ctx so shapes spawned later inherit it (attachMesh).
+ * Toggled by the both-hands finger-gun gesture (§main.ts). wireframe is orthogonal to the
+ * selection highlight, so refreshHighlight() leaves it untouched.
+ */
+export function setWireframe(ctx: SceneContext, on: boolean): void {
+    ctx.wireframe = on;
+    for (const m of allShapes(ctx)) {
+        (m.material as THREE.MeshStandardMaterial).wireframe = on;
+    }
+}
+
+/**
  * Remove a shape from the scene and dispose its GPU resources. Drops it from the selection set;
  * if it was the primary, the next selected shape is promoted (or the primary is cleared when the
  * selection is now empty). The focus cursor is clamped to the new shape count.
