@@ -191,21 +191,22 @@ function colorAttribute(geometry: THREE.BufferGeometry, vertCount: number): THRE
     return colorAttr;
 }
 
-// Height-mask gate (SPEC §8.3): the fraction of the brush weight that can stick at
-// a vertex given its height. Above the icing line → full (1). Below it, icing only
-// reaches through a NOISY drip boundary whose depth varies per angular column, so
-// the lower edge reads like irregular dripping jam. Returns 0 outside the drips.
+// Front-mask gate (SPEC §8.3, FRONT-facing variant): the fraction of the brush weight that can
+// stick at a vertex given its depth toward the camera. The donut faces the camera (hole along +Z),
+// so we glaze the FRONT face — z at/above the icing line → full (1) — and let it DRIP toward the
+// back through a noisy boundary, so the whole VISIBLE side reads fully iced and only the hidden
+// back is bare. Returns 0 outside the drips. The angle is the position around the ring (atan2 y,x).
 function heightGate(x: number, y: number, z: number, dripBias: number): number {
-    const angle = Math.atan2(z, x);
+    const angle = Math.atan2(y, x);
     const line = icingLineAt(angle);
-    if (y >= line) return 1;
+    if (z >= line) return 1;
     // Frequency-modulated streak phase → drip columns wander and curve around the
     // ring instead of sitting on an even comb, so the drips look hand-made.
     const phase = angle * DRIP_FREQ + 1.3 * Math.sin(angle * 2.3 + 0.9);
     const streak = 0.5 + 0.5 * Math.sin(phase);
     const jitter = 1 - DRIP_NOISE * dripNoise(phase);
     const reach = DRIP_REACH * (dripBias + (1 - dripBias) * streak) * jitter;
-    const depth = line - y;
+    const depth = line - z;
     if (depth > reach) return 0;
     // Fade the gate out toward the drip tip so the noisy boundary is soft.
     return 1 - depth / reach;
@@ -379,7 +380,14 @@ export function applyIcing(
         },
     });
 
-    // 3-4: keep verts truly within r; raise iced weight by falloff × height gate.
+    // The icing gates on the FRONT face of the DONUT, but the geometry we paint is the base
+    // (pre-morph) shape — so resolve each vertex's morphed position (base + blend·(target − base))
+    // and gate on THAT, so the glaze lands on the donut's camera-facing side, not the sphere's.
+    const morphArr = (geometry.morphAttributes.position?.[0] as THREE.BufferAttribute | undefined)
+        ?.array as Float32Array | undefined;
+    const morphW = mesh.morphTargetInfluences?.[0] ?? 0;
+
+    // 3-4: keep verts truly within r; raise iced weight by falloff × front gate.
     const mask = state.mask;
     const strength = 0.6 + 0.4 * design.gloss;                 // glossier jam lays thicker
     const dripBias = design.dripStyle === "thick" ? 0.65 : 0.4; // thicker drips reach lower
@@ -390,7 +398,11 @@ export function applyIcing(
         const dx = px - lx, dy = py - ly, dz = pz - lz;
         const d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > r2) continue;
-        const gate = heightGate(px, py, pz, dripBias);
+        // Morphed (donut-space) position for the front gate.
+        const gx = morphArr ? px + morphW * (morphArr[i] - px) : px;
+        const gy = morphArr ? py + morphW * (morphArr[i + 1] - py) : py;
+        const gz = morphArr ? pz + morphW * (morphArr[i + 2] - pz) : pz;
+        const gate = heightGate(gx, gy, gz, dripBias);
         if (gate <= 0) continue;
         const w = falloff(Math.sqrt(d2) / r) * strength * gate;
         const next = mask[vi] + w;
