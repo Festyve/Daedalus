@@ -30,6 +30,7 @@ import { fingertipToWorld } from "../math/coords";
 import { makeVoiceAdapter, SpeechInput } from "./voice";
 import { applyIcing, icingMask } from "./icing";
 import { Sprinkles } from "./sprinkles";
+import { ensureBVH } from "../render/scene";
 import { ICING, SPRINKLES } from "./designs";
 
 // ---- Panel visual spec (§8.6) ---------------------------------------------------
@@ -343,7 +344,10 @@ export function createDecorateMenu(): MenuModule {
     const voice = makeVoiceAdapter();
 
     // Sprinkles controller. It parents its InstancedMesh under the target mesh on each
-    // drop, so a single instance (built in enter) serves any mesh that exists.
+    // drop. A fresh controller is built per DECORATE session, but it is NEVER disposed on
+    // exit — its instanced meshes stay parented to the shape they were dropped on, so the
+    // sprinkles persist permanently (a later session builds its own controller and adds to
+    // them rather than wiping them).
     let sprinkles: Sprinkles | null = null;
 
     // Direct-hand pinch latch (hysteresis): one pinch → one sprinkle drop.
@@ -388,9 +392,14 @@ export function createDecorateMenu(): MenuModule {
         chat = new ChatPanel();
         document.body.appendChild(chat.el);
 
-        // One sprinkle controller for both the voice flood and direct pinch-drops; it
-        // re-parents under whichever mesh is active on each drop (§8.4).
+        // Fresh sprinkle controller for this session (voice flood + direct pinch-drops). Prior
+        // sessions' sprinkles stay parented to their shape (exit never disposes them), so this
+        // one ADDS to the decoration rather than replacing it (§8.4).
         sprinkles = new Sprinkles(ctx.scene);
+
+        // MORPH's exit (and the torus swap) can leave ctx.bvh null / stale; rebuild it from the
+        // active shape so icing/sprinkles work on the donut, not just the freshly-spawned sphere.
+        ensureBVH(ctx);
 
         // Start listening; onTranscript fires the decoration + scripted reply. The
         // adapter degrades to no-ops when the browser lacks SpeechRecognition (§8.1).
@@ -404,6 +413,10 @@ export function createDecorateMenu(): MenuModule {
         _nav: HandPose | null,
         _dt: number,
     ): void {
+        // Keep ctx.bvh pointed at the CURRENT shape's bounds tree (the donut after a morph,
+        // a freshly-swapped shape, etc.) so painting never silently no-ops on a stale/null bvh.
+        if (ctx.mesh) ensureBVH(ctx);
+
         // Direct-hand decoration (§8.5) from the right (exec) hand. Guard the empty
         // world: nothing to decorate until ADD SHAPES creates a mesh.
         if (!exec || !ctx.mesh || !ctx.bvh) {
@@ -447,10 +460,11 @@ export function createDecorateMenu(): MenuModule {
             speech.stop();
             speech = null;
         }
-        if (sprinkles) {
-            sprinkles.dispose();
-            sprinkles = null;
-        }
+        // Drop the controller reference WITHOUT disposing it: the dropped sprinkles are parented
+        // to the shape and must persist after leaving DECORATE (decorations are permanent). The
+        // abandoned instanced meshes stay in the scene graph; the next session builds a fresh
+        // controller. Icing lives on the geometry's color attribute, so it persists on its own.
+        sprinkles = null;
         if (chat) {
             chat.dispose();
             chat = null;
