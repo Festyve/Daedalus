@@ -203,10 +203,10 @@ export class Chrome {
         this.fps_el.append(this.fpsNum_el, fpsUnit);
         this.root.appendChild(this.fps_el);
 
-        // Export button (top-right corner, below FPS).
+        // Export button (top-left, directly below DAEDALUS).
         const exportBtn = document.createElement("button");
         Object.assign(exportBtn.style, {
-            position: "fixed", bottom: "16px", right: "16px",
+            position: "fixed", top: "56px", left: "16px",
             padding: "10px 16px",
             fontFamily: FONT,
             fontSize: "13px",
@@ -222,6 +222,8 @@ export class Chrome {
             boxShadow: panelGlow(T.cyan),
             cursor: "pointer",
             transition: "all 0.2s ease",
+            zIndex: "9999",
+            pointerEvents: "auto",
         });
         exportBtn.textContent = "Export";
         exportBtn.addEventListener("mouseover", () => {
