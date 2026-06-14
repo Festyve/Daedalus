@@ -19,7 +19,8 @@ import { Carousel } from "../src/menu/carousel";
 
 // ---- Pinch-based advancing for the headless carousel. Right-hand pinch (pinch > 0.6)
 //      triggers a step, with 250ms cooldown. Left-hand pinch selects. ----
-const PINCH_THRESHOLD = 0.6;     // pinch level that triggers a step or select
+const PINCH_ON = 0.6;            // arm threshold
+const PINCH_OFF = 0.35;          // disarm threshold (hysteresis gap)
 const ADVANCE_COOLDOWN_MS = 250;  // cooldown after an advance step
 const FRAMES_FOR_COOLDOWN = Math.ceil(ADVANCE_COOLDOWN_MS / 16); // ~16 frames per cooldown
 
@@ -211,16 +212,16 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
 
             // Right-hand pinch (pinch > 0.6) commits one step…
-            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
             // …and holding the same pinch does NOT keep stepping (cooldown blocks re-firing).
-            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 5);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 5);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
             // Release pinch and wait for cooldown to clear, then pinch again → a second step lands.
             drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 5);
-            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[2]);
         } finally {
             c.dispose();
@@ -235,12 +236,12 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
             // Pinch forward repeatedly to reach the last tool.
             for (let i = 1; i < MENU_ORDER.length; i++) {
-                drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+                drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
                 drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 2);
             }
             expect(centeredId(c)).toBe(MENU_ORDER[MENU_ORDER.length - 1]);
             // One more pinch wraps to the first tool.
-            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
         } finally {
             c.dispose();
@@ -256,16 +257,16 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             drive(c, gesture(), 10); // finish open fade
 
             // Right-hand pinch to advance to the third tool so the selection target is non-trivial.
-            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
             drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 2);
-            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_ON + 0.1 }), 1);
             const target = centeredId(c);
             expect(target).toBe(MENU_ORDER[2]);
 
             // Left-hand pinch (rising edge) latches the select + starts the close fade; onSelect fires
             // only when the 80ms close fade fully completes. Drive enough frames to finish it.
             const rightG = gesture({ name: "none", pinch: 0 });
-            const leftG = gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 });
+            const leftG = gesture({ name: "pinch", pinch: PINCH_ON + 0.1 });
             drive(c, rightG, 12, 16, leftG);
 
             expect(onSelect).toHaveBeenCalledTimes(1);

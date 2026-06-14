@@ -111,7 +111,7 @@ export function buildTorusMorph(geo: THREE.BufferGeometry, R: number = TORUS_MAJ
  * geometry with normals and a white color attribute, matching the icosphere's
  * attribute layout so any spawned shape is immediately sculptable / BVH-ready.
  */
-export function makeShape(kind: "cube" | "sphere" | "tetra" | "cylinder"): THREE.BufferGeometry {
+export function makeShape(kind: "cube" | "sphere" | "cylinder"): THREE.BufferGeometry {
     let raw: THREE.BufferGeometry;
     switch (kind) {
         case "cube":
@@ -119,13 +119,6 @@ export function makeShape(kind: "cube" | "sphere" | "tetra" | "cylinder"): THREE
             break;
         case "sphere":
             raw = new THREE.IcosahedronGeometry(DEFAULT_RADIUS, DEFAULT_DETAIL);
-            break;
-        case "tetra":
-            // detail MUST be 0: three's TetrahedronGeometry/PolyhedronGeometry subdivides each
-            // face AND projects the new vertices onto the sphere of the given radius, so any
-            // detail > 0 rounds the tetra into a geodesic SPHERE (the bug). detail 0 keeps the
-            // four flat triangular faces — an actual tetrahedron.
-            raw = new THREE.TetrahedronGeometry(1.2, 0);
             break;
         case "cylinder":
             // radiusTop, radiusBottom, height, radialSegments, heightSegments — dense enough to
