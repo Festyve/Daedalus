@@ -1,13 +1,14 @@
-// OrbitController — bilateral two-hand grab → relative-drag camera orbit (Part 1).
+// OrbitController — wrist-rotation camera orbit.
 //
-// We synthesize two hands (closed-fist or open-palm world landmarks for engage/release, plus a
-// controllable image-space wrist position for the drag) and assert: engage after the debounce,
-// the relative-drag mapping (midpoint Δx→azimuth, Δy→elevation, spread→zoom with no teleport
-// on the engage frame), and release on open-palm / hand-loss / reset. Drives a real CameraRig
-// so the rig clamps + getters are exercised end-to-end. Pure headless math (no DOM/WebGL).
+// Both hands must be closed fists to engage (left = deadman, right = control).
+// Right fist punch direction (wrist→middleMCP) drives azimuth + elevation; wrist roll
+// (side vector rotation around punch axis) rotates the active mesh. Radius is fixed.
+//
+// Tests synthesize world landmarks with specific punch directions and side vectors so
+// the controller geometry can be exercised headlessly without WebGL/DOM.
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import type { HandPose, Handedness, Vec3 } from "../src/types";
+import type { HandPose, Handedness, SceneContext, Vec3 } from "../src/types";
 import { OrbitController } from "../src/menu/orbit";
 import { CameraRig } from "../src/render/cameraRig";
 
@@ -17,50 +18,46 @@ const HAND_SCALE = 0.09;
 
 function v(x: number, y: number, z: number): Vec3 { return { x, y, z }; }
 
-// World landmarks for a CLOSED hand: all four non-thumb fingertips curled (tip nearer the
-// wrist than its PIP) so isClosedHand() is true and isOpenPalm() is false.
-function closedWorld(): Vec3[] {
-    const lm: Vec3[] = [];
-    for (let i = 0; i < N_LANDMARKS; i++) lm.push(v(0, 0, 0));
-    lm[0] = v(0, 0, 0);          // wrist
-    lm[9] = v(0, 0.09, 0);       // middle MCP ⇒ handScale S = 0.09
-    // PIPs (6,10,14,18) farther from the wrist than the TIPs (8,12,16,20) ⇒ curled.
+// World landmarks for a closed fist with punch direction (px,py,pz) and side (sx,sy,sz).
+// Fingers curled: TIP at dist 0.03 from wrist < PIP at dist 0.05 → isClosedHand() true.
+function closedWorldDir(px: number, py: number, pz: number, sx = 1, sy = 0, sz = 0): Vec3[] {
+    const plen = Math.sqrt(px * px + py * py + pz * pz);
+    const ps = 0.09 / plen;
+    const lm: Vec3[] = Array.from({ length: N_LANDMARKS }, () => v(0, 0, 0));
+    lm[0]  = v(0, 0, 0);
+    lm[9]  = v(px * ps, py * ps, pz * ps);          // middleMCP → punch direction
+    lm[17] = v(sx * 0.09, sy * 0.09, sz * 0.09);   // pinkyMCP → side reference
     for (const pip of [6, 10, 14, 18]) lm[pip] = v(0, 0.05, 0);
     for (const tip of [8, 12, 16, 20]) lm[tip] = v(0, 0.03, 0);
     return lm;
 }
 
-// World landmarks for an OPEN palm: all four fingers extended + spread > 0.4·S + thumb out.
+// World landmarks for an open palm (fingers extended + spread).
 function openWorld(): Vec3[] {
-    const lm: Vec3[] = [];
-    for (let i = 0; i < N_LANDMARKS; i++) lm.push(v(0, 0, 0));
-    lm[0] = v(0, 0, 0);          // wrist
-    lm[9] = v(0, 0.09, 0);       // middle MCP ⇒ S = 0.09
-    for (const pip of [6, 10, 14, 18]) lm[pip] = v(0, 0.07, 0);   // PIPs mid-palm
-    // Fingertips fanned along X and far from the wrist ⇒ extended + spread.
-    lm[8] = v(-0.06, 0.12, 0);
+    const lm: Vec3[] = Array.from({ length: N_LANDMARKS }, () => v(0, 0, 0));
+    lm[0]  = v(0, 0, 0);
+    lm[9]  = v(0, 0.09, 0);
+    for (const pip of [6, 10, 14, 18]) lm[pip] = v(0, 0.07, 0);
+    lm[8]  = v(-0.06, 0.12, 0);
     lm[12] = v(-0.02, 0.13, 0);
-    lm[16] = v(0.02, 0.13, 0);
-    lm[20] = v(0.06, 0.12, 0);
-    lm[3] = v(0.04, 0.03, 0);    // thumb IP
-    lm[4] = v(0.08, 0.05, 0);    // thumb tip (farther than IP ⇒ extended)
+    lm[16] = v(0.02,  0.13, 0);
+    lm[20] = v(0.06,  0.12, 0);
+    lm[3]  = v(0.04,  0.03, 0);
+    lm[4]  = v(0.08,  0.05, 0);
     return lm;
 }
 
-// A hand whose grab/release pose comes from `world`, with the image-space WRIST at (wx, wy)
-// — the only image landmark OrbitController reads (two-hand midpoint + spread).
-function hand(handedness: Handedness, world: Vec3[], wx: number, wy: number): HandPose {
-    const lm: Vec3[] = [];
-    for (let i = 0; i < N_LANDMARKS; i++) lm.push(v(0.5, 0.5, 0));
-    lm[0] = v(wx, wy, 0);
+function hand(handedness: Handedness, world: Vec3[]): HandPose {
+    const lm: Vec3[] = Array.from({ length: N_LANDMARKS }, () => v(0.5, 0.5, 0));
     return { handedness, landmarks: lm, world, confidence: 1, handScale: HAND_SCALE, timestamp: 0 };
 }
 
-function closed(handedness: Handedness, wx: number, wy: number): HandPose {
-    return hand(handedness, closedWorld(), wx, wy);
+// Default closed fist: punch along +Z, side along +X
+function closed(handedness: Handedness, px = 0, py = 0, pz = 1, sx = 1, sy = 0, sz = 0): HandPose {
+    return hand(handedness, closedWorldDir(px, py, pz, sx, sy, sz));
 }
-function open(handedness: Handedness, wx: number, wy: number): HandPose {
-    return hand(handedness, openWorld(), wx, wy);
+function open(handedness: Handedness): HandPose {
+    return hand(handedness, openWorld());
 }
 
 function baseRig(): CameraRig {
@@ -70,101 +67,106 @@ function baseRig(): CameraRig {
     return new CameraRig(cam);
 }
 
-// Hold both hands closed at fixed wrists for COMMIT_FRAMES so the controller engages.
-function engage(orbit: OrbitController, rig: CameraRig, lx: number, ly: number, rx: number, ry: number): void {
+function mockCtx(mesh: THREE.Mesh | null = null): SceneContext {
+    return { mesh } as SceneContext;
+}
+
+// Engage both hands closed (default punch +Z, side +X) for COMMIT_FRAMES.
+function engage(orbit: OrbitController, rig: CameraRig, ctx: SceneContext): void {
     for (let i = 0; i < COMMIT_FRAMES; i++) {
-        orbit.update(closed("Left", lx, ly), closed("Right", rx, ry), rig, 16);
+        orbit.update(closed("Left"), closed("Right"), rig, ctx, 16);
     }
 }
 
-describe("OrbitController — two-hand grab orbit", () => {
+describe("OrbitController — wrist-rotation orbit", () => {
     it("engages only after the debounce window of both hands closed", () => {
-        const rig = baseRig();
-        const orbit = new OrbitController();
-        orbit.update(closed("Left", 0.4, 0.5), closed("Right", 0.6, 0.5), rig, 16);
-        expect(orbit.active).toBe(false);                  // 1 frame < COMMIT
-        orbit.update(closed("Left", 0.4, 0.5), closed("Right", 0.6, 0.5), rig, 16);
-        expect(orbit.active).toBe(false);                  // 2 frames
-        orbit.update(closed("Left", 0.4, 0.5), closed("Right", 0.6, 0.5), rig, 16);
-        expect(orbit.active).toBe(true);                   // 3rd frame ⇒ engaged
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
+        orbit.update(closed("Left"), closed("Right"), rig, ctx, 16);
+        expect(orbit.active).toBe(false);
+        orbit.update(closed("Left"), closed("Right"), rig, ctx, 16);
+        expect(orbit.active).toBe(false);
+        orbit.update(closed("Left"), closed("Right"), rig, ctx, 16);
+        expect(orbit.active).toBe(true);
     });
 
     it("does NOT engage when only one hand is closed", () => {
-        const rig = baseRig();
-        const orbit = new OrbitController();
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
         for (let i = 0; i < 6; i++) {
-            orbit.update(closed("Left", 0.4, 0.5), open("Right", 0.6, 0.5), rig, 16);
+            orbit.update(closed("Left"), open("Right"), rig, ctx, 16);
         }
         expect(orbit.active).toBe(false);
     });
 
-    it("the engage frame produces zero camera motion (no teleport snap)", () => {
-        const rig = baseRig();
+    it("engage frame produces zero camera motion", () => {
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
         const theta0 = rig.azimuth, phi0 = rig.polar, r0 = rig.radiusValue;
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);
+        engage(orbit, rig, ctx);
         expect(rig.azimuth).toBeCloseTo(theta0, 9);
         expect(rig.polar).toBeCloseTo(phi0, 9);
         expect(rig.radiusValue).toBeCloseTo(r0, 9);
     });
 
-    it("hands moving right turn the azimuth (turntable: drag right ⇒ θ decreases)", () => {
-        const rig = baseRig();
+    it("rotating fist right (90° around Y) increases azimuth by π/2", () => {
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
         const theta0 = rig.azimuth;
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);            // mid0x = 0.5
-        // Slide both hands +0.1 in x ⇒ midx = 0.6, Δ = +0.1.
-        orbit.update(closed("Left", 0.5, 0.5), closed("Right", 0.7, 0.5), rig, 16);
-        expect(rig.azimuth).toBeCloseTo(theta0 - Math.PI * 0.1, 6);
+        engage(orbit, rig, ctx);                           // punch = (0,0,1), theta_engage = 0
+        // Punch now points along +X → atan2(1,0) = π/2
+        orbit.update(closed("Left"), closed("Right", 1, 0, 0, 0, 1, 0), rig, ctx, 16);
+        expect(rig.azimuth).toBeCloseTo(theta0 + Math.PI / 2, 5);
     });
 
-    it("hands moving up lift the elevation (image y is top-down)", () => {
-        const rig = baseRig();
+    it("tilting fist up 45° increases polar by π/4", () => {
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
         const phi0 = rig.polar;
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);            // mid0y = 0.5
-        // Raise both hands by 0.1 ⇒ wristY 0.4, midy = 0.4, (mid0y − midy) = +0.1.
-        orbit.update(closed("Left", 0.4, 0.4), closed("Right", 0.6, 0.4), rig, 16);
-        expect(rig.polar).toBeCloseTo(phi0 + Math.PI * 0.1, 6);
+        engage(orbit, rig, ctx);                           // punch = (0,0,1), phi_engage = 0
+        // Punch tilted to (0, 1/√2, 1/√2) → phi_now = π/4
+        const s = 1 / Math.SQRT2;
+        orbit.update(closed("Left"), closed("Right", 0, s, s, 1, 0, 0), rig, ctx, 16);
+        expect(rig.polar).toBeCloseTo(phi0 + Math.PI / 4, 5);
     });
 
-    it("spreading the hands apart zooms in (r = r0·d0/d)", () => {
-        const rig = baseRig();
+    it("hand spread does NOT change radius (orbit at fixed distance)", () => {
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
         const r0 = rig.radiusValue;
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);            // d0 = 0.2, mid stays 0.5
-        // Widen to span 0.3..0.7 ⇒ d = 0.4, midpoint unchanged.
-        orbit.update(closed("Left", 0.3, 0.5), closed("Right", 0.7, 0.5), rig, 16);
-        expect(rig.radiusValue).toBeCloseTo(r0 * (0.2 / 0.4), 6);
+        engage(orbit, rig, ctx);
+        orbit.update(closed("Left"), closed("Right"), rig, ctx, 16);
+        expect(rig.radiusValue).toBeCloseTo(r0, 9);
     });
 
-    it("releases on a sustained open palm and locks the camera where it is", () => {
-        const rig = baseRig();
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);
+    it("wrist roll 90° rotates the mesh π/2 about the punch axis", () => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry());
+        const ctx = mockCtx(mesh);
+        const rig = baseRig(); const orbit = new OrbitController();
+        // Engage: punch = (0,0,1), side0 = (1,0,0)
+        engage(orbit, rig, ctx);
+        // Roll 90°: pinkyMCP moves from +X to +Y → side becomes (0,1,0)
+        // signedAngle((1,0,0), (0,1,0), (0,0,1)) = π/2
+        orbit.update(closed("Left"), closed("Right", 0, 0, 1, 0, 1, 0), rig, ctx, 16);
+        const angle = 2 * Math.acos(Math.min(1, Math.abs(mesh.quaternion.w)));
+        expect(angle).toBeCloseTo(Math.PI / 2, 4);
+    });
+
+    it("releases on a sustained open palm and locks the camera", () => {
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
+        engage(orbit, rig, ctx);
         const lockedAzimuth = rig.azimuth;
-        // Open both palms (same wrist positions ⇒ no drive) for the debounce window.
         for (let i = 0; i < COMMIT_FRAMES; i++) {
-            orbit.update(open("Left", 0.4, 0.5), open("Right", 0.6, 0.5), rig, 16);
+            orbit.update(open("Left"), open("Right"), rig, ctx, 16);
         }
         expect(orbit.active).toBe(false);
-        expect(rig.azimuth).toBeCloseTo(lockedAzimuth, 9); // rig holds its committed state
+        expect(rig.azimuth).toBeCloseTo(lockedAzimuth, 9);
     });
 
     it("losing a hand ends the orbit immediately", () => {
-        const rig = baseRig();
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);
-        expect(orbit.active).toBe(true);
-        orbit.update(null, closed("Right", 0.6, 0.5), rig, 16);
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
+        engage(orbit, rig, ctx);
+        orbit.update(null, closed("Right"), rig, ctx, 16);
         expect(orbit.active).toBe(false);
     });
 
-    it("reset() cancels an in-flight orbit (used when a tool/carousel takes over)", () => {
-        const rig = baseRig();
-        const orbit = new OrbitController();
-        engage(orbit, rig, 0.4, 0.5, 0.6, 0.5);
-        expect(orbit.active).toBe(true);
+    it("reset() cancels an in-flight orbit", () => {
+        const rig = baseRig(); const orbit = new OrbitController(); const ctx = mockCtx();
+        engage(orbit, rig, ctx);
         orbit.reset();
         expect(orbit.active).toBe(false);
     });

@@ -349,7 +349,7 @@ startLoop((dtMs) => {
     //      cancelled the instant a tool or the carousel takes over. The eased visibility drives
     //      the scene-center gizmo (here) and the mini-viewport (render section).
     const idle = router.activeId === null && !carousel.isOpen;
-    if (idle) orbit.update(frame.Left, frame.Right, rig, dtMs);
+    if (idle) orbit.update(frame.Left, frame.Right, rig, ctx, dtMs);
     else orbit.reset();
     orbit_visual += ((orbit.active ? 1 : 0) - orbit_visual) * Math.min(1, dtMs / 120);
     orbitGizmo.setOpacity(orbit_visual);

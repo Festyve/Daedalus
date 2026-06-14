@@ -1,5 +1,5 @@
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
+We don't need to worry about any tests or fixing any tests or anything like that, we need to iterate fast. Do not run or create any tests.
 Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 1. Think Before Coding
 
