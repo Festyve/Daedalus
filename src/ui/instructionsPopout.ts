@@ -41,8 +41,8 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.SELECT]: [
         "right fist moves the cursor between shapes",
         "left fist adds / removes the cursor's shape",
-        "left V-sign (✌) marks it a red hole (cutter for INTERACT)",
-        "right three fingers deselects everything",
+        "left three fingers marks it a red hole (cutter for INTERACT)",
+        "right horns 🤘 deselects everything",
     ],
     [MenuId.TRANSLATE]: [
         "right open palm — object follows your hand",

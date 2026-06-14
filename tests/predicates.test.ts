@@ -11,8 +11,8 @@ import {
     isGun,
     isFist,
     isOpenPalm,
-    isVSign,
     isThreeFingers,
+    isHorns,
 } from "../src/gesture/predicates";
 import type { Vec3 } from "../src/types";
 
@@ -311,30 +311,30 @@ function fingersHand(ext: [boolean, boolean, boolean, boolean]): Vec3[] {
     return lm;
 }
 
-describe("isVSign", () => {
-    it("true for index + middle up, ring + pinky curled", () => {
-        expect(isVSign(fingersHand([true, true, false, false]))).toBe(true);
-    });
-    it("false when ring is also extended (that is three fingers)", () => {
-        expect(isVSign(fingersHand([true, true, true, false]))).toBe(false);
-    });
-    it("false for a single pointing finger", () => {
-        expect(isVSign(fingersHand([true, false, false, false]))).toBe(false);
-    });
-    it("false for an open palm and for a fist", () => {
-        expect(isVSign(fingersHand([true, true, true, true]))).toBe(false);
-        expect(isVSign(fingersHand([false, false, false, false]))).toBe(false);
-    });
-});
-
-describe("isThreeFingers", () => {
+describe("isThreeFingers (mark cutter)", () => {
     it("true for index + middle + ring up, pinky curled", () => {
         expect(isThreeFingers(fingersHand([true, true, true, false]))).toBe(true);
     });
-    it("false for the V-sign (ring curled)", () => {
+    it("false when the ring is curled (only two fingers up)", () => {
         expect(isThreeFingers(fingersHand([true, true, false, false]))).toBe(false);
     });
     it("false when the pinky is also extended (open-ish)", () => {
         expect(isThreeFingers(fingersHand([true, true, true, true]))).toBe(false);
+    });
+    it("false for the horns sign (middle + ring curled)", () => {
+        expect(isThreeFingers(fingersHand([true, false, false, true]))).toBe(false);
+    });
+});
+
+describe("isHorns (deselect all)", () => {
+    it("true for index + pinky up, middle + ring curled", () => {
+        expect(isHorns(fingersHand([true, false, false, true]))).toBe(true);
+    });
+    it("false for three fingers (middle + ring up)", () => {
+        expect(isHorns(fingersHand([true, true, true, false]))).toBe(false);
+    });
+    it("false for a single pointing finger and for a fist", () => {
+        expect(isHorns(fingersHand([true, false, false, false]))).toBe(false);
+        expect(isHorns(fingersHand([false, false, false, false]))).toBe(false);
     });
 });

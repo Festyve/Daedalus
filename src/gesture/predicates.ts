@@ -110,25 +110,26 @@ export function isOpenPalm(lm: Vec3[], s: number): boolean {
 }
 
 /**
- * Peace / "V" sign: index + middle extended, ring + pinky curled (thumb ignored). A deliberate,
- * distinct pose used by SELECT to mark a shape as a cutter — it is never passed through by a fist's
- * release (which opens toward an open palm, not a V), so the two gestures don't collide.
- */
-export function isVSign(lm: Vec3[]): boolean {
-    return fingerExtended(lm, INDEX_TIP, FINGER_PIPS[0]) &&
-        fingerExtended(lm, FINGER_TIPS[1], FINGER_PIPS[1]) &&
-        !fingerExtended(lm, RING_TIP, RING_PIP) &&
-        !fingerExtended(lm, PINKY_TIP, PINKY_PIP);
-}
-
-/**
- * Three-finger sign: index + middle + ring extended, pinky curled (thumb ignored). Like the V-sign,
- * it is a deliberate pose that a fist's release never passes through (release opens toward a flat
- * palm, not three fingers), so it is a safe, collision-free trigger — SELECT uses it to deselect all.
+ * Three-finger sign: index + middle + ring extended, pinky curled (thumb ignored). A deliberate
+ * pose that a fist's release never passes through (release opens toward a flat palm, not three
+ * fingers) and that the gun predicate can't match (gun needs the ring CURLED) — so it is a safe,
+ * collision-free, gun-proof trigger. SELECT uses it to mark a shape as a cutter.
  */
 export function isThreeFingers(lm: Vec3[]): boolean {
     return fingerExtended(lm, INDEX_TIP, FINGER_PIPS[0]) &&
         fingerExtended(lm, FINGER_TIPS[1], FINGER_PIPS[1]) &&
         fingerExtended(lm, RING_TIP, RING_PIP) &&
         !fingerExtended(lm, PINKY_TIP, PINKY_PIP);
+}
+
+/**
+ * Rock / "horns" sign: index + pinky extended, middle + ring curled (thumb ignored). Distinct from
+ * the gun (which needs the pinky CURLED) and from a fist's release, so it is a safe, gun-proof
+ * trigger — SELECT uses it to deselect everything.
+ */
+export function isHorns(lm: Vec3[]): boolean {
+    return fingerExtended(lm, INDEX_TIP, FINGER_PIPS[0]) &&
+        !fingerExtended(lm, FINGER_TIPS[1], FINGER_PIPS[1]) &&
+        !fingerExtended(lm, RING_TIP, RING_PIP) &&
+        fingerExtended(lm, PINKY_TIP, PINKY_PIP);
 }

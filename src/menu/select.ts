@@ -2,11 +2,11 @@
 // fist controls — the SAME hands as the main tool menu: the RIGHT hand moves through the shapes and
 // the LEFT hand commits. The controls:
 //   - RIGHT FIST       → step the FOCUS CURSOR to the next shape.
-//   - LEFT FIST        → toggle the focused shape in / out of the selection.
-//   - LEFT V-SIGN (✌)  → toggle the focused shape NEGATIVE (a red cutter that INTERACT's UNION
-//                        carves into a hole). The V-sign is distinct from a fist's release (which
-//                        opens toward a flat palm, not a V), so the two left-hand actions never collide.
-//   - RIGHT THREE FINGERS → deselect EVERYTHING (wipe the selection clear).
+//   - LEFT FIST          → toggle the focused shape in / out of the selection.
+//   - LEFT THREE FINGERS → toggle the focused shape NEGATIVE (a red cutter that INTERACT's UNION
+//                          carves into a hole). Three fingers is gun-proof (the gun needs the ring
+//                          curled) and a fist's release never passes through it, so it never collides.
+//   - RIGHT HORNS (🤘)   → deselect EVERYTHING (wipe the selection clear). Pinky extended → gun-proof.
 // The focused shape pulses so you can see what the next left-fist will toggle; selected shapes are
 // drawn bright, the rest ghosted (see core/shapes.refreshHighlight). The selection persists after you
 // leave SELECT, so the next tool edits the shapes you chose, and the counter (ui/chrome) shows how many.
@@ -18,7 +18,7 @@ import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
 import { classify, GestureDebouncer } from "../gesture/detect";
-import { isVSign, isThreeFingers } from "../gesture/predicates";
+import { isThreeFingers, isHorns } from "../gesture/predicates";
 import {
     allShapes,
     shapeCount,
@@ -33,8 +33,8 @@ import {
     refreshHighlight,
 } from "../core/shapes";
 
-// A V-sign / three-finger sign commits after this many steady frames (matches the pose debounce).
-const V_FRAMES = 5;
+// The three-finger / horns signs commit after this many steady frames (matches the pose debounce).
+const SIGN_FRAMES = 5;
 
 // Focus-cursor pulse colour (the shape the left fist would toggle shimmers toward white).
 const WHITE = new THREE.Color(0xffffff);
@@ -49,11 +49,11 @@ export function createSelectMenu(): MenuModule {
     let execGate = new GestureDebouncer();   // right hand → cycle (fist)
     let navGate = new GestureDebouncer();     // left hand → toggle select (fist)
     let execWasFist = false;
-    let execThreeStreak = 0;  // consecutive right three-finger frames (deselect-all at V_FRAMES)
-    let execWasThree = false;
+    let execHornsStreak = 0;  // consecutive right horns frames (deselect-all at SIGN_FRAMES)
+    let execWasHorns = false;
     let navWasFist = false;
-    let navVStreak = 0;       // consecutive left V-sign frames (commits the cutter toggle at V_FRAMES)
-    let navWasV = false;
+    let navThreeStreak = 0;   // consecutive left three-finger frames (cutter toggle at SIGN_FRAMES)
+    let navWasThree = false;
 
     // Make the focused shape shimmer toward white so the user can see what the left fist will
     // toggle — even when it is currently unselected (then we also lift its opacity above the
@@ -102,9 +102,9 @@ export function createSelectMenu(): MenuModule {
                 `</div>` +
                 `<div style="font-size:11px;color:rgba(255,255,255,0.55);line-height:1.5">` +
                     (total === 1
-                        ? "Left fist selects this shape · left <b>V-sign ✌</b> makes it a <span style=\"color:#ff6b6b\">hole</span>."
-                        : "Right fist moves the cursor · left fist adds / removes · left <b>V-sign ✌</b> marks a <span style=\"color:#ff6b6b\">hole</span>.") +
-                    `<br><span style=\"color:rgba(255,255,255,0.4)\">Right <b>three fingers</b> deselects everything.</span>` +
+                        ? "Left fist selects this shape · left <b>three fingers</b> makes it a <span style=\"color:#ff6b6b\">hole</span>."
+                        : "Right fist moves the cursor · left fist adds / removes · left <b>three fingers</b> marks a <span style=\"color:#ff6b6b\">hole</span>.") +
+                    `<br><span style=\"color:rgba(255,255,255,0.4)\">Right <b>horns 🤘</b> deselects everything.</span>` +
                 `</div>` +
             `</div>`,
         );
@@ -119,11 +119,11 @@ export function createSelectMenu(): MenuModule {
             execGate = new GestureDebouncer();
             navGate = new GestureDebouncer();
             execWasFist = false;
-            execThreeStreak = 0;
-            execWasThree = false;
+            execHornsStreak = 0;
+            execWasHorns = false;
             navWasFist = false;
-            navVStreak = 0;
-            navWasV = false;
+            navThreeStreak = 0;
+            navWasThree = false;
             // Park the focus cursor on the primary selection if there is one.
             if (ctx.mesh) ctx.focusIndex = Math.max(0, allShapes(ctx).indexOf(ctx.mesh));
             refreshHighlight(ctx);
@@ -150,15 +150,19 @@ export function createSelectMenu(): MenuModule {
             }
             execWasFist = execFist;
 
-            // Right THREE FINGERS (rising edge) → deselect EVERYTHING. A distinct pose (not reached by
-            // a fist's release), debounced with its own streak like the V-sign.
-            execThreeStreak = exec && isThreeFingers(exec.landmarks) ? Math.min(V_FRAMES, execThreeStreak + 1) : 0;
-            const execThree = execThreeStreak >= V_FRAMES;
-            if (execThree && !execWasThree) {
+            // Right HORNS 🤘 (rising edge) → deselect EVERYTHING. Gun-proof (pinky extended) and not
+            // reached by a fist's release, debounced with its own streak.
+            execHornsStreak = exec && isHorns(exec.landmarks) ? Math.min(SIGN_FRAMES, execHornsStreak + 1) : 0;
+            const execHorns = execHornsStreak >= SIGN_FRAMES;
+            if (execHorns && !execWasHorns) {
+                // Wipe everything clear: drop the selection AND every cutter tag, so no shape is left
+                // red / showing a HOLE badge while unselected.
                 clearSelection(ctx);
+                for (const m of allShapes(ctx)) if (isNegative(m)) toggleNegative(m);
+                refreshHighlight(ctx);
                 paint(ctx);
             }
-            execWasThree = execThree;
+            execWasHorns = execHorns;
 
             // Left (nav) FIST (rising edge) → toggle the focused shape in/out of the selection.
             const navFist = navGate.push(nav ? classify(nav.landmarks, nav.world, null).name : "none") === "fist";
@@ -171,12 +175,12 @@ export function createSelectMenu(): MenuModule {
             }
             navWasFist = navFist;
 
-            // Left V-SIGN (✌, rising edge) → mark / unmark the focused shape as NEGATIVE (a cutter). A
-            // shape becoming a cutter is auto-added to the selection so it takes part in the combine.
-            // classify() has no "V" name, so detect it directly and debounce with a short streak.
-            navVStreak = nav && isVSign(nav.landmarks) ? Math.min(V_FRAMES, navVStreak + 1) : 0;
-            const navV = navVStreak >= V_FRAMES;
-            if (navV && !navWasV) {
+            // Left THREE FINGERS (rising edge) → mark / unmark the focused shape as NEGATIVE (a cutter).
+            // A shape becoming a cutter is auto-added to the selection so it takes part in the combine.
+            // classify() has no name for this, so detect it directly and debounce with a short streak.
+            navThreeStreak = nav && isThreeFingers(nav.landmarks) ? Math.min(SIGN_FRAMES, navThreeStreak + 1) : 0;
+            const navThree = navThreeStreak >= SIGN_FRAMES;
+            if (navThree && !navWasThree) {
                 const f = focusedShape(ctx);
                 if (f) {
                     toggleNegative(f);
@@ -184,7 +188,7 @@ export function createSelectMenu(): MenuModule {
                     paint(ctx);
                 }
             }
-            navWasV = navV;
+            navWasThree = navThree;
         },
 
         exit(ctx: SceneContext): void {
