@@ -34,7 +34,7 @@ const NAV_GESTURES: ReferenceRow[] = [
 // Right hand executes unless a line says otherwise.
 const TOOL_HINTS: Record<MenuId, string[]> = {
     [MenuId.ADD_SHAPES]: [
-        "flick to cycle cube · sphere · tetrahedron",
+        "flick to cycle cube · sphere · cylinder",
         "pinch to pick · right pinch spawns at your hand",
         "each spawn adds a new shape (the others stay)",
     ],

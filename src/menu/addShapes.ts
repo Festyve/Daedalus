@@ -3,15 +3,15 @@
 //
 // Paradigm (SPEC §5.1, item 5):
 //   - A 3D CAROUSEL (the same wheel component as the tool menu) shows the primitives:
-//     Cube · Sphere · Tetra · Cylinder. The exec (right) hand SWIPES to spin the wheel and
-//     PINCHES to spawn the centered shape at the hand — so every after-the-edit-menu selection
-//     reads as the same carousel format.
+//     Cube · Sphere · Cylinder. The nav (left) hand SQUEEZES to spin the wheel and
+//     the exec (right) hand SQUEEZES to spawn the centered shape at the right hand — so every
+//     after-the-edit-menu selection reads as the same carousel format.
 //   - The spawned shape immediately becomes the active sculpt target AND the sole selection.
 //
-// The right hand is the executor (`exec`); the left hand (`nav`) drives the global tool wheel
-// elsewhere and is unused here. Zero per-frame allocation in update(): the fingertip
-// unprojection reuses ctx.scratch, the prev-frame landmark snapshot is a pre-allocated reused
-// array, and the gesture handed to the carousel is a single reused object.
+// The left hand (`nav`) advances the carousel; the right hand (`exec`) spawns at the right hand.
+// Zero per-frame allocation in update(): the fingertip unprojection reuses ctx.scratch, the
+// prev-frame landmark snapshot is a pre-allocated reused array, and the gesture handed to the
+// carousel is a single reused object.
 import * as THREE from "three";
 import type { GestureState, HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
@@ -28,12 +28,11 @@ import { classify } from "../gesture/detect";
 // Right INDEX_TIP landmark index (MediaPipe Hands), the spawn-origin fingertip (§12).
 const INDEX_TIP = 8;
 
-// The four primitives offered, in carousel order (SPEC §5.1).
-type ShapeKind = "cube" | "sphere" | "tetra" | "cylinder";
+// The three primitives offered, in carousel order (SPEC §5.1).
+type ShapeKind = "cube" | "sphere" | "cylinder";
 const SHAPES: ReadonlyArray<{ kind: ShapeKind; label: string; glyph: string }> = [
     { kind: "cube", label: "CUBE", glyph: "◼" },
     { kind: "sphere", label: "SPHERE", glyph: "●" },
-    { kind: "tetra", label: "TETRA", glyph: "▲" },
     { kind: "cylinder", label: "CYLINDER", glyph: "▮" },
 ];
 
@@ -108,8 +107,8 @@ export function createAddShapesMenu(): MenuModule {
     const NONE_GESTURE: GestureState = { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     const FAR_TIP = new THREE.Vector3(10, 10, 0);
 
-    // Cache the current exec hand so onSelect can access it.
-    let currentExecHand: HandPose | null = null;
+    // Cache the spawning hand so onSelect can spawn at the correct position.
+    let spawnHand: HandPose | null = null;
 
     function snapshotLandmarks(lm: Vec3[]): void {
         const n = Math.min(lm.length, prev_landmarks.length);
@@ -154,11 +153,11 @@ export function createAddShapesMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
-            panel.setInstructions("<b>RIGHT PINCH</b> advance shape &nbsp;·&nbsp; <b>LEFT SQUEEZE</b> spawn");
+            panel.setInstructions("<b>LEFT SQUEEZE</b> advance shape &nbsp;·&nbsp; <b>RIGHT SQUEEZE</b> spawn");
             panel.setBody(
                 `<div style="font-size:12px;color:rgba(255,255,255,0.6);line-height:1.6">` +
-                `Pinch your right hand to advance shapes, then squeeze your left hand to ` +
-                `spawn the centered shape at your hand.</div>`,
+                `Squeeze your left hand to advance shapes, then squeeze your right hand to ` +
+                `spawn the centered shape at your right hand.</div>`,
             );
             panel.show();
 
@@ -167,18 +166,18 @@ export function createAddShapesMenu(): MenuModule {
             ctx.camera.add(carousel.object);
             carousel.open(FAR_TIP);
 
-            // Wire up selection: left-hand pinch triggers onSelect when the carousel closes.
+            // Wire up selection: right-hand pinch triggers onSelect when the carousel closes.
             carousel.onSelect = (id) => {
-                if (currentExecHand) {
+                if (spawnHand) {
                     fingertipToWorld(
-                        currentExecHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
+                        spawnHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
                         ctx.scratch.ray, ctx.scratch.plane, spawn_world,
                     );
                     spawnShape(id as ShapeKind, ctx, spawn_world);
                 }
             };
 
-            currentExecHand = null;
+            spawnHand = null;
             has_prev = false;
             spawn_mesh = null;
             spawn_t = 0;
@@ -191,29 +190,29 @@ export function createAddShapesMenu(): MenuModule {
             // Advance any in-flight spawn scale-in first (keeps growing even if the hand drops).
             advanceSpawn(dt);
 
-            currentExecHand = exec;
+            spawnHand = exec;
 
-            if (!exec) {
+            if (!nav) {
                 has_prev = false;
-                carousel.update(FAR_TIP, NONE_GESTURE, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSec);
+                carousel.update(FAR_TIP, exec ? classify(exec.landmarks, exec.world, null) : NONE_GESTURE, NONE_GESTURE, dtSec);
                 return;
             }
 
-            const lm = exec.landmarks;
-            const g = classify(lm, exec.world, has_prev ? prev_landmarks : null);
+            const lm = nav.landmarks;
+            const g = classify(lm, nav.world, has_prev ? prev_landmarks : null);
 
-            // Aim the carousel glow at the exec fingertip (camera-local).
+            // Aim the carousel glow at the nav fingertip (camera-local).
             fingertipToWorld(
                 lm[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
                 ctx.scratch.ray, ctx.scratch.plane, tip_world,
             );
             ctx.camera.worldToLocal(tip_local.copy(tip_world));
 
-            // Pass both right-hand (exec) gesture for advancing and left-hand (nav) gesture for selecting.
-            const navG = nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE;
-            carousel.update(tip_local, g, navG, dtSec);
+            // Pass left-hand (nav) gesture for advancing and right-hand (exec) gesture for spawning.
+            const execG = exec ? classify(exec.landmarks, exec.world, null) : NONE_GESTURE;
+            carousel.update(tip_local, execG, g, dtSec);
 
-            snapshotLandmarks(lm);
+            snapshotLandmarks(nav.landmarks);
         },
 
         exit(ctx: SceneContext): void {
@@ -234,7 +233,7 @@ export function createAddShapesMenu(): MenuModule {
                 spawn_mesh = null;
             }
             spawn_t = 0;
-            currentExecHand = null;
+            spawnHand = null;
             // Spawned mesh is intentionally retained as the selection — the user's creation.
         },
     };

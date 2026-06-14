@@ -185,7 +185,7 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     // Ensure the authored torus morph target exists BEFORE the mesh is built, so the
     // Mesh constructor's updateMorphTargets() seeds morphTargetInfluences from it.
     // attachMesh is the single chokepoint for the active sculpt target, so authoring the
-    // morph here means EVERY spawned shape (cube / sphere / tetra / cylinder) can morph to
+    // morph here means EVERY spawned shape (cube / sphere / cylinder) can morph to
     // the torus (§7.1, §7.2) — makeShape() deliberately leaves morph authoring to this layer.
     if (!geometry.morphAttributes.position || geometry.morphAttributes.position.length === 0) {
         buildTorusMorph(geometry);

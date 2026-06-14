@@ -63,9 +63,12 @@ const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow 
 //      single sweep is still exactly one step (cooldown + settle re-arm). Same detector and
 //      tuning the SELECT / ADD SHAPES / INTERACT menus use, so the feel is identical.
 
-// Pinch closure (rising edge) that selects the centered tool. Lowered from 0.7 so the
-// (non-dominant) nav hand commits a selection as easily as the exec hand applies one.
-const PINCH_SELECT = 0.6;
+// Pinch closure thresholds with hysteresis: arm (latch) when pinch rises above ON,
+// disarm (re-arm allowed) only when pinch drops well below to OFF. The gap prevents
+// the latch from resetting mid-open when the value briefly dips and spikes during
+// a slow fist release.
+const PINCH_ON = 0.6;
+const PINCH_OFF = 0.35;
 
 // ---- Texture resolution for the per-tool icon tiles + the label strip ----
 const TILE_PX = 256;
@@ -272,6 +275,8 @@ export class Carousel {
     private selectCooldown = 0;                  // select pinch cooldown (ms)
     private rightPinchLatched = false;           // right-pinch edge tracking for advance
     private leftPinchLatched = false;            // left-pinch edge tracking for select
+    private prevLeftPinch = 0;                   // previous-frame pinch for 2-frame disarm debounce
+    private prevRightPinch = 0;
 
     private fade = 0;                            // 0 hidden .. 1 fully shown
     private fadeDir: 0 | 1 | -1 = 0;             // 0 idle, +1 opening, -1 closing
@@ -431,10 +436,16 @@ export class Carousel {
         this.object.visible = true;
         this.fadeDir = 1;
         this.pendingSelect = false;
-        this.leftPinchLatched = false;
-        this.rightPinchLatched = false;
+        // Pre-latch both pinches so any gesture held at open time must be released before
+        // it can fire. Prevents carried-over pinches/fists from cascading into a fresh carousel.
+        this.leftPinchLatched = true;
+        this.rightPinchLatched = true;
         this.advanceCooldown = 0;
         this.selectCooldown = 0;
+        // Seed prev-pinch high so the 2-frame debounce can't disarm on the very first frame —
+        // any carried-over pinch must pass through two frames below PINCH_OFF to disarm.
+        this.prevLeftPinch = 1.0;
+        this.prevRightPinch = 1.0;
         this.selectedId = null;
         this.glow = 0;
         this.tmpLocal.copy(atTip); // touch atTip so callers can rely on it being read
@@ -497,27 +508,30 @@ export class Carousel {
 
         // ---- Gesture handling (only while open and not mid-close) ----
         if (this.isOpen) {
-            // Left-hand pinch (rising edge) → select centered element with cooldown.
-            const leftPinching = leftG.pinch > PINCH_SELECT;
-            if (leftPinching && !this.leftPinchLatched && this.selectCooldown === 0) {
+            // Left-hand pinch (rising edge with hysteresis) → select centered element.
+            // Arm above PINCH_ON; disarm only below PINCH_OFF so a slow fist release
+            // doesn't dip-and-spike through the threshold and re-trigger.
+            if (leftG.pinch > PINCH_ON && !this.leftPinchLatched && this.selectCooldown === 0) {
                 this.leftPinchLatched = true;
-                this.selectCooldown = 250;  // 250ms cooldown
+                this.selectCooldown = 250;
                 this.pendingSelect = true;
-                this.selectedId = this.order[this.active]; // latch the centered element NOW
+                this.selectedId = this.order[this.active];
                 this.close();
-            } else if (!leftPinching) {
+            } else if (leftG.pinch < PINCH_OFF && this.prevLeftPinch < PINCH_OFF && this.selectCooldown === 0) {
+                // Require TWO consecutive frames below PINCH_OFF before disarming: a single-frame
+                // noise dip during fist opening can't reset the latch (prev frame was still high),
+                // preventing the bounce pattern 0.8→0.34(dip)→0.7(bounce→spurious fire).
                 this.leftPinchLatched = false;
             }
 
-            // Right-hand pinch (rising edge) → advance one element to the right with cooldown.
-            // Skip while a selection is committing: a pinch's drift must not re-step after latching.
+            // Right-hand pinch (rising edge with hysteresis) → advance one element.
+            // Skip while a selection is committing.
             if (!this.pendingSelect) {
-                const rightPinching = rightG.pinch > PINCH_SELECT;
-                if (rightPinching && !this.rightPinchLatched && this.advanceCooldown === 0) {
+                if (rightG.pinch > PINCH_ON && !this.rightPinchLatched && this.advanceCooldown === 0) {
                     this.rightPinchLatched = true;
-                    this.advanceCooldown = 250;  // 250ms cooldown
-                    this.step(1);  // advance by 1 to the right
-                } else if (!rightPinching) {
+                    this.advanceCooldown = 250;
+                    this.step(1);
+                } else if (rightG.pinch < PINCH_OFF && this.prevRightPinch < PINCH_OFF && this.advanceCooldown === 0) {
                     this.rightPinchLatched = false;
                 }
             }
@@ -602,6 +616,9 @@ export class Carousel {
         // ---- Background panel + label opacity track the fade ----
         this.bgMat.opacity = 0.82 * this.fade;
         this.labelMat.opacity = this.fade;
+
+        this.prevLeftPinch = leftG.pinch;
+        this.prevRightPinch = rightG.pinch;
     }
 
     // Release all GPU resources. Geometry is shared across tiles (created once), so dispose
