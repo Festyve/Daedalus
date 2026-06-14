@@ -119,6 +119,10 @@ export function createAddShapesMenu(): MenuModule {
     // Rising-edge latch for the left-squeeze spawn. Spawning is handled in update() (not via
     // carousel.onSelect), so it never closes the wheel — you can add several shapes in a row.
     let wasSpawn = false;
+    // Per-kind cooldown: records the timestamp (ms) of the last spawn for each shape kind.
+    // The same kind cannot be spawned again within SPAWN_COOLDOWN_MS.
+    const SPAWN_COOLDOWN_MS = 1000;
+    const last_spawn_ms: Record<string, number> = {};
 
     function snapshotLandmarks(lm: Vec3[]): void {
         const n = Math.min(lm.length, prev_landmarks.length);
@@ -206,13 +210,18 @@ export function createAddShapesMenu(): MenuModule {
 
             // Left squeeze (armed, rising edge) → spawn the centered shape at the left fingertip,
             // handled HERE rather than via the carousel's select channel, so the wheel stays open.
+            // 1000 ms cooldown per shape kind prevents palm oscillation from flooding spawns.
+            const current_kind = carousel.current as ShapeKind;
             const spawning = spawn_armed && navG.pinch > PINCH_ON;
-            if (spawning && !wasSpawn && spawnHand) {
+            const now = performance.now();
+            const on_cooldown = now - (last_spawn_ms[current_kind] ?? 0) < SPAWN_COOLDOWN_MS;
+            if (spawning && !wasSpawn && spawnHand && !on_cooldown) {
                 fingertipToWorld(
                     spawnHand.landmarks[INDEX_TIP], ctx.camera, ctx.interactionPlaneZ,
                     ctx.scratch.ray, ctx.scratch.plane, spawn_world,
                 );
-                spawnShape(carousel.current as ShapeKind, ctx, spawn_world);
+                spawnShape(current_kind, ctx, spawn_world);
+                last_spawn_ms[current_kind] = now;
             }
             wasSpawn = spawning;
 
