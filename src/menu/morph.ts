@@ -281,9 +281,6 @@ class MorphMenu implements MenuModule {
         this.card.setBody(
             `<div style="display:flex;flex-direction:column;gap:14px">` +
                 `<div style="font-size:13px;color:${stateColor};letter-spacing:0.08em">${stateText}</div>` +
-                `<div style="height:14px;border:0.5px solid rgba(255,255,255,0.35);border-radius:7px;overflow:hidden">` +
-                    `<div style="height:100%;width:${pct}%;background:${accent};box-shadow:0 0 10px ${accent}"></div>` +
-                `</div>` +
                 `<div style="font-size:24px;font-weight:700;color:${labelColor};text-shadow:0 0 10px ${labelColor}">${label}</div>` +
             `</div>`,
         );
