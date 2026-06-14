@@ -354,6 +354,9 @@ export function createDecorateMenu(): MenuModule {
     let pinchLatched = false;
     // Previous-frame landmarks for classify()'s flick/velocity channel.
     let prevExecLm: HandPose["landmarks"] | null = null;
+    // The AI/voice path consumes only the FIRST utterance per session; after it fires we
+    // stop the mic so later speech can't keep re-triggering the decoration + reply.
+    let voiceConsumed = false;
 
     // Fire the hardcoded decoration on the real mesh (§8.1 step 3): flood JAM icing
     // across the crown, then scatter rainbow sprinkles on the iced region. Deterministic
@@ -372,7 +375,11 @@ export function createDecorateMenu(): MenuModule {
     // Handle a finalized voice transcript (§8.1): show it, fire the decoration NOW,
     // then stream + speak the scripted reply with the typewriter.
     function onTranscript(ctx: SceneContext, transcript: string): void {
-        if (!chat) return;
+        if (!chat || voiceConsumed) return;
+        // Only the FIRST utterance drives the AI; stop listening so the mic doesn't keep
+        // re-triggering on later speech.
+        voiceConsumed = true;
+        speech?.stop();
         chat.addUser(transcript);
         fireDecoration(ctx);
 
@@ -388,6 +395,7 @@ export function createDecorateMenu(): MenuModule {
     function enter(ctx: SceneContext): void {
         pinchLatched = false;
         prevExecLm = null;
+        voiceConsumed = false;
 
         chat = new ChatPanel();
         document.body.appendChild(chat.el);

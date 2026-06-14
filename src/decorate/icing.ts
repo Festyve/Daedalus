@@ -25,20 +25,22 @@ import type { IcingDesign } from "../types";
 
 // ---- Tunables (SPEC §8.3) -------------------------------------------------------
 
-// Icing line on the mesh's own up-axis (local +Y = up). The donut stands upright with
-// its hole along +Z (facing the camera — see render/geometry.ts), so "top" is the upper
-// crown of the ring. At/above this line icing sticks fully; below it only the noisy drip
-// boundary lets icing through.
-const Y_ICING_LINE = 0.0;
-// How far below the icing line a drip streak can still reach (object units).
-const DRIP_REACH = 0.55;
+// Jam coats the FRONT HALF of the donut. The donut's hole axis is local +Z (it faces the
+// camera — see render/geometry.ts), so the plane parallel to the donut's ring is z = const;
+// we split on it and glaze the camera-facing +Z half of the tube, all the way around the
+// ring. At/in-front-of this z line jam sticks fully; behind it (toward −Z) only the noisy
+// drip boundary lets jam creep over the rim.
+const ICING_PLANE_Z = 0.0;
+// How far behind the split (toward −Z) a drip can still reach (object units). Sized for the
+// tube depth (±tube radius ≈ 0.42), so drips just creep over the rim, not across the back.
+const DRIP_REACH = 0.12;
 // Spatial frequency of the drip columns around the ring, and the amplitude of the
 // boundary noise that jitters each column's depth — this is the "noisy boundary".
 const DRIP_FREQ = 8.0;
 const DRIP_NOISE = 0.45;
-// The crown icing line is NOT a flat circle — it undulates around the ring like
-// hand-poured jam. Two non-harmonic octaves give an organic, curvy upper boundary.
-const LINE_WAVE_AMP = 0.13;
+// The front/back split is NOT a flat circle — it undulates around the ring so the jam edge
+// reads hand-poured. Two non-harmonic octaves give an organic, curvy boundary.
+const LINE_WAVE_AMP = 0.04;
 const LINE_WAVE_FREQ_A = 3.0;
 const LINE_WAVE_FREQ_B = 7.0;
 // Laplacian smoothing iterations over the painted boundary band (§8.3).
@@ -77,10 +79,10 @@ function dripNoise(angle: number): number {
     return 0.5 * a + 0.32 * b + 0.18 * c;
 }
 
-// Wavy crown boundary: the y-height of the icing line at a given ring angle. The
-// undulation makes the top edge of the jam read as organic, not a machined circle.
+// Wavy front/back split: the z (depth) of the jam boundary at a given ring angle. The
+// undulation makes the jam edge read as organic, not a machined circle.
 function icingLineAt(angle: number): number {
-    return Y_ICING_LINE
+    return ICING_PLANE_Z
         + LINE_WAVE_AMP * Math.sin(angle * LINE_WAVE_FREQ_A + 0.5)
         + LINE_WAVE_AMP * 0.5 * Math.sin(angle * LINE_WAVE_FREQ_B + 1.7);
 }
@@ -193,16 +195,20 @@ function colorAttribute(geometry: THREE.BufferGeometry, vertCount: number): THRE
 // reaches through a NOISY drip boundary whose depth varies per angular column, so
 // the lower edge reads like irregular dripping jam. Returns 0 outside the drips.
 function heightGate(x: number, y: number, z: number, dripBias: number): number {
-    const angle = Math.atan2(z, x);
+    // Split the donut by a plane parallel to its ring (z = line) and coat the FRONT half:
+    // the camera-facing +Z side of the tube, all the way around the ring. The ring angle
+    // (atan2(y, x), since the hole axis is local +Z) drives the wavy split + drip columns so
+    // the jam edge curves like hand-poured glaze rather than a machined seam.
+    const angle = Math.atan2(y, x);
     const line = icingLineAt(angle);
-    if (y >= line) return 1;
+    if (z >= line) return 1;
     // Frequency-modulated streak phase → drip columns wander and curve around the
     // ring instead of sitting on an even comb, so the drips look hand-made.
     const phase = angle * DRIP_FREQ + 1.3 * Math.sin(angle * 2.3 + 0.9);
     const streak = 0.5 + 0.5 * Math.sin(phase);
     const jitter = 1 - DRIP_NOISE * dripNoise(phase);
     const reach = DRIP_REACH * (dripBias + (1 - dripBias) * streak) * jitter;
-    const depth = line - y;
+    const depth = line - z;
     if (depth > reach) return 0;
     // Fade the gate out toward the drip tip so the noisy boundary is soft.
     return 1 - depth / reach;
