@@ -29,7 +29,7 @@ import { MenuId } from "../types";
 import { T, FONT, TOOL_ACCENT } from "../render/tokens";
 import { Panel } from "./panel";
 import { fingertipToWorld } from "../math/coords";
-import { isOpenPalm, isFist } from "../gesture/predicates";
+import { isFist, isOpenPalm } from "../gesture/predicates";
 import { selectedShapes } from "../core/shapes";
 
 // MediaPipe palm-center anchor: middle-finger MCP reads as the centre of the hand, so the
@@ -41,8 +41,9 @@ const PALM_ANCHOR = 9;
 const COMMIT_FRAMES = 5;
 
 // Per-frame smoothing toward the hand target while grabbed. 1 = rigid (snaps exactly to
-// the hand); lower lags slightly to absorb landmark jitter. Tuned for a responsive feel.
-const TRACK_LERP = 0.5;
+// the hand); lower lags slightly to absorb landmark jitter. High enough that the object
+// stays glued to the hand even during fast motion, with just enough give to soak jitter.
+const TRACK_LERP = 0.85;
 
 export function createTranslateMenu(): MenuModule {
     const accent = TOOL_ACCENT[MenuId.TRANSLATE];
@@ -51,9 +52,11 @@ export function createTranslateMenu(): MenuModule {
 
     // Grab state. `grabbed` true ⇒ the object is currently following the hand.
     let grabbed = false;
-    // Debounce counters for the two discrete poses (reset when the pose is not seen).
-    let open_frames = 0;
+    // Debounce counters: fist to engage, open palm to release. Releasing on an explicit
+    // open palm (rather than merely "not a fist") means a fist that momentarily flickers
+    // during fast motion — landmarks blur and isFist drops out — does NOT drop the grab.
     let fist_frames = 0;
+    let open_frames = 0;
 
     // Per-selected-mesh offset (parent space) captured at grab: meshLocalPos − handPointParent.
     // Applying each keeps every selected shape's position relative to the hand fixed, so the whole
@@ -76,7 +79,7 @@ export function createTranslateMenu(): MenuModule {
             panel.setBody(
                 `<div style="color:${T.textDim};font-size:12px;line-height:1.6">` +
                 "No object yet.<br>Use <b>ADD SHAPES</b> to create one," +
-                "<br>then open your palm to grab it." +
+                "<br>then make a fist to grab it." +
                 "</div>",
             );
             return;
@@ -109,12 +112,12 @@ export function createTranslateMenu(): MenuModule {
 
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: "TRANSLATE", accent });
-            panel.setInstructions("OPEN PALM&nbsp;&nbsp;GRAB&nbsp;&nbsp;·&nbsp;&nbsp;FIST&nbsp;&nbsp;LOCK");
+            panel.setInstructions("FIST&nbsp;&nbsp;GRAB&nbsp;&nbsp;·&nbsp;&nbsp;OPEN HAND&nbsp;&nbsp;RELEASE");
             panel.show();
 
             grabbed = false;
-            open_frames = 0;
             fist_frames = 0;
+            open_frames = 0;
 
             paint(ctx);
         },
@@ -128,21 +131,23 @@ export function createTranslateMenu(): MenuModule {
             if (!mesh || !exec) {
                 if (grabbed) {
                     grabbed = false;
-                    open_frames = 0;
                     fist_frames = 0;
+                    open_frames = 0;
                 }
                 paint(ctx);
                 return;
             }
 
-            // Classify the hand with scale-invariant world landmarks (§3.5). Debounce each
-            // discrete pose so a single stray frame cannot flip the grab/lock state (§12).
-            const open_now = isOpenPalm(exec.world, exec.handScale);
+            // Debounce fist-to-grab and open-palm-to-release separately so a single stray
+            // frame cannot flip the state. Fist and open palm are mutually exclusive poses,
+            // so anything in between (a half-curl mid-motion) advances neither counter and
+            // simply holds the current grab state.
             const fist_now = isFist(exec.world, exec.handScale);
-            open_frames = open_now ? open_frames + 1 : 0;
+            const open_now = isOpenPalm(exec.world, exec.handScale);
             fist_frames = fist_now ? fist_frames + 1 : 0;
+            open_frames = open_now ? open_frames + 1 : 0;
 
-            if (!grabbed && open_frames >= COMMIT_FRAMES) {
+            if (!grabbed && fist_frames >= COMMIT_FRAMES) {
                 // Grab: latch a per-mesh offset for every SELECTED shape so the whole selection
                 // stays where it is and follows the hand from there (no teleport). Convert the
                 // palm world point into each mesh's parent space, then offset = meshLocal −
@@ -166,8 +171,8 @@ export function createTranslateMenu(): MenuModule {
                     grabOffsets.push(m.position.clone().sub(hand_parent));
                 }
                 grabbed = true;
-            } else if (grabbed && fist_frames >= COMMIT_FRAMES) {
-                // Fist → lock in place. The meshes keep their current positions untouched.
+            } else if (grabbed && open_frames >= COMMIT_FRAMES) {
+                // Open palm → release. The meshes keep their current positions untouched.
                 grabbed = false;
             }
 
@@ -203,8 +208,8 @@ export function createTranslateMenu(): MenuModule {
                 panel = null;
             }
             grabbed = false;
-            open_frames = 0;
             fist_frames = 0;
+            open_frames = 0;
         },
     };
 }

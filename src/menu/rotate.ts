@@ -57,8 +57,15 @@ const AXIS_COLOR_X = 0xff4d4d;
 const AXIS_COLOR_Y = 0x4dff7a;
 const AXIS_COLOR_Z = 0x4d8cff;
 // Dim vs. highlighted ring opacity (cheap uniform update — no geometry churn).
-const RING_DIM = 0.28;
-const RING_HOT = 0.95;
+const RING_DIM = 0.18;
+const RING_HOT = 1.0;
+// Per-ring phase offsets (120° apart) for the idle pulse, so the three rings breathe
+// sequentially rather than in sync.
+const RING_PHASES = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
+const RING_PULSE_FREQ = 1.6; // Hz
+// Scale values for the engage burst: spike to BURST then lerp back to NORMAL.
+const SCALE_NORMAL = 1.0;
+const SCALE_BURST = 1.2;
 
 // Below this squared rotation-axis magnitude the delta is ~identity and the dominant
 // axis is ill-defined, so no ring is highlighted.
@@ -80,6 +87,9 @@ export function createRotateMenu(): MenuModule {
     // frame we apply the hand-swept delta to every snapshot (orbiting positions around the
     // centroid AND spinning each mesh). With one shape this reduces to spinning it in place.
     let engaged = false;
+    // Arcball scale animation: spikes to SCALE_BURST on engage edge, lerps back to SCALE_NORMAL.
+    let current_scale = SCALE_NORMAL;
+    let last_engaged = false;
     const Q_START_INV = new THREE.Quaternion(); // (Q_start)⁻¹
     const Q_CURRENT = new THREE.Quaternion();    // this frame's hand orientation
     const engageCenter = new THREE.Vector3();    // group centroid at engage
@@ -151,11 +161,18 @@ export function createRotateMenu(): MenuModule {
         return best;
     }
 
-    // Highlight one ring (or none) by axis index; others fade to dim. Opacity-only update.
-    function highlightRing(active: 0 | 1 | 2 | null): void {
+    // Highlight one ring (or none) by axis index. When not engaged the rings pulse with a
+    // sequential sin-wave; when engaged the active ring flares to RING_HOT and the others
+    // nearly vanish, giving sharp visual feedback on which axis is being turned.
+    function highlightRing(active: 0 | 1 | 2 | null, now: number, is_engaged: boolean): void {
+        const t = now / 1000;
         for (let i = 0; i < rings.length; i++) {
             const mat = rings[i].material as THREE.MeshBasicMaterial;
-            mat.opacity = i === active ? RING_HOT : RING_DIM;
+            if (is_engaged) {
+                mat.opacity = i === active ? RING_HOT : 0.06;
+            } else {
+                mat.opacity = RING_DIM + 0.1 * Math.sin(t * RING_PULSE_FREQ * Math.PI * 2 + RING_PHASES[i]);
+            }
         }
     }
 
@@ -177,6 +194,8 @@ export function createRotateMenu(): MenuModule {
             transparent: true,
             opacity: RING_DIM,
             toneMapped: false,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
         });
         const ring = new THREE.Mesh(geo, mat);
         // A TorusGeometry lies in its local XY plane (hole axis = local Z). Orient each ring
@@ -248,7 +267,10 @@ export function createRotateMenu(): MenuModule {
             if (!right) {
                 // Hand lost: release any grab and hold the group where it is.
                 engaged = false;
-                highlightRing(null);
+                last_engaged = false;
+                current_scale += (SCALE_NORMAL - current_scale) * 0.12;
+                arcball.scale.setScalar(current_scale);
+                highlightRing(null, performance.now(), false);
                 paintPanel(primary, null);
                 return;
             }
@@ -301,7 +323,14 @@ export function createRotateMenu(): MenuModule {
                 }
             }
 
-            highlightRing(active);
+            // Scale burst: spike the arcball on the engage edge, then lerp back to normal.
+            if (!last_engaged && engaged) current_scale = SCALE_BURST;
+            last_engaged = engaged;
+            current_scale += (SCALE_NORMAL - current_scale) * 0.12;
+            arcball.scale.setScalar(current_scale);
+
+            const now = performance.now();
+            highlightRing(active, now, engaged);
             paintPanel(primary, active);
         },
 
@@ -321,6 +350,8 @@ export function createRotateMenu(): MenuModule {
                 panel = null;
             }
             engaged = false;
+            current_scale = SCALE_NORMAL;
+            last_engaged = false;
         },
     };
 }

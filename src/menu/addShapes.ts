@@ -129,7 +129,8 @@ export function createAddShapesMenu(): MenuModule {
 
     // Spawn a fresh primitive and ADD it to the scene (§5.1, multi-shape): the previous shape is
     // demoted to a background shape (kept, not disposed) and the new mesh becomes the SOLE
-    // selection + active sculpt target via selectOnly().
+    // selection + active sculpt target via selectOnly(). Spawn pre-rotated by ~20° on Y and ~15°
+    // on X so the shape reads as 3D immediately (cube won't look like a flat square, etc.).
     function spawnShape(kind: ShapeKind, ctx: SceneContext, at: THREE.Vector3): void {
         const old = ctx.mesh;
         const mesh = attachMesh(ctx, makeShape(kind));
@@ -137,6 +138,8 @@ export function createAddShapesMenu(): MenuModule {
         selectOnly(ctx, mesh);
         clampSpawnToView(at, ctx.camera, mesh.geometry.boundingSphere?.radius ?? 1.5);
         mesh.position.copy(at);
+        mesh.rotateY((20 * Math.PI) / 180);
+        mesh.rotateX((15 * Math.PI) / 180);
 
         spawn_mesh = mesh;
         spawn_t = 0;
