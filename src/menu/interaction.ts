@@ -4,10 +4,9 @@
 // advance; a nav-hand pinch APPLIES it: the operands are removed and replaced by the single
 // resulting shape, which becomes the new selection.
 //
-// NEGATIVE shapes: any selected shape tagged negative in SELECT (drawn red) acts as a CUTTER.
-// UNION fuses every POSITIVE shape and then carves every NEGATIVE one out of the result — so
-// "mark one negative, then union" drills a hole. SUBTRACT / INTERSECT fold over all operands
-// (primary first) and ignore the tag. With exactly two shapes this matches the classic behaviour.
+// UNION fuses all operands; SUBTRACT does primary-minus-the-rest; INTERSECT keeps the shared
+// overlap. Every op folds over the operands primary-first. With exactly two shapes this matches
+// the classic two-operand behaviour.
 //
 // CSG runs through three-bvh-csg (built on the same three-mesh-bvh already vendored). It operates
 // on each shape's BASE geometry in world space (morph blend is ignored), folding the operands into
@@ -22,12 +21,12 @@ import { Panel } from "./panel";
 import { Carousel, type CarouselItem } from "./carousel";
 import { classify } from "../gesture/detect";
 import { attachMesh } from "../render/scene";
-import { selectedShapes, selectedCount, removeShape, selectOnly, isNegative } from "../core/shapes";
+import { selectedShapes, selectedCount, removeShape, selectOnly } from "../core/shapes";
 import { sfx } from "../audio/sfx";
 
-// Boolean operations offered, in carousel order. UNION leads — it is the cutter-aware hole-maker.
+// Boolean operations offered, in carousel order.
 const OPS: ReadonlyArray<{ key: number; label: string; verb: string; icon: string }> = [
-    { key: ADDITION, label: "UNION", verb: "fuse the shapes · carve any red holes", icon: "∪" },
+    { key: ADDITION, label: "UNION", verb: "fuse the shapes into one", icon: "∪" },
     { key: SUBTRACTION, label: "SUBTRACT", verb: "primary minus the rest", icon: "⊖" },
     { key: INTERSECTION, label: "INTERSECT", verb: "keep the shared overlap", icon: "∩" },
 ];
@@ -90,11 +89,6 @@ export function createInteractMenu(): MenuModule {
         hasNavPrev = true;
     }
 
-    // How many operands are currently tagged negative (cutters) — for the panel note.
-    function negativeCount(): number {
-        return operands.filter(isNegative).length;
-    }
-
     // Dispose the live preview mesh (its geometry is owned by the preview unless we keep it for an
     // apply, in which case keepGeometry=true hands the geometry off to attachMesh).
     function clearPreview(keepGeometry: boolean): THREE.BufferGeometry | null {
@@ -112,22 +106,11 @@ export function createInteractMenu(): MenuModule {
     function computeResult(): THREE.BufferGeometry | null {
         if (operands.length < 2) return null;
         const op = OPS[opIndex].key;
-        let acc: Brush;
 
-        if (op === ADDITION) {
-            // UNION: fuse every POSITIVE, then carve every NEGATIVE (cutter) out of the result.
-            const positives = operands.filter((m) => !isNegative(m));
-            const negatives = operands.filter((m) => isNegative(m));
-            if (positives.length === 0) return null;     // nothing to add the cutters to
-            acc = brushOf(positives[0]);
-            for (let i = 1; i < positives.length; i++) acc = evaluator.evaluate(acc, brushOf(positives[i]), ADDITION);
-            for (const n of negatives) acc = evaluator.evaluate(acc, brushOf(n), SUBTRACTION);
-        } else {
-            // SUBTRACT: primary minus all others. INTERSECT: overlap of all. (UNION is the only
-            // cutter-aware op, so the negative tag is ignored here.) Primary (selected[0]) leads.
-            acc = brushOf(operands[0]);
-            for (let i = 1; i < operands.length; i++) acc = evaluator.evaluate(acc, brushOf(operands[i]), op);
-        }
+        // Fold the operands primary-first under the chosen op: UNION fuses, SUBTRACT does
+        // primary-minus-the-rest, INTERSECT keeps the shared overlap.
+        let acc: Brush = brushOf(operands[0]);
+        for (let i = 1; i < operands.length; i++) acc = evaluator.evaluate(acc, brushOf(operands[i]), op);
 
         const rp = acc.geometry.attributes.position as THREE.BufferAttribute | undefined;
         if (!rp || rp.count === 0) return null;
@@ -192,17 +175,11 @@ export function createInteractMenu(): MenuModule {
             panel.setBody(
                 `<div style="font-size:12px;color:rgba(255,255,255,0.7);line-height:1.6">` +
                 `INTERACT needs <b>two selected shapes</b>. In SELECT, add a second shape ` +
-                `(left fist) — and open your left palm on one to make it a ` +
-                `<span style="color:#ff6b6b">hole</span> — then come back to combine them.</div>`,
+                `(left fist), then come back to combine them.</div>`,
             );
             return;
         }
         const op = OPS[opIndex];
-        const negs = negativeCount();
-        const holeNote =
-            op.key === ADDITION && negs > 0
-                ? `<div style="font-size:11px;color:#ff6b6b;margin-top:2px">carving ${negs} hole${negs > 1 ? "s" : ""}</div>`
-                : "";
         const note = status
             ? `<div style="font-size:11px;color:#FF9090;margin-top:6px">${status}</div>`
             : `<div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:6px">previewing — pinch (nav) to apply</div>`;
@@ -210,7 +187,6 @@ export function createInteractMenu(): MenuModule {
             `<div style="display:flex;flex-direction:column;gap:10px">` +
                 `<div style="font-size:22px;font-weight:700;color:${accent};text-shadow:0 0 12px ${accent}">${op.label}</div>` +
                 `<div style="font-size:11px;color:rgba(255,255,255,0.55)">${op.verb} (${operands.length} shapes)</div>` +
-                holeNote +
                 `<div style="font-size:10.5px;color:rgba(255,255,255,0.4)">pinch (exec) to change operation</div>` +
                 note +
             `</div>`,
