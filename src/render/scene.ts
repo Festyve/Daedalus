@@ -69,12 +69,25 @@ export function makeMatcapMaterial(): THREE.MeshStandardMaterial {
     // on the untouched white base) as emissive, so decoration self-glows in its true hue
     // (red jam, etc.) on top of the body colour instead of being multiplied away.
     mat.onBeforeCompile = (shader) => {
+        // Where the vertex colour leaves white (iced), paint the surface that colour DIRECTLY so the
+        // icing's TRUE hue shows — including dark/muted flavours like chocolate brown — instead of
+        // multiplying the cyan body to mud.
+        shader.fragmentShader = shader.fragmentShader.replace(
+            "#include <color_fragment>",
+            `#include <color_fragment>
+            #ifdef USE_COLOR
+                float icedAmt = clamp((1.0 - min(min(vColor.r, vColor.g), vColor.b)) * 3.0, 0.0, 1.0);
+                diffuseColor.rgb = mix(diffuseColor.rgb, vColor.rgb, icedAmt);
+            #endif`,
+        );
+        // A gentle self-glow in the icing's own chroma so the glaze reads candy/wet — kept low so a
+        // strong glow doesn't wash the colour out (which turned brown into orange).
         shader.fragmentShader = shader.fragmentShader.replace(
             "#include <emissivemap_fragment>",
             `#include <emissivemap_fragment>
             #ifdef USE_COLOR
                 float icingFloor = min(min(vColor.r, vColor.g), vColor.b);
-                totalEmissiveRadiance += (vColor.rgb - vec3(icingFloor)) * 6.0;
+                totalEmissiveRadiance += (vColor.rgb - vec3(icingFloor)) * 1.5;
             #endif`,
         );
     };

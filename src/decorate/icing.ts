@@ -53,9 +53,12 @@ const EDGE_SMOOTH_ITERS = 3;
 // luminous red — NOT a wash toward grey/white (which desaturates to pink). The
 // wet/glassy sheen is added per-pixel in the matcap shader (render/scene.ts) too, so
 // the hue stays rich and the highlight stays specular.
-const SATURATE = 0.6;     // push channels away from their mean (richer, less grey)
-const SCREEN_LIFT = 0.35; // screen-style lift of darks toward the hue, not toward grey
-const GLOSS_SPEC = 0.5;   // max specular sheen toward white, scaled by design.gloss
+// The icing now paints the surface ALBEDO directly (render/scene.ts shader), so the DISPLAY colour
+// should stay close to the literal flavour — only a mild saturation push. The old lifts toward
+// white (SCREEN_LIFT / GLOSS_SPEC) washed dark flavours like chocolate into a pale tan, so they're off.
+const SATURATE = 0.45;    // push channels away from their mean (richer, less grey)
+const SCREEN_LIFT = 0.0;  // (disabled — albedo carries the hue; lifting toward white just pales it)
+const GLOSS_SPEC = 0.0;   // (disabled — same reason)
 // A vertex straddles the boundary when its mask differs from a neighbour's by more
 // than this — those verts (plus their 1-ring) form the band we smooth.
 const BOUNDARY_DELTA = 0.05;
@@ -402,6 +405,22 @@ export function applyIcing(
     smoothBoundary(mask, state.scratch, state.adjacency, state.adjStart, TOUCHED);
     resolveColors(colors, mask, TOUCHED);
     uploadRange(colorAttr, TOUCHED);
+}
+
+/**
+ * Wipe the icing back to bare: mask → 0 and the colour attribute → white. Used before painting a
+ * new FLAVOUR so it replaces the previous colour (applyIcing only raises the mask, so a second
+ * flavour over an already-iced crown would otherwise never recolour those verts).
+ */
+export function resetIcing(mesh: THREE.Mesh): void {
+    const geometry = mesh.geometry;
+    const positions = (geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
+    const vertCount = positions.length / 3;
+    const state = stateFor(geometry);
+    const colorAttr = colorAttribute(geometry, vertCount);
+    (colorAttr.array as Float32Array).fill(1);
+    state.mask.fill(0);
+    colorAttr.needsUpdate = true;
 }
 
 /**

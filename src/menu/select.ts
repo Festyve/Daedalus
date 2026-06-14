@@ -49,15 +49,23 @@ function handClosed(lm: Vec3[]): boolean {
     return true;
 }
 
+// Right-fist cycle: steady frames required to fire (a bit firmer than the 5-frame default), and
+// the lockout after a step so one fist = one step.
+const EXEC_FIST_FRAMES = 9;
+const EXEC_COOLDOWN_MS = 1000;
+
 export function createSelectMenu(): MenuModule {
     const accent = MENU_META[MenuId.SELECT].accent;
     const label = MENU_META[MenuId.SELECT].label;
 
     let panel: Panel | null = null;
     let pulseMs = 0;              // focus-cursor pulse phase
-    // Per-hand discrete-pose debouncers + rising-edge latches (one action per pose-close).
-    let execGate = new GestureDebouncer();   // right hand → cycle
-    let navGate = new GestureDebouncer();     // left hand → toggle select (fist)
+    // Left hand → toggle select (5-frame debounce). Right hand → cycle, but made less twitchy:
+    // it needs more steady fist frames (EXEC_FIST_FRAMES) to fire and then sits out a cooldown,
+    // so a single fist = one deliberate step (no skipping several shapes at once).
+    let navGate = new GestureDebouncer();
+    let execFistStreak = 0;      // consecutive right-fist frames (fires at EXEC_FIST_FRAMES)
+    let execCooldownMs = 0;      // lockout after a cycle so the next step needs a fresh, held fist
     let execWasFist = false;
     let navWasFist = false;
 
@@ -115,8 +123,9 @@ export function createSelectMenu(): MenuModule {
         enter(ctx: SceneContext): void {
             panel = new Panel({ title: label, accent });
             pulseMs = 0;
-            execGate = new GestureDebouncer();
             navGate = new GestureDebouncer();
+            execFistStreak = 0;
+            execCooldownMs = 0;
             execWasFist = false;
             navWasFist = false;
             // Park the focus cursor on the primary selection if there is one.
@@ -136,12 +145,15 @@ export function createSelectMenu(): MenuModule {
             refreshHighlight(ctx);
             applyFocusPulse(ctx);
 
-            // Right (exec) fist (rising edge) → move the focus cursor to the next shape. Each hand's
-            // pose feeds the shared 5-frame debouncer — "none" when the hand is gone, so a stale fist
-            // never lingers across a tracking gap — and one fist-close = one step.
-            const execFist = execGate.push(exec && handClosed(exec.world) ? "fist" : "none") === "fist";
-            if (execFist && !execWasFist) {
+            // Right (exec) fist → step the focus cursor, made deliberate: it needs EXEC_FIST_FRAMES
+            // steady fist frames to fire (less twitchy), then locks out for EXEC_COOLDOWN_MS so a
+            // single fist = a single step rather than skipping several shapes at once.
+            if (execCooldownMs > 0) execCooldownMs = Math.max(0, execCooldownMs - dt);
+            execFistStreak = exec && handClosed(exec.world) ? Math.min(EXEC_FIST_FRAMES, execFistStreak + 1) : 0;
+            const execFist = execFistStreak >= EXEC_FIST_FRAMES;
+            if (execFist && !execWasFist && execCooldownMs === 0) {
                 moveFocus(ctx, 1);
+                execCooldownMs = EXEC_COOLDOWN_MS;
                 paint(ctx);
             }
             execWasFist = execFist;
