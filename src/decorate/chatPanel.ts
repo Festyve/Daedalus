@@ -352,13 +352,14 @@ export function createDecorateMenu(): MenuModule {
 
     // Direct-hand pinch latch (hysteresis): one pinch → one sprinkle drop.
     let pinchLatched = false;
+    // Time when DECORATE was entered, for 5s pinch lockout.
+    let enterTime: number | null = null;
     // Previous-frame landmarks for classify()'s flick/velocity channel.
     let prevExecLm: HandPose["landmarks"] | null = null;
 
-    // Fire the hardcoded decoration on the real mesh (§8.1 step 3): flood JAM icing
-    // across the crown, then scatter rainbow sprinkles on the iced region. Deterministic
-    // and reliable; never blocked on the AI reply. No-op while the world is empty.
-    function fireDecoration(ctx: SceneContext, icing: IcingDesign): void {
+    // Apply icing to the real mesh (§8.1 step 3): flood icing across the crown.
+    // Deterministic and reliable; never blocked on the AI reply. No-op while the world is empty.
+    function applyIcingDecoration(ctx: SceneContext, icing: IcingDesign): void {
         if (!ctx.mesh || !ctx.bvh) return;
         ctx.mesh.updateWorldMatrix(true, false);
         ctx.mesh.getWorldPosition(ctx.scratch.v1);
@@ -368,11 +369,13 @@ export function createDecorateMenu(): MenuModule {
         // Flood the crown: paint at the mesh center so the height-mask gate (§8.3) lets icing stick
         // across the whole top with a noisy drip boundary below the line.
         applyIcing(ctx.mesh, ctx.bvh, ctx.scratch.v1, 4.0, icing);
-        // Fresh sprinkles each time so a re-flavour reads clean rather than piling up.
-        if (sprinkles) {
-            sprinkles.clear();
-            sprinkles.dropBatch(ctx.mesh, icingMask(ctx.mesh), VOICE_SPRINKLES, VOICE_SPRINKLE_COUNT);
-        }
+    }
+
+    // Drop sprinkles on the iced region. Called after the AI reply completes.
+    function dropSprinkles(ctx: SceneContext): void {
+        if (!ctx.mesh || !sprinkles) return;
+        sprinkles.clear();
+        sprinkles.dropBatch(ctx.mesh, icingMask(ctx.mesh), VOICE_SPRINKLES, VOICE_SPRINKLE_COUNT);
     }
 
     // Map a spoken transcript to an icing flavour by keyword; defaults to strawberry/pink.
@@ -386,12 +389,13 @@ export function createDecorateMenu(): MenuModule {
         return ICING.jam; // jam / strawberry / pink / berry / anything else
     }
 
-    // Handle a finalized voice transcript (§8.1): show it, fire the decoration NOW,
-    // then stream + speak the scripted reply with the typewriter.
+    // Handle a finalized voice transcript (§8.1): show it, apply icing + sprinkles
+    // immediately when transcript completes, then stream the reply.
     function onTranscript(ctx: SceneContext, transcript: string): void {
         if (!chat) return;
         chat.addUser(transcript);
-        fireDecoration(ctx, pickIcing(transcript));
+        applyIcingDecoration(ctx, pickIcing(transcript));
+        dropSprinkles(ctx);
 
         chat.beginAI();
         voice.speak(scriptReply(transcript));
@@ -403,7 +407,8 @@ export function createDecorateMenu(): MenuModule {
     }
 
     function enter(ctx: SceneContext): void {
-        pinchLatched = false;
+        pinchLatched = true;
+        enterTime = performance.now();
         prevExecLm = null;
 
         chat = new ChatPanel();
@@ -460,7 +465,9 @@ export function createDecorateMenu(): MenuModule {
         // Pinch → drop a sprinkle batch at the surface contact (edge-triggered with
         // hysteresis so a held pinch fires exactly once). Sprinkles land on the iced
         // region only (mask-weighted), so a pinch over bare steel is a quiet no-op.
-        if (g.pinch >= PINCH_ON && !pinchLatched) {
+        // Disabled for 5s after opening to prevent accidental drops.
+        const elapsed = enterTime ? performance.now() - enterTime : Infinity;
+        if (elapsed >= 5000 && g.pinch >= PINCH_ON && !pinchLatched) {
             if (sprinkles) sprinkles.dropBatch(ctx.mesh, icingMask(ctx.mesh), DROP_SPRINKLES, DROP_COUNT);
             pinchLatched = true;
         } else if (g.pinch <= PINCH_OFF) {
@@ -488,6 +495,7 @@ export function createDecorateMenu(): MenuModule {
             chat = null;
         }
         pinchLatched = false;
+        enterTime = null;
         prevExecLm = null;
     }
 
