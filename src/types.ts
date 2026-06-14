@@ -103,7 +103,7 @@ export type ViewMode = "scene" | "ar";
 
 // ---------- Director (§13) ----------
 export type DirectorMode = "freeplay" | "safety";
-export type Stage = "EMPTY" | "SPHERE" | "DONUT" | "DECORATED";
+export type Stage = "EMPTY" | "SPHERE" | "TORUS" | "DECORATED";
 
 // ---------- Scratch math: reused objects, zero per-frame alloc (§6.2, §11) ----------
 export interface ScratchMath {
@@ -117,10 +117,12 @@ export interface SceneContext {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
-    mesh: THREE.Mesh | null;        // active sculptable object; null while world is empty (§5.1)
+    mesh: THREE.Mesh | null;        // PRIMARY selected shape (= selected[0]); null when nothing selected
     bvh: MeshBVH | null;            // built on mesh.geometry position
-    extraMeshes: THREE.Mesh[];      // additional spawned shapes
-    morphT: number;                 // current donut blend 0..1
+    extraMeshes: THREE.Mesh[];      // every other shape in the scene (selected-or-not, non-primary)
+    selected: THREE.Mesh[];         // the selection SET (primary first); subset of allShapes (§5.1+)
+    focusIndex: number;             // SELECT tool focus cursor into allShapes (what a pinch toggles)
+    morphT: number;                 // current torus blend 0..1
     stage: Stage;
     viewMode: ViewMode;
     activeMenu: MenuId | null;

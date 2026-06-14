@@ -13,7 +13,7 @@
 // is null until ADD SHAPES spawns the first mesh — every access is guarded here.
 //
 // The Director is the forward-only flow source of truth; we pull its milestones from
-// the observable ctx (mesh added -> SPHERE, morphT -> DONUT, decorated -> DECORATED).
+// the observable ctx (mesh added -> SPHERE, morphT -> TORUS, decorated -> DECORATED).
 //
 // A window.DAEDALUS debug API drives every beat headlessly (used by the mock input,
 // headless verification, and the safety-mode operator).
@@ -48,6 +48,8 @@ import { createDestroyMenu } from "./menu/destroy";
 
 import { classify, GestureDebouncer } from "./gesture/detect";
 import { handScale } from "./gesture/predicates";
+import { selectedCount } from "./core/shapes";
+import { eligibleTools } from "./render/tokens";
 
 import { Chrome } from "./ui/chrome";
 import { DevOverlay } from "./ui/devOverlay";
@@ -57,7 +59,7 @@ import { sfx } from "./audio/sfx";
 
 import { fingertipToWorld } from "./math/coords";
 import { MenuId, MENU_ORDER } from "./types";
-import type { Handedness, HandPose, InputSource, PoseFrame, SceneContext } from "./types";
+import type { Handedness, HandPose, InputSource, PoseFrame, SceneContext, GestureState } from "./types";
 
 // MediaPipe index of the navigation index fingertip (carousel aim, §4.1, §12).
 const INDEX_TIP = 8;
@@ -103,7 +105,7 @@ ctx.camera.add(carousel.object);
 ctx.scene.add(ctx.camera);
 carousel.onSelect = (id) => {
     sfx.ping();
-    router.select(ctx, id);
+    router.select(ctx, id as MenuId);
 };
 
 // Post-processing composer (§9.4). composer.render() runs every frame — NEVER css3d.
@@ -141,17 +143,18 @@ function hideBanner(): void {
     banner?.classList.add("hidden");
 }
 
-// ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
-// The AR webcam plane parents to the camera (so it always fills the frame); the camera
-// was already added to the scene above (alongside the carousel).
-const viewMode = new ViewModeController(ctx.camera, () => video);
-
-// ---- input source (best-effort; NEVER blocks rendering) --------------------
-// The render loop starts immediately on the empty scene. The input source — live
-// camera or mock — initializes asynchronously; until ready, the store holds the
-// last (empty) frame and the loop renders the empty world.
+// ---- input source handles (declared before the view-mode controller, whose constructor's
+//      getVideo() closure reads `video` immediately — keep them out of the TDZ). ----------
+// The render loop starts immediately on the empty scene. The input source — live camera or
+// mock — initializes asynchronously; until ready, the store holds the last (empty) frame.
 let source: InputSource | null = null;
 let video: HTMLVideoElement | null = null;
+
+// ---- view-mode controller (§0.7): scene <-> AR via parting curtains ---------
+// The webcam feed is a DOM <video> (#camera) BEHIND a transparent canvas; the controller
+// flips the canvas clear between transparent (AR, feed shows through) and opaque #000814
+// (scene) and shows/hides the video.
+const viewMode = new ViewModeController(ctx.scene, ctx.camera, ctx.renderer, () => video);
 
 async function initInput(): Promise<void> {
     try {
@@ -173,52 +176,68 @@ async function initInput(): Promise<void> {
     }
 }
 
-// ---- carousel navigation (nav / Left hand) ---------------------------------
+// ---- carousel navigation (both hands) ---------------------------------
 // Reused scratch — zero per-frame allocation in the carousel-drive path.
 const navTipWorld = new THREE.Vector3();
 const navTipLocal = new THREE.Vector3();
-const navGate = new GestureDebouncer();   // debounce nav-hand discrete poses (§12)
-let navPrevLm: HandPose["landmarks"] | null = null; // prev nav landmarks for flick vx
-let navGestureName = "none";              // last committed nav gesture (for the dev overlay)
+const execGate = new GestureDebouncer();  // debounce exec-hand discrete poses
+let execPrevLm: HandPose["landmarks"] | null = null; // prev exec landmarks for gesture classify
+let execGestureName = "none";              // last committed exec gesture (for the dev overlay)
+let gunWasActive = false;                  // rising-edge tracker for gun toggle
 
-function driveCarousel(nav: HandPose | null, dtSeconds: number): void {
-    if (!nav) {
-        navPrevLm = null;
-        navGestureName = "none";
-        // Still advance the carousel's own animation (fade/close) with a null gesture.
-        carousel.update(navTipLocal, { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 }, dtSeconds);
-        return;
+function driveCarousel(exec: HandPose | null, nav: HandPose | null, dtSeconds: number): void {
+    const NONE_GESTURE = { name: "none" as const, extended: 0, pinch: 0, spread: 0, vx: 0 };
+
+    // Classify right-hand (exec) gesture for toggle.
+    let execG: GestureState = NONE_GESTURE;
+    if (exec) {
+        execG = classify(exec.landmarks, exec.world, execPrevLm);
+        execPrevLm = exec.landmarks;
+        const committed = execGate.push(execG.name);
+        execGestureName = committed;
+
+        // Right-hand gun toggles on rising edge only (new gun pose, not held).
+        const gunNow = committed === "gun";
+        if (gunNow && !gunWasActive) {
+            if (router.activeId !== null) {
+                // In a sub-menu: gun returns to main menu
+                router.select(ctx, null);
+                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+                sfx.hum();
+            } else if (carousel.isOpen) {
+                // Main carousel is open: gun closes it
+                carousel.close();
+            } else {
+                // No menu showing: gun opens main carousel
+                carousel.open(navTipLocal, eligibleTools(selectedCount(ctx)));
+                sfx.hum();
+            }
+        }
+        gunWasActive = gunNow;
+    } else {
+        execGestureName = "none";
+        execPrevLm = null;
+        gunWasActive = false;
     }
 
-    const g = classify(nav.landmarks, nav.world, navPrevLm);
-    navPrevLm = nav.landmarks;
-    const committed = navGate.push(g.name);
-    navGestureName = committed;
-
-    // Finger gun opens the wheel. Opening tears down the active menu/panel (§4.2) so a
-    // panel and the wheel are never on screen together.
-    if (committed === "gun" && !carousel.isOpen) {
-        carousel.open(navTipLocal);
-        router.select(ctx, null);
-        sfx.hum();
+    // Left-hand (nav) gesture is used for aiming the carousel glow.
+    // (Selection/advance are now driven by right hand through carousel.update())
+    if (nav) {
+        const navG = classify(nav.landmarks, nav.world, null);
+        // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
+        fingertipToWorld(
+            nav.landmarks[INDEX_TIP],
+            ctx.camera,
+            ctx.interactionPlaneZ,
+            ctx.scratch.ray,
+            ctx.scratch.plane,
+            navTipWorld,
+        );
+        ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
     }
-    // Fist dismisses the wheel with no selection.
-    if (committed === "fist" && carousel.isOpen) {
-        carousel.close();
-    }
 
-    // Aim: nav index fingertip -> world -> camera-local (carousel is camera-parented).
-    fingertipToWorld(
-        nav.landmarks[INDEX_TIP],
-        ctx.camera,
-        ctx.interactionPlaneZ,
-        ctx.scratch.ray,
-        ctx.scratch.plane,
-        navTipWorld,
-    );
-    ctx.camera.worldToLocal(navTipLocal.copy(navTipWorld));
-
-    carousel.update(navTipLocal, g, dtSeconds);
+    // Drive carousel with right-hand (advance) and left-hand (select) gestures.
+    carousel.update(navTipLocal, execG, nav ? classify(nav.landmarks, nav.world, null) : NONE_GESTURE, dtSeconds);
 }
 
 // ---- role assignment (§3.2; ?singlehand collapses both roles onto one hand) -
@@ -248,7 +267,7 @@ function syncDirector(): void {
         // World was cleared back to empty (e.g. a fresh spawn replaced nothing yet).
         meshSeen = false;
     }
-    // MORPH progress: SPHERE -> DONUT once the donut blend completes (t > 0.95).
+    // MORPH progress: SPHERE -> TORUS once the torus blend completes (t > 0.95).
     director.onMorph(ctx.morphT);
     // DECORATE applied icing/sprinkles: -> DECORATED. Modules write ctx.stage when the
     // decoration fires; the active DECORATE tool also counts.
@@ -288,8 +307,8 @@ startLoop((dtMs) => {
     viewMode.detectPartingCurtains(frame.Left, frame.Right, dtMs);
     viewMode.update(dtMs);
 
-    // 3) Nav hand drives the carousel + selection; exec hand drives the active menu.
-    driveCarousel(nav, dtSeconds);
+    // 3) Exec hand drives carousel toggle/advance; nav hand aims glow; active menu driven by router.
+    driveCarousel(exec, nav, dtSeconds);
     router.update(ctx, exec, nav, dtMs);
 
     // 4) Director milestones from observable ctx, then sync the displayed stage.
@@ -300,19 +319,17 @@ startLoop((dtMs) => {
     //    then the green hand skeletons over the feed + HUD.
     composer.render();
 
-    // Corner black-scene preview: re-render the scene with the AR background plane hidden
-    // into a scissored bottom-right box of the MAIN webgl canvas. setViewport/setScissor
-    // take CSS (logical) pixels — three.js applies the renderer pixelRatio internally, so
-    // we must NOT pre-multiply by dpr. GL viewport origin is BOTTOM-left, so vy = margin
-    // puts the box in the bottom-right corner (matching the #preview-frame border). Reset
-    // scissor test + full viewport afterward so the NEXT frame's composer.render() (which
-    // manages its own clear) draws the full canvas unaffected.
+    // Corner black-scene preview: re-render the objects on opaque #000814 into a scissored
+    // bottom-right box of the MAIN webgl canvas (the camera feed is a DOM layer untouched by
+    // this pass). setViewport/setScissor take CSS (logical) pixels — three.js applies the
+    // renderer pixelRatio internally, so we must NOT pre-multiply by dpr. GL viewport origin
+    // is BOTTOM-left, so vy = margin puts the box in the bottom-right corner (matching the
+    // #preview-frame border).
     const W = window.innerWidth, H = window.innerHeight;
     const cw = Math.round(W * 0.22), ch = Math.round(cw * H / W);
     const margin = 16;
     const vx = W - cw - margin;
     const vy = margin;
-    viewMode.setBackgroundVisible(false);
     const r = ctx.renderer;
     r.setRenderTarget(null);
     r.setScissorTest(true);
@@ -323,16 +340,23 @@ startLoop((dtMs) => {
     r.render(ctx.scene, ctx.camera);
     r.setScissorTest(false);
     r.setViewport(0, 0, W, H);
-    // Restore the camera background for the MAIN view (only when AR mode owns it).
-    viewMode.setBackgroundVisible(viewMode.mode === "ar");
+    // Restore the MAIN-view clear for the next frame's composer.render(): transparent in AR
+    // (so the #camera video shows through), opaque #000814 in scene mode. The preview pass
+    // above left an opaque clear colour set, so this MUST run every frame.
+    viewMode.syncClear();
 
     // Green hand skeletons over the MAIN feed (landmarks are un-mirrored, so they align).
     if (overlayCtx) drawSkeletons(overlayCtx, frame.Left, frame.Right);
 
-    chrome.update({ stage: director.stage, activeMenu: router.activeId, viewMode: viewMode.mode });
+    chrome.update({
+        stage: director.stage,
+        activeMenu: router.activeId,
+        viewMode: viewMode.mode,
+        selectedCount: selectedCount(ctx),
+    });
     devOverlay.update({
         frame,
-        gesture: navGestureName,
+        gesture: execGestureName,
         tool: router.activeId,
         morphT: ctx.morphT,
         fps: dtMs > 0 ? 1000 / dtMs : 0,

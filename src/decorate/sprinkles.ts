@@ -1,6 +1,6 @@
 // Sprinkles controller (SPEC §8.4).
 //
-// Scatters a `SprinkleDesign` onto the donut surface using THREE's
+// Scatters a `SprinkleDesign` onto the torus surface using THREE's
 // `MeshSurfaceSampler`, weighted by the icing mask so sprinkles land ONLY on
 // iced regions, with a greedy Poisson-disk relaxation pass so they never clump.
 // Each geometry type is rendered as ONE `InstancedMesh`, capped at ~1500 live
@@ -8,11 +8,11 @@
 // per-instance color is drawn from the design palette (rainbow).
 //
 // Sampling correctness: `MeshSurfaceSampler` reads the geometry's `position`
-// attribute directly and does NOT resolve morph targets. Because the donut is a
+// attribute directly and does NOT resolve morph targets. Because the torus is a
 // morph of the base sphere (`mesh.morphTargetInfluences[0]`), we sample against
 // a throwaway geometry whose positions are the resolved morph
 // (base + t·(target − base)). The instanced layer is parented to the mesh, so
-// instance matrices line up with the surface and ride the donut's spin/tilt.
+// instance matrices line up with the surface and ride the torus's spin/tilt.
 //
 // The icing mask (one weight per vertex, 0 = bare, 1 = fully iced) comes from
 // `icingMask(mesh)` and is passed straight into `dropBatch`; we copy it into a
@@ -120,7 +120,7 @@ export class Sprinkles {
             if (!this.isWellSpaced(this.samplePos, minDist2)) continue;
 
             // Capsule long axis (+Y) aligned to the surface normal so it lies
-            // flat against the donut where it landed.
+            // flat against the torus where it landed.
             this.tmpQuat.setFromUnitVectors(this.upAxis, this.sampleNormal);
 
             const slot = layer.used;
@@ -179,7 +179,7 @@ export class Sprinkles {
     }
 
     // Build a sampler over a throwaway geometry whose positions are the resolved
-    // morph (so we sample the actual donut, not the base sphere) and whose weight
+    // morph (so we sample the actual torus, not the base sphere) and whose weight
     // attribute is the icing mask (sprinkles land on iced regions only). Returns
     // null when nothing is iced yet (total mask weight ≈ 0).
     private buildSampler(mesh: THREE.Mesh, mask: Float32Array): MeshSurfaceSampler | null {
@@ -242,7 +242,7 @@ export class Sprinkles {
         // emissive would wash every hue toward white. Instead we patch the shader to
         // drive emissive from each instance's own color (vColor) — every sprinkle
         // self-glows in ITS hue, so the rainbow reads at demo distance even on
-        // shadowed donut faces.
+        // shadowed torus faces.
         const material = new THREE.MeshStandardMaterial({
             roughness: 0.3,
             metalness: 0.0,

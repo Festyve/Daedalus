@@ -80,7 +80,7 @@ function ensureHoloStyle(): void {
 }
 
 // ---- Direct-hand tuning (§8.5) --------------------------------------------------
-// Icing smear radius in mesh object space (the donut tube radius is ~0.42).
+// Icing smear radius in mesh object space (the torus tube radius is ~0.42).
 const SMEAR_RADIUS = 0.28;
 // Sprinkles dropped per pinch (a small handful; well under the §8.4 ~1500 cap).
 const DROP_COUNT = 60;
@@ -489,8 +489,8 @@ const REPLY_RULES: ReplyRule[] = [
     { keywords: ["rainbow", "sprinkle"], reply: "On it — rainbow sprinkles and a glossy jam glaze, coming right up." },
     { keywords: ["jam", "icing", "glaze", "frost"], reply: "Applying a rich jam icing across the top. Looking delicious already." },
     { keywords: ["galaxy", "cosmic", "space", "star"], reply: "Cosmic mode: deep glaze and a scatter of star-bright sprinkles." },
-    { keywords: ["healthy", "diet", "sugar-free", "calorie"], reply: "I'm a donut decorator, not a miracle worker — adding extra sprinkles instead." },
+    { keywords: ["healthy", "diet", "sugar-free", "calorie"], reply: "I'm a torus decorator, not a miracle worker — adding extra sprinkles instead." },
     { keywords: ["clear", "reset", "remove", "plain"], reply: "Wiping it back to a clean canvas. Ready when you are." },
-    { keywords: ["thank", "thanks", "nice", "love", "great"], reply: "My pleasure. This donut turned out beautifully." },
+    { keywords: ["thank", "thanks", "nice", "love", "great"], reply: "My pleasure. This torus turned out beautifully." },
 ];
 const DEFAULT_REPLY = "Decorating now — jam icing and a burst of rainbow sprinkles.";

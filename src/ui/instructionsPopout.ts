@@ -57,7 +57,7 @@ const TOOL_HINTS: Record<MenuId, string[]> = {
     ],
     [MenuId.MORPH]: [
         "both hands curl around the object",
-        "orbit them in a circle to morph sphere → donut",
+        "orbit them in a circle to morph sphere → torus",
         "unwind the circle to reverse it",
     ],
     [MenuId.DECORATE]: [

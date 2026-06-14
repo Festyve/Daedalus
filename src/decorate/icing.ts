@@ -25,7 +25,7 @@ import type { IcingDesign } from "../types";
 
 // ---- Tunables (SPEC §8.3) -------------------------------------------------------
 
-// Icing line on the mesh's own up-axis (local +Y; the donut hole axis is +Y, so
+// Icing line on the mesh's own up-axis (local +Y; the torus hole axis is +Y, so
 // "top" is the upper crown — see render/geometry.ts). At/above this line icing
 // sticks fully; below it only the noisy drip boundary lets icing through.
 const Y_ICING_LINE = 0.0;

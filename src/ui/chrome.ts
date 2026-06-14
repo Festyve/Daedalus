@@ -13,7 +13,7 @@ import { T, TOOL_ACCENT, FONT } from "../render/tokens";
 // Lowercase to match the HUD typography rule (§14.2). Six tools, no more.
 const MENU_INSTRUCTION: Record<MenuId, string> = {
     [MenuId.ADD_SHAPES]: "point to aim · pinch to spawn",
-    [MenuId.SELECT]: "swipe to switch the selected shape",
+    [MenuId.SELECT]: "swipe to move the cursor · pinch to add / remove",
     [MenuId.TRANSLATE]: "pinch an arrow · drag along its axis",
     [MenuId.DILATE]: "pinch both hands · apart / together to scale",
     [MenuId.ROTATE]: "pinch the ball · twist to rotate",
@@ -43,8 +43,10 @@ const GESTURE_VERB: Record<GestureName, string> = {
 export class Chrome {
     private readonly root: HTMLElement;
     private readonly stage_el: HTMLDivElement;
+    private readonly count_el: HTMLDivElement;
     private readonly tool_el: HTMLDivElement;
     private readonly hint_el: HTMLDivElement;
+    private readonly bottomPill: HTMLDivElement;
     private readonly stats: Stats;
 
     constructor() {
@@ -52,26 +54,68 @@ export class Chrome {
         if (!root) throw new Error("Chrome: #chrome element not found");
         this.root = root;
 
-        // Top-left: stage label. Uppercase, wide tracking, primary text color.
-        this.stage_el = this.makeLabel({ left: "20px", top: "18px" });
-        this.stage_el.style.color = T.text;
-        this.stage_el.style.fontSize = "13px";
-        this.stage_el.style.fontWeight = "700";
-        this.stage_el.style.letterSpacing = "0.24em";
-        this.stage_el.style.textTransform = "uppercase";
+        // Top-left: stage pill — dark backdrop so text reads over any camera content.
+        this.stage_el = document.createElement("div");
+        Object.assign(this.stage_el.style, {
+            position: "fixed", left: "16px", top: "16px",
+            fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
+            fontSize: "13px", fontWeight: "700",
+            letterSpacing: "0.24em", textTransform: "uppercase",
+            color: T.text,
+            padding: "7px 13px",
+            background: "rgba(0,4,12,0.92)",
+            borderRadius: "6px",
+            border: "1px solid rgba(255,255,255,0.16)",
+        });
+        this.root.appendChild(this.stage_el);
 
-        // Bottom-left: active tool label (accent-tinted) stacked above its
-        // instruction line (dimmed). Lowercase HUD per §14.2.
-        this.tool_el = this.makeLabel({ left: "20px", bottom: "34px" });
-        this.tool_el.style.color = T.cyan;
-        this.tool_el.style.fontSize = "13px";
-        this.tool_el.style.fontWeight = "500";
-        this.tool_el.style.letterSpacing = "0.14em";
+        // Top-center: selection counter pill. Hidden (display:none) when nothing is selected
+        // so the HUD stays quiet — no empty pill visible (§14.3, item 7).
+        this.count_el = document.createElement("div");
+        Object.assign(this.count_el.style, {
+            position: "fixed", top: "16px", left: "50%",
+            transform: "translateX(-50%)",
+            fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
+            fontSize: "13px", fontWeight: "600",
+            letterSpacing: "0.18em", textTransform: "uppercase",
+            color: T.toolSelect,
+            padding: "7px 16px",
+            background: "rgba(0,4,12,0.92)",
+            borderRadius: "6px",
+            border: `1px solid ${T.toolSelect}55`,
+            display: "none",
+        });
+        this.root.appendChild(this.count_el);
 
-        this.hint_el = this.makeLabel({ left: "20px", bottom: "16px" });
-        this.hint_el.style.color = T.textDim;
-        this.hint_el.style.fontSize = "11px";
-        this.hint_el.style.letterSpacing = "0.08em";
+        // Bottom-left: pill container holding the active-tool label stacked above the hint.
+        this.bottomPill = document.createElement("div");
+        Object.assign(this.bottomPill.style, {
+            position: "fixed", left: "16px", bottom: "16px",
+            fontFamily: FONT, whiteSpace: "nowrap", pointerEvents: "none",
+            padding: "10px 16px",
+            background: "rgba(0,4,12,0.92)",
+            borderRadius: "8px",
+            border: `1px solid ${T.cyan}44`,
+        });
+        this.root.appendChild(this.bottomPill);
+
+        // Active tool name (accent-tinted, updated per-tool in render()).
+        this.tool_el = document.createElement("div");
+        Object.assign(this.tool_el.style, {
+            fontSize: "14px", fontWeight: "600",
+            letterSpacing: "0.18em",
+            color: T.cyan,
+            marginBottom: "5px",
+        });
+        this.bottomPill.appendChild(this.tool_el);
+
+        // One-line operating hint (bright white, static contrast from pill bg).
+        this.hint_el = document.createElement("div");
+        Object.assign(this.hint_el.style, {
+            fontSize: "12px", letterSpacing: "0.10em",
+            color: "rgba(255,255,255,0.92)",
+        });
+        this.bottomPill.appendChild(this.hint_el);
 
         // Top-right: stats.js FPS meter, re-anchored and dimmed to read as
         // desaturated chrome rather than its stock neon-green panel.
@@ -95,6 +139,8 @@ export class Chrome {
         el.style.fontFamily = FONT;
         el.style.whiteSpace = "nowrap";
         el.style.pointerEvents = "none";
+        // Dark halo so HUD text stays legible over the live camera feed (§14.3).
+        el.style.textShadow = "0 0 6px rgba(0,0,0,0.92), 0 0 2px rgba(0,0,0,0.92)";
         if (pos.left !== undefined) el.style.left = pos.left;
         if (pos.right !== undefined) el.style.right = pos.right;
         if (pos.top !== undefined) el.style.top = pos.top;
@@ -105,16 +151,29 @@ export class Chrome {
 
     // Refresh the text content for a new HUD state. Cheap string assignment only;
     // safe to call every frame (no allocation, no layout thrash beyond text set).
-    private render(state: { stage: Stage; activeMenu: MenuId | null; gesture?: GestureName }): void {
+    private render(state: { stage: Stage; activeMenu: MenuId | null; gesture?: GestureName; selectedCount?: number }): void {
         this.stage_el.textContent = `DAEDALUS // ${state.stage}`;
+
+        // Selection counter: show pill only when at least one shape is selected.
+        const n = state.selectedCount ?? 0;
+        if (n > 0) {
+            this.count_el.textContent = `${n} shape${n === 1 ? "" : "s"} selected`;
+            this.count_el.style.display = "";
+        } else {
+            this.count_el.textContent = "";
+            this.count_el.style.display = "none";
+        }
 
         const base = state.activeMenu !== null ? MENU_INSTRUCTION[state.activeMenu] : IDLE_INSTRUCTION;
         if (state.activeMenu !== null) {
+            const accent = TOOL_ACCENT[state.activeMenu];
             this.tool_el.textContent = MENU_LABEL[state.activeMenu].toLowerCase();
-            this.tool_el.style.color = TOOL_ACCENT[state.activeMenu];
+            this.tool_el.style.color = accent;
+            this.bottomPill.style.borderColor = accent + "55";
         } else {
             this.tool_el.textContent = "no tool";
             this.tool_el.style.color = T.textDim;
+            this.bottomPill.style.borderColor = T.cyan + "44";
         }
 
         // Always surface the current gesture: when a real pose is recognized, lead the
@@ -128,7 +187,7 @@ export class Chrome {
     // chrome contract; it is accepted here (optional) so this compiles against both
     // the current and rewritten main.ts. The FPS meter and the three text regions
     // read identically in scene and AR mode, so it currently drives no branch.
-    update(s: { stage: Stage; activeMenu: MenuId | null; viewMode?: ViewMode; gesture?: GestureName }): void {
+    update(s: { stage: Stage; activeMenu: MenuId | null; viewMode?: ViewMode; gesture?: GestureName; selectedCount?: number }): void {
         void s.viewMode;
         this.render(s);
     }

@@ -31,6 +31,7 @@ import { asMenuLayer } from "../render/layers";
 import { isPinching, pinchAmount, handScale } from "../gesture/predicates";
 import { fingertipToWorld } from "../math/coords";
 import { MENU_META } from "../render/tokens";
+import { selectedShapes, selectedCount, selectionCenter } from "../core/shapes";
 
 // World-landmark indices used to build the hand basis (§5.4).
 const WRIST = 0;
@@ -74,10 +75,17 @@ export function createRotateMenu(): MenuModule {
     let rings: THREE.Mesh[] = []; // [X, Y, Z]
 
     // ----- engage / rotation state (quaternion only; never Euler) -----
+    // The whole SELECTION rotates as a rigid group about its centroid: on engage we snapshot the
+    // centroid, each selected mesh's start position + quaternion, and the hand orientation; each
+    // frame we apply the hand-swept delta to every snapshot (orbiting positions around the
+    // centroid AND spinning each mesh). With one shape this reduces to spinning it in place.
     let engaged = false;
     const Q_START_INV = new THREE.Quaternion(); // (Q_start)⁻¹
-    const R_START = new THREE.Quaternion();      // mesh rotation at engage
     const Q_CURRENT = new THREE.Quaternion();    // this frame's hand orientation
+    const engageCenter = new THREE.Vector3();    // group centroid at engage
+    const engagedMeshes: THREE.Mesh[] = [];      // selection snapshot at engage
+    const startPositions: THREE.Vector3[] = [];  // per-mesh position at engage
+    const startQuats: THREE.Quaternion[] = [];   // per-mesh quaternion at engage
 
     // ----- basis scratch (module-owned; zero per-frame alloc, §6.2) -----
     const wrist = new THREE.Vector3();
@@ -88,7 +96,9 @@ export function createRotateMenu(): MenuModule {
     const z_hand = new THREE.Vector3();
     const basis = new THREE.Matrix4();
     const axis_vec = new THREE.Vector3();   // delta rotation axis, for ring highlight
-    const mesh_center = new THREE.Vector3();
+    const mesh_center = new THREE.Vector3(); // group centroid (live)
+    const rel_pos = new THREE.Vector3();     // scratch: mesh offset from centroid
+    const new_pos = new THREE.Vector3();     // scratch: rotated mesh position
     const euler = new THREE.Euler();         // display-only; never feeds the math path
 
     // The local X/Y/Z axes a delta rotation can be "closest to", paired with their ring
@@ -206,9 +216,8 @@ export function createRotateMenu(): MenuModule {
         enter(ctx: SceneContext): void {
             engaged = false;
 
-            // World is empty until ADD SHAPES (§5.1): with no mesh there is nothing to
-            // rotate, so build no affordances and open no panel.
-            if (!ctx.mesh) return;
+            // Nothing selected → nothing to rotate; build no affordances and open no panel.
+            if (selectedCount(ctx) === 0 || !ctx.mesh) return;
 
             arcball = new THREE.Group();
             const ring_x = makeRing(AXIS_COLOR_X, 0);
@@ -228,21 +237,19 @@ export function createRotateMenu(): MenuModule {
         },
 
         update(ctx: SceneContext, right: HandPose | null, _left: HandPose | null, _dt: number): void {
-            // No mesh (empty world) or affordances never built: nothing to do.
-            const mesh = ctx.mesh;
-            if (!mesh || !arcball) return;
+            // Nothing selected or affordances never built: nothing to do.
+            const primary = ctx.mesh;
+            if (!primary || !arcball || selectedCount(ctx) === 0) return;
 
-            // Keep the arcball centered on the mesh in world space (the mesh may sit inside
-            // tilt/spin parent groups, so its world position can differ from the origin).
-            mesh.updateWorldMatrix(true, false);
-            mesh.getWorldPosition(mesh_center);
+            // Keep the arcball centered on the SELECTION centroid (the pivot the group orbits).
+            selectionCenter(ctx, mesh_center);
             arcball.position.copy(mesh_center);
 
             if (!right) {
-                // Hand lost: release any grab and hold the mesh where it is.
+                // Hand lost: release any grab and hold the group where it is.
                 engaged = false;
                 highlightRing(null);
-                paintPanel(mesh, null);
+                paintPanel(primary, null);
                 return;
             }
 
@@ -251,36 +258,51 @@ export function createRotateMenu(): MenuModule {
 
             // --- engage / release with hysteresis ---
             if (!engaged) {
-                // Engage requires a firm pinch AND the index fingertip near the object.
+                // Engage requires a firm pinch AND the index fingertip near the group centroid.
                 if (isPinching(lm, s) && pinchAmount(lm, s) >= PINCH_ENGAGE) {
                     const tip_world = fingertipWorld(ctx, right);
                     if (tip_world.distanceTo(mesh_center) <= ENGAGE_RADIUS &&
                         computeHandQuat(right, Q_CURRENT)) {
-                        // Snapshot the reference: deltaQ is measured against this from now.
+                        // Snapshot the reference: the centroid, each selected mesh's start
+                        // pose, and the hand orientation. deltaQ is measured against this.
                         Q_START_INV.copy(Q_CURRENT).invert();
-                        R_START.copy(mesh.quaternion);
+                        engageCenter.copy(mesh_center);
+                        engagedMeshes.length = 0;
+                        startPositions.length = 0;
+                        startQuats.length = 0;
+                        for (const m of selectedShapes(ctx)) {
+                            engagedMeshes.push(m);
+                            startPositions.push(m.position.clone());
+                            startQuats.push(m.quaternion.clone());
+                        }
                         engaged = true;
                     }
                 }
             } else if (pinchAmount(lm, s) <= PINCH_RELEASE) {
-                // Release: latch the rotation already written to the mesh.
+                // Release: latch the rotation already written to the meshes.
                 engaged = false;
             }
 
-            // --- apply rotation while engaged ---
+            // --- apply rotation to the whole group while engaged ---
             let active: 0 | 1 | 2 | null = null;
             if (engaged && computeHandQuat(right, Q_CURRENT)) {
                 // deltaQ = Q_current · Q_start⁻¹  → scratch.q1 (§5.4). Quaternion only.
                 ctx.scratch.q1.multiplyQuaternions(Q_CURRENT, Q_START_INV);
                 active = dominantAxis(ctx.scratch.q1);
-                // mesh.quaternion = deltaQ · R_start: premultiply applies the delta in the
-                // parent frame against the engage-time snapshot, so there is no incremental
-                // accumulation and the rotation stays drift-free.
-                mesh.quaternion.copy(R_START).premultiply(ctx.scratch.q1);
+                // Rigid-body transform about the engage-time centroid: each mesh orbits the
+                // centroid AND spins. Premultiply against the engage snapshot so there is no
+                // incremental drift. (With one shape, rel_pos = 0 → it spins in place.)
+                for (let i = 0; i < engagedMeshes.length; i++) {
+                    const m = engagedMeshes[i];
+                    rel_pos.copy(startPositions[i]).sub(engageCenter).applyQuaternion(ctx.scratch.q1);
+                    new_pos.copy(engageCenter).add(rel_pos);
+                    m.position.copy(new_pos);
+                    m.quaternion.copy(startQuats[i]).premultiply(ctx.scratch.q1);
+                }
             }
 
             highlightRing(active);
-            paintPanel(mesh, active);
+            paintPanel(primary, active);
         },
 
         exit(ctx: SceneContext): void {

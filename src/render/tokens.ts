@@ -1,5 +1,5 @@
 // JARVIS palette & design tokens (SPEC §14.1). Cyan neutral, amber active, white selected.
-import { MenuId } from "../types";
+import { MenuId, MENU_ORDER } from "../types";
 
 export const T = {
     bg:            "#000814",            // near-black, slight blue tint
@@ -51,3 +51,31 @@ export const MENU_META: Record<MenuId, { icon: string; accent: string; label: st
 };
 
 export const FONT = "'JetBrains Mono', monospace";
+
+// How many shapes must be SELECTED for each tool to make sense (§5, items 6). The tool
+// carousel shows only the tools whose [min,max] bracket the current selection count, so it
+// presents three natural variants:
+//   - 0 selected  → ADD SHAPES, SELECT
+//   - exactly 1   → the above + MORPH, DECORATE (one-shape) + TRANSLATE/DILATE/ROTATE/DESTROY
+//   - 2 or more   → drops the one-shape tools, adds INTERACT (boolean on the two selected)
+export const TOOL_SELECTION_REQ: Record<MenuId, { min: number; max: number }> = {
+    [MenuId.ADD_SHAPES]: { min: 0, max: Infinity },
+    [MenuId.SELECT]:     { min: 0, max: Infinity },
+    [MenuId.MORPH]:      { min: 1, max: 1 },        // one-shape: sphere↔torus on the primary
+    [MenuId.DECORATE]:   { min: 1, max: 1 },        // one-shape: icing/sprinkles on the primary
+    [MenuId.TRANSLATE]:  { min: 1, max: Infinity }, // one-or-more (acts on the group)
+    [MenuId.DILATE]:     { min: 1, max: Infinity },
+    [MenuId.ROTATE]:     { min: 1, max: Infinity },
+    [MenuId.DESTROY]:    { min: 1, max: Infinity },
+    [MenuId.INTERACT]:   { min: 2, max: Infinity }, // multi-shape: boolean on two selected
+};
+
+/** The tools eligible for the current selection count, in MENU_ORDER order (≥1 always). */
+export function eligibleTools(selectedCount: number): MenuId[] {
+    const eligible = MENU_ORDER.filter((id) => {
+        const r = TOOL_SELECTION_REQ[id];
+        return selectedCount >= r.min && selectedCount <= r.max;
+    });
+    // Defensive: never hand the carousel an empty wheel (ADD_SHAPES/SELECT are always min 0).
+    return eligible.length ? eligible : [MenuId.ADD_SHAPES, MenuId.SELECT];
+}

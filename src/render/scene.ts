@@ -17,7 +17,7 @@ import {
 import type { SceneContext, ScratchMath } from "../types";
 import { T } from "./tokens";
 import { LAYER } from "./layers";
-import { buildDonutMorph } from "./geometry";
+import { buildTorusMorph } from "./geometry";
 
 // ---- camera framing (§9.6: fixed framing, slight idle parallax) -------------
 const CAM_FOV = 45;
@@ -60,7 +60,7 @@ export function makeMatcapMaterial(): THREE.MeshBasicMaterial {
     // cyan-ish, still unlit/toneMapped:false; vertexColors keeps the icing tints.
     return new THREE.MeshBasicMaterial({
         wireframe: true,
-        color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.35),
+        color: new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15),
         vertexColors: true,
         toneMapped: false,
     });
@@ -157,6 +157,8 @@ export function makeContext(): SceneContext {
         mesh: null,
         bvh: null,
         extraMeshes: [],
+        selected: [],
+        focusIndex: 0,
         morphT: 0,
         stage: "EMPTY",
         viewMode: "scene",
@@ -175,18 +177,18 @@ export function makeContext(): SceneContext {
  * - renderOrder=0, depthTest/Write=true (scene layer; menus stay above via §4.3).
  * - BVH built once and stored on both ctx.bvh and geometry.boundsTree so the
  *   SculptEngine / icing reuse it instead of rebuilding (dirty-region refit only).
- * - morphTargetInfluences array registered ([0] = donut blend, §7.2).
+ * - morphTargetInfluences array registered ([0] = torus blend, §7.2).
  */
 export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): THREE.Mesh {
     patchPrototypes();
 
-    // Ensure the authored donut morph target exists BEFORE the mesh is built, so the
+    // Ensure the authored torus morph target exists BEFORE the mesh is built, so the
     // Mesh constructor's updateMorphTargets() seeds morphTargetInfluences from it.
     // attachMesh is the single chokepoint for the active sculpt target, so authoring the
-    // morph here means EVERY spawned shape (cube / sphere / tetra) can morph to the donut
-    // (§7.1, §7.2) — makeShape() deliberately leaves morph authoring to this layer.
+    // morph here means EVERY spawned shape (cube / sphere / tetra / cylinder) can morph to
+    // the torus (§7.1, §7.2) — makeShape() deliberately leaves morph authoring to this layer.
     if (!geometry.morphAttributes.position || geometry.morphAttributes.position.length === 0) {
-        buildDonutMorph(geometry);
+        buildTorusMorph(geometry);
     }
 
     const mesh = new THREE.Mesh(geometry, makeMatcapMaterial());
@@ -197,7 +199,7 @@ export function attachMesh(ctx: SceneContext, geometry: THREE.BufferGeometry): T
     mat.depthWrite = true;
 
     // The Mesh constructor seeds morphTargetInfluences from geometry.morphAttributes;
-    // guarantee the [0] slot (donut blend, §7.2) exists for setMorphT / the MORPH tool.
+    // guarantee the [0] slot (torus blend, §7.2) exists for setMorphT / the MORPH tool.
     if (!mesh.morphTargetInfluences || mesh.morphTargetInfluences.length === 0) {
         mesh.morphTargetInfluences = [0];
     }

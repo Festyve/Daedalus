@@ -180,7 +180,7 @@ const REPLY_RULES: ReplyRule[] = [
     },
     {
         keywords: ["healthy", "diet", "sugar-free", "calorie"],
-        reply: "I'm a donut decorator, not a miracle worker — adding extra sprinkles instead.",
+        reply: "I'm a torus decorator, not a miracle worker — adding extra sprinkles instead.",
     },
     {
         keywords: ["clear", "reset", "remove", "plain"],
@@ -188,7 +188,7 @@ const REPLY_RULES: ReplyRule[] = [
     },
     {
         keywords: ["thank", "thanks", "nice", "love", "great"],
-        reply: "My pleasure. This donut turned out beautifully.",
+        reply: "My pleasure. This torus turned out beautifully.",
     },
 ];
 const DEFAULT_REPLY = "Decorating now — jam icing and a burst of rainbow sprinkles.";

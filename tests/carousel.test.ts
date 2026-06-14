@@ -17,11 +17,11 @@ import { MenuId, MENU_ORDER } from "../src/types";
 import type { GestureState } from "../src/types";
 import { Carousel } from "../src/menu/carousel";
 
-// ---- Flick-velocity thresholds mirrored from menu/carousel.ts (kept local; the module
-//      keeps them private). A velocity at/above COMMIT_VX arms+fires a step; the carousel
-//      only re-arms once |vx| drops below REARM_VX, so one fast swipe == one step. ----
-const COMMIT_VX = 0.4;
-const REARM_VX = 0.15;
+// ---- Pinch-based advancing for the headless carousel. Right-hand pinch (pinch > 0.6)
+//      triggers a step, with 250ms cooldown. Left-hand pinch selects. ----
+const PINCH_THRESHOLD = 0.6;     // pinch level that triggers a step or select
+const ADVANCE_COOLDOWN_MS = 250;  // cooldown after an advance step
+const FRAMES_FOR_COOLDOWN = Math.ceil(ADVANCE_COOLDOWN_MS / 16); // ~16 frames per cooldown
 
 // ---- Headless DOM canvas stub so the real Carousel constructor + label bake run in node.
 //      Every 2D-context method the carousel touches is a no-op; setters swallow writes. ----
@@ -87,13 +87,15 @@ function gesture(over: Partial<GestureState> = {}): GestureState {
     };
 }
 
-// Advance the carousel by `frames` steps of `dtMs` each with a held gesture. navTip is kept
-// far from the strip so the proximity glow stays near zero and never perturbs index logic.
-function drive(c: Carousel, g: GestureState, frames: number, dtMs = 16): void {
+// Advance the carousel by `frames` steps of `dtMs` each with right and left hand gestures.
+// navTip is kept far from the strip so the proximity glow stays near zero.
+// If only one gesture is provided, right is assumed and left defaults to neutral.
+function drive(c: Carousel, rightG: GestureState, frames: number, dtMs = 16, leftG?: GestureState): void {
     const navTip = new THREE.Vector3(10, 10, 0);
     const dt = dtMs / 1000;
+    const leftGesture = leftG || { name: "none", extended: 0, pinch: 0, spread: 0, vx: 0 };
     for (let i = 0; i < frames; i++) {
-        c.update(navTip, g, dt);
+        c.update(navTip, rightG, leftGesture, dt);
     }
 }
 
@@ -200,7 +202,7 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
         }
     });
 
-    it("a committed flick steps the centered tool by one (re-arm gate = one swipe, one step)", () => {
+    it("right-hand pinch advances the centered tool by one (one pinch, one step)", () => {
         const c = new Carousel();
         try {
             c.open(new THREE.Vector3(0, 0, 0));
@@ -208,56 +210,63 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
             drive(c, gesture(), 10);
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
 
-            // One fast LEFTWARD swipe (vx<0, finger moves screen-left) commits one forward step…
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            // Right-hand pinch (pinch > 0.6) commits one step…
+            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
-            // …and holding the same fast velocity does NOT keep stepping (latch not re-armed).
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 5);
+            // …and holding the same pinch does NOT keep stepping (cooldown blocks re-firing).
+            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 5);
             expect(centeredId(c)).toBe(MENU_ORDER[1]);
 
-            // Drop below the re-arm threshold AND wait out the post-step cooldown (~220ms),
-            // then swipe again → a second step lands. (16 frames × 16ms = 256ms > cooldown.)
-            drive(c, gesture({ name: "point", vx: REARM_VX * 0.5 }), 16);
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            // Release pinch and wait for cooldown to clear, then pinch again → a second step lands.
+            drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 5);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
             expect(centeredId(c)).toBe(MENU_ORDER[2]);
         } finally {
             c.dispose();
         }
     });
 
-    it("a rightward flick from the first tool wraps to the last (1→6)", () => {
+    it("pinch at the last tool wraps to the first (only forward, no backward)", () => {
         const c = new Carousel();
         try {
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10);
             expect(centeredId(c)).toBe(MENU_ORDER[0]);
-            drive(c, gesture({ name: "point", vx: COMMIT_VX + 0.1 }), 1);
+            // Pinch forward repeatedly to reach the last tool.
+            for (let i = 1; i < MENU_ORDER.length; i++) {
+                drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+                drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 2);
+            }
             expect(centeredId(c)).toBe(MENU_ORDER[MENU_ORDER.length - 1]);
+            // One more pinch wraps to the first tool.
+            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            expect(centeredId(c)).toBe(MENU_ORDER[0]);
         } finally {
             c.dispose();
         }
     });
 
-    it("pinch fires onSelect exactly once with the centered MenuId, then closes", () => {
+    it("left-hand pinch fires onSelect exactly once with the centered MenuId, then closes", () => {
         const c = new Carousel();
         try {
-            const onSelect = vi.fn<[MenuId], void>();
+            const onSelect = vi.fn<[string], void>();
             c.onSelect = onSelect;
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10); // finish open fade
 
-            // Swipe (leftward = forward) to the third tool so the selection target is non-trivial.
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
-            // Re-arm + wait out the ~220ms post-step cooldown before the next swipe.
-            drive(c, gesture({ name: "point", vx: 0 }), 16);
-            drive(c, gesture({ name: "point", vx: -(COMMIT_VX + 0.1) }), 1);
+            // Right-hand pinch to advance to the third tool so the selection target is non-trivial.
+            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
+            drive(c, gesture({ name: "none", pinch: 0 }), FRAMES_FOR_COOLDOWN + 2);
+            drive(c, gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 }), 1);
             const target = centeredId(c);
             expect(target).toBe(MENU_ORDER[2]);
 
-            // Pinch (rising edge) latches the select + starts the close fade; onSelect fires
+            // Left-hand pinch (rising edge) latches the select + starts the close fade; onSelect fires
             // only when the 80ms close fade fully completes. Drive enough frames to finish it.
-            drive(c, gesture({ name: "pinch", pinch: 1 }), 12);
+            const rightG = gesture({ name: "none", pinch: 0 });
+            const leftG = gesture({ name: "pinch", pinch: PINCH_THRESHOLD + 0.1 });
+            drive(c, rightG, 12, 16, leftG);
 
             expect(onSelect).toHaveBeenCalledTimes(1);
             expect(onSelect).toHaveBeenCalledWith(target);
@@ -267,17 +276,17 @@ describe("Carousel (headless) — open/close toggle + flick + pinch→onSelect",
         }
     });
 
-    it("fist dismisses with no selection (onSelect never fires)", () => {
+    it("carousel persists while no gesture triggers selection", () => {
         const c = new Carousel();
         try {
-            const onSelect = vi.fn<[MenuId], void>();
+            const onSelect = vi.fn<[string], void>();
             c.onSelect = onSelect;
             c.open(new THREE.Vector3(0, 0, 0));
             drive(c, gesture(), 10);
-            // Fist closes; drive past the full close fade.
-            drive(c, gesture({ name: "fist" }), 12);
+            // Without any selection gesture (left-hand pinch), carousel stays open.
+            drive(c, gesture({ name: "none" }), 12);
             expect(onSelect).not.toHaveBeenCalled();
-            expect(c.isOpen).toBe(false);
+            expect(c.isOpen).toBe(true);
         } finally {
             c.dispose();
         }

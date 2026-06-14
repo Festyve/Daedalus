@@ -1,19 +1,17 @@
 // §4.1 — Horizontal tool carousel, top-center of screen. Pure Three.js geometry on
-// Layer 1 (renderOrder=1, depthTest=false, depthWrite=false via asMenuLayer). The LEFT
-// hand drives it: finger gun opens it (handled by the caller, which calls open()), a
-// horizontal flick navigates next/prev with wrap, a pinch selects the centered tool, a
-// fist dismisses with no selection.
+// Layer 1 (renderOrder=1, depthTest=false, depthWrite=false via asMenuLayer). Driven by:
+//   - RIGHT hand gun: toggle menu (handled by caller via open/close)
+//   - RIGHT hand pinch: advance to next element (binary gesture with 250ms cooldown)
+//   - LEFT hand pinch: select centered element (fires onSelect then closes)
 //
 // Visual model (§4.1, §14.4):
-//   - 6 tools in a horizontal strip. Active tool centered, full-brightness cyan. The wheel
+//   - Elements in a horizontal strip. Active element centered, full-brightness accent. The wheel
 //     shows up to two neighbors each side, smaller and dimmer the further out (a depth-faded
 //     strip); everything past that is hidden.
-//   - The active tool's name + icon are drawn centered below the strip.
-//   - An index-finger swipe (index-tip horizontal velocity, supplied as g.vx) slides to the
-//     next/prev tool — swiping left drags the strip left so the tool on the right slides to
-//     center. The index wraps (6→1, 1→6). The slide is a 100ms ease-out snap.
-//   - Pinch fires onSelect(id) then closes the carousel with an 80ms fade.
-//   - Fist closes the carousel with no selection.
+//   - The active element's name + icon are drawn centered below the strip.
+//   - Right-hand pinch advances to the next element. The slide is a 100ms ease-out snap
+//     with wrap-around (last → first).
+//   - Left-hand pinch fires onSelect(id) then closes the carousel with an 80ms fade.
 //   - Idle (non-active) items breathe on a slow 2s sine pulse; the active item also gets a
 //     proximity glow that brightens as the navigation fingertip nears the strip.
 //
@@ -23,23 +21,33 @@
 // across frames. Geometry/material/texture are created in the constructor and disposed in
 // dispose(); open()/close() only toggle visibility + drive the fade, never reallocate.
 import * as THREE from "three";
-import type { MenuId, GestureState } from "../types";
+import type { GestureState } from "../types";
 import { MENU_ORDER } from "../types";
 import { MENU_META, T, FONT } from "../render/tokens";
 import { asMenuLayer } from "../render/layers";
 
+// A carousel entry. The wheel is generic over these, so the SAME component renders the tool
+// wheel, the ADD SHAPES shape picker, and the INTERACT operation picker (item 5). `id` is an
+// opaque string the caller maps back to its own enum / kind.
+export interface CarouselItem {
+    id: string;
+    icon: string;
+    label: string;
+    accent: string;
+}
+
 // ---- Layout (group-local units; tuned so a camera-parented group reads top-center) ----
 const ITEM_SPACING = 0.42;     // horizontal gap between adjacent tool centers
 const ITEM_SIZE = 0.34;        // edge length of each square tool tile
-const LABEL_W = 1.4;           // width of the name+icon label plane below the strip
-const LABEL_H = 0.34;          // height of the label plane
-const LABEL_DROP = 0.42;       // vertical offset of the label below the strip center
+const LABEL_W = 1.6;           // width of the name+icon label plane below the strip
+const LABEL_H = 0.40;          // height of the label plane
+const LABEL_DROP = 0.50;       // vertical offset of the label below the strip center
 const VISIBLE_RADIUS = 2;      // how many neighbors each side are rendered (2 = up to 5 tiles)
 
 // ---- Depth fade (§4.1) — opacity + scale by wheel-distance from the active tile, indexed
 //      0 / 1 / 2. Tiles read as a depth-faded strip: smaller and dimmer the further out;
 //      anything past VISIBLE_RADIUS is hidden. Opacity here is multiplied by the open fade.
-const DIST_OPACITY = [1.0, 0.62, 0.32];  // centered / one out / two out — neighbours read clearer
+const DIST_OPACITY = [1.0, 0.82, 0.52];  // centered / one out / two out — neighbours read clearer
 const DIST_SCALE = [1.15, 0.85, 0.62];   // centered / one out / two out
 
 // ---- Motion (§14.4) ----
@@ -49,34 +57,48 @@ const PULSE_PERIOD_MS = 2000;  // ambient idle pulse: slow 2s sine on emission
 const PULSE_DEPTH = 0.18;      // peak-to-trough amplitude of the idle pulse
 const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow ramps in
 
-// ---- Index swipe (§4.1) — swiping the index fingertip horizontally steps the wheel one
-//      tool per swipe. Commits once |g.vx| crosses FLICK_VX; won't fire again until BOTH a
-//      post-step cooldown lapses AND the finger slows below FLICK_REARM_VX, so one swipe =
-//      exactly one step even when the velocity wobbles below re-arm mid-swipe and back up.
-const FLICK_VX = 0.3;          // |g.vx| (units of S/frame) that commits a swipe — forgiving
-const FLICK_REARM_VX = 0.12;   // |g.vx| must drop below this before another swipe arms
-const FLICK_COOLDOWN_MS = 220; // hard lockout after a step (~14 frames @60fps): no step fires
+// ---- Index swipe (§4.1) — swiping the index fingertip horizontally steps the wheel one tool
+//      per swipe. Detection is delegated to the shared SwipeDetector (gesture/swipe.ts), which
+//      integrates g.vx over a short window so a finger-only flick registers reliably while a
+//      single sweep is still exactly one step (cooldown + settle re-arm). Same detector and
+//      tuning the SELECT / ADD SHAPES / INTERACT menus use, so the feel is identical.
+
+// Pinch closure (rising edge) that selects the centered tool. Lowered from 0.7 so the
+// (non-dominant) nav hand commits a selection as easily as the exec hand applies one.
+const PINCH_SELECT = 0.6;
 
 // ---- Texture resolution for the per-tool icon tiles + the label strip ----
-const TILE_PX = 128;
-const LABEL_PX_W = 512;
-const LABEL_PX_H = 128;
+const TILE_PX = 256;
+const LABEL_PX_W = 640;
+const LABEL_PX_H = 160;
 const RING_PX = 256;
 
 // ---- Centered-tool glow ring (§4.1 emphasis; §14.4 eased, never bouncy) ----
 const RING_SIZE = ITEM_SIZE * 1.9;   // ring plane edge length (larger than the active tile)
-const RING_BASE = 0.62;              // resting ring opacity at full fade, glow=0 — slightly brighter
-const RING_GLOW = 0.45;              // extra opacity added as proximity glow ramps to 1
+const RING_BASE = 0.78;              // resting ring opacity at full fade, glow=0 — slightly brighter
+const RING_GLOW = 0.30;              // extra opacity added as proximity glow ramps to 1
 
 // One rendered tool tile: a textured plane (icon glyph baked once) plus its own material
 // so opacity + emissive pulse can be driven independently per item.
 interface Item {
-    id: MenuId;
+    id: string;
+    icon: string;
+    label: string;
+    accent: string;
     mesh: THREE.Mesh;
     material: THREE.MeshBasicMaterial;
     texture: THREE.CanvasTexture;
     baseColor: THREE.Color;   // tool accent, premultiplied target at full brightness
 }
+
+// The default item set: the nine tools, derived from MENU_META. Passing no items to the
+// Carousel constructor yields the tool wheel (so existing callers / tests are unchanged).
+const TOOL_ITEMS: CarouselItem[] = MENU_ORDER.map((id) => ({
+    id,
+    icon: MENU_META[id].icon,
+    label: MENU_META[id].label,
+    accent: MENU_META[id].accent,
+}));
 
 // Ease-out cubic — precise, non-bouncy snap (§14.4 "Nothing bouncy").
 function easeOutCubic(t: number): number {
@@ -93,9 +115,9 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     const g = canvas.getContext("2d")!;
     g.clearRect(0, 0, TILE_PX, TILE_PX);
 
-    // Rounded-square frame so each tile reads as a discrete chip.
+    // Rounded-square frame — dark fill so tiles read clearly over any camera background.
     const pad = TILE_PX * 0.1;
-    const r = TILE_PX * 0.16;
+    const r = TILE_PX * 0.18;
     const x0 = pad;
     const y0 = pad;
     const w = TILE_PX - pad * 2;
@@ -107,16 +129,29 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     g.arcTo(x0, y0 + h, x0, y0, r);
     g.arcTo(x0, y0, x0 + w, y0, r);
     g.closePath();
-    g.lineWidth = TILE_PX * 0.035;
-    g.strokeStyle = "rgba(255,255,255,0.85)";
+    // Dark fill — stays dark regardless of material tint, giving contrast over any bg.
+    g.fillStyle = "rgba(0,8,20,0.85)";
+    g.fill();
+    // Wide soft glow pass then tight bright pass builds a luminous border.
+    g.shadowColor = "rgba(255,255,255,0.60)";
+    g.shadowBlur = TILE_PX * 0.08;
+    g.lineWidth = TILE_PX * 0.055;
+    g.strokeStyle = "rgba(255,255,255,0.95)";
     g.stroke();
+    g.shadowBlur = TILE_PX * 0.025;
+    g.lineWidth = TILE_PX * 0.022;
+    g.stroke();
+    g.shadowBlur = 0;
 
-    // Centered icon glyph.
+    // Centered icon glyph with a soft glow.
+    g.shadowColor = "rgba(255,255,255,0.72)";
+    g.shadowBlur = TILE_PX * 0.07;
     g.fillStyle = "#FFFFFF";
-    g.font = `bold ${Math.round(TILE_PX * 0.5)}px ${FONT}`;
+    g.font = `bold ${Math.round(TILE_PX * 0.52)}px ${FONT}`;
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText(icon, TILE_PX / 2, TILE_PX / 2 + TILE_PX * 0.02);
+    g.shadowBlur = 0;
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -169,42 +204,79 @@ function makeRingTexture(): THREE.CanvasTexture {
 function drawLabel(canvas: HTMLCanvasElement, icon: string, label: string, accent: string): void {
     const g = canvas.getContext("2d")!;
     g.clearRect(0, 0, LABEL_PX_W, LABEL_PX_H);
+
+    // Pill background for contrast over any camera content.
+    const ph = LABEL_PX_H * 0.72;
+    const pw = LABEL_PX_W * 0.88;
+    const px0 = (LABEL_PX_W - pw) / 2;
+    const py0 = (LABEL_PX_H - ph) / 2;
+    const pr = ph / 2;
+    g.beginPath();
+    g.moveTo(px0 + pr, py0);
+    g.arcTo(px0 + pw, py0, px0 + pw, py0 + ph, pr);
+    g.arcTo(px0 + pw, py0 + ph, px0, py0 + ph, pr);
+    g.arcTo(px0, py0 + ph, px0, py0, pr);
+    g.arcTo(px0, py0, px0 + pw, py0, pr);
+    g.closePath();
+    g.fillStyle = "rgba(0,8,20,0.88)";
+    g.fill();
+    g.globalAlpha = 0.40;
+    g.strokeStyle = accent;
+    g.lineWidth = 2.5;
+    g.stroke();
+    g.globalAlpha = 1;
+
+    // Text: double glow pass for punch.
     g.fillStyle = accent;
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.font = `bold ${Math.round(LABEL_PX_H * 0.42)}px ${FONT}`;
+    g.font = `bold ${Math.round(LABEL_PX_H * 0.44)}px ${FONT}`;
     const text = `${icon}  ${label}`;
     g.shadowColor = accent;
-    g.shadowBlur = LABEL_PX_H * 0.18;
+    g.shadowBlur = LABEL_PX_H * 0.24;
     g.fillText(text, LABEL_PX_W / 2, LABEL_PX_H / 2);
+    g.shadowBlur = LABEL_PX_H * 0.08;
+    g.fillText(text, LABEL_PX_W / 2, LABEL_PX_H / 2);
+    g.shadowBlur = 0;
 }
 
 export class Carousel {
     readonly object: THREE.Group;
     isOpen = false;
-    onSelect: ((id: MenuId) => void) | null = null;
+    onSelect: ((id: string) => void) | null = null;
 
+    private readonly allIds: string[];                    // every item id this wheel can show
     private readonly items: Item[] = [];
+    private readonly itemById = new Map<string, Item>();  // tile lookup for the active subset
+    // The navigable subset (in item order). open() sets this from the caller's eligible list;
+    // navigation / label / select all run over `order`, and tiles whose id is not in `order`
+    // are hidden. Defaults to every item.
+    private order: string[];
     private readonly strip: THREE.Group;       // holds the tool tiles; slides horizontally
     private readonly label: THREE.Mesh;
     private readonly labelMat: THREE.MeshBasicMaterial;
     private readonly labelTex: THREE.CanvasTexture;
     private readonly labelCanvas: HTMLCanvasElement;
+    private readonly bgPanel: THREE.Mesh;        // dark backdrop behind the full strip for readability
+    private readonly bgMat: THREE.MeshBasicMaterial;
     private readonly ring: THREE.Mesh;          // glow halo pinned at screen-center behind the active tile
     private readonly ringMat: THREE.MeshBasicMaterial;
     private readonly ringTex: THREE.CanvasTexture;
 
-    private active = 0;                          // index of centered tool in MENU_ORDER
+    private active = 0;                          // index of centered item within `order`
     private slideFrom = 0;                       // strip x-offset at start of current snap
     private slideTo = 0;                         // target strip x-offset
     private slideMs = SNAP_MS;                   // elapsed → done when ≥ SNAP_MS
-    private flickArmed = true;                   // re-arm gate so one fast swipe = one step
-    private flickCooldownMs = 0;                 // post-step lockout (counts down); blocks repeats
+
+    private advanceCooldown = 0;                 // advance pinch cooldown (ms)
+    private selectCooldown = 0;                  // select pinch cooldown (ms)
+    private rightPinchLatched = false;           // right-pinch edge tracking for advance
+    private leftPinchLatched = false;            // left-pinch edge tracking for select
 
     private fade = 0;                            // 0 hidden .. 1 fully shown
     private fadeDir: 0 | 1 | -1 = 0;             // 0 idle, +1 opening, -1 closing
     private pendingSelect = false;               // close was triggered by a pinch-select
-    private pinchLatched = false;                // pinch edge tracking
+    private selectedId: string | null = null;    // id latched at pinch time (decision time)
 
     private pulseMs = 0;                          // ambient pulse phase accumulator
     private glow = 0;                             // 0..1 proximity glow toward active tile
@@ -213,18 +285,37 @@ export class Carousel {
     private readonly tmpColor = new THREE.Color();
     private readonly tmpLocal = new THREE.Vector3();
 
-    constructor() {
+    constructor(itemDefs: ReadonlyArray<CarouselItem> = TOOL_ITEMS) {
         this.object = new THREE.Group();
         this.object.name = "tool-carousel";
         this.object.visible = false;
 
-        // Centered-tool glow ring: pinned at the group origin (screen-center) so it always
+        this.allIds = itemDefs.map((d) => d.id);
+        this.order = [...this.allIds];
+
+        // Dark backdrop panel behind the entire strip — wider than the visible tile area so the
+        // carousel always reads against a consistent dark surface regardless of camera content.
+        const BG_W = VISIBLE_RADIUS * 2 * ITEM_SPACING + ITEM_SIZE * 2.6;
+        const BG_H = ITEM_SIZE * 1.82;
+        this.bgMat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(0, 8 / 255, 20 / 255),
+            transparent: true,
+            opacity: 0,
+            toneMapped: false,
+            depthTest: false,
+            depthWrite: false,
+        });
+        this.bgPanel = new THREE.Mesh(new THREE.PlaneGeometry(BG_W, BG_H), this.bgMat);
+        this.bgPanel.position.set(0, 0, -0.02);
+        this.object.add(this.bgPanel);
+
+        // Centered-item glow ring: pinned at the group origin (screen-center) so it always
         // frames whichever tile is active. Added before the strip so the tile draws over it
         // within Layer 1's shared renderOrder; nudged back in z as a second guard.
         this.ringTex = makeRingTexture();
         this.ringMat = new THREE.MeshBasicMaterial({
             map: this.ringTex,
-            color: new THREE.Color(MENU_META[MENU_ORDER[0]].accent),
+            color: new THREE.Color(itemDefs[0].accent),
             transparent: true,
             opacity: 0,
             toneMapped: false,
@@ -238,12 +329,11 @@ export class Carousel {
         this.object.add(this.strip);
 
         const tileGeo = new THREE.PlaneGeometry(ITEM_SIZE, ITEM_SIZE);
-        for (const id of MENU_ORDER) {
-            const meta = MENU_META[id];
-            const texture = makeTileTexture(meta.icon);
+        for (const def of itemDefs) {
+            const texture = makeTileTexture(def.icon);
             const material = new THREE.MeshBasicMaterial({
                 map: texture,
-                color: new THREE.Color(meta.accent),
+                color: new THREE.Color(def.accent),
                 transparent: true,
                 opacity: 0,
                 toneMapped: false,
@@ -251,13 +341,18 @@ export class Carousel {
             const mesh = new THREE.Mesh(tileGeo, material);
             mesh.visible = false;
             this.strip.add(mesh);
-            this.items.push({
-                id,
+            const item: Item = {
+                id: def.id,
+                icon: def.icon,
+                label: def.label,
+                accent: def.accent,
                 mesh,
                 material,
                 texture,
-                baseColor: new THREE.Color(meta.accent),
-            });
+                baseColor: new THREE.Color(def.accent),
+            };
+            this.items.push(item);
+            this.itemById.set(def.id, item);
         }
 
         // Label strip below the carousel: name + icon of the active tool.
@@ -300,9 +395,15 @@ export class Carousel {
     }
 
     private redrawLabel(): void {
-        const meta = MENU_META[MENU_ORDER[this.active]];
-        drawLabel(this.labelCanvas, meta.icon, meta.label, meta.accent);
+        const it = this.itemById.get(this.order[this.active])!;
+        drawLabel(this.labelCanvas, it.icon, it.label, it.accent);
         this.labelTex.needsUpdate = true;
+    }
+
+    /** The id of the currently centered item (what a pinch-select would emit). Lets a caller
+     *  read the live choice when it drives the wheel as a swipe-only picker. */
+    get current(): string {
+        return this.order[this.active];
     }
 
     // Begin a 100ms ease-out snap from the current strip offset to the active tile's offset.
@@ -312,30 +413,37 @@ export class Carousel {
         this.slideMs = 0;
     }
 
-    // Step the active index by ±1 with wrap, then snap + repaint the label.
+    // Step the active index by ±1 with wrap (over the navigable subset), then snap + repaint.
     private step(dir: 1 | -1): void {
-        const n = this.items.length;
+        const n = this.order.length;
         this.active = (this.active + dir + n) % n;
         this.startSnap();
         this.redrawLabel();
     }
 
     /** Materialize the carousel at the navigation fingertip (top-center). Fades in over
-     *  120ms (open animation handled as part of the fade ramp). atTip seeds the proximity
-     *  glow origin but does not move the screen-fixed group. */
-    open(atTip: THREE.Vector3): void {
+     *  120ms (open animation handled as part of the fade ramp). `eligible` is the navigable
+     *  subset of tools for the current selection count (defaults to the full menu); the wheel
+     *  shows and steps over only those. atTip seeds the proximity glow origin. */
+    open(atTip: THREE.Vector3, eligible?: ReadonlyArray<string>): void {
         if (this.isOpen) return;
         this.isOpen = true;
         this.object.visible = true;
         this.fadeDir = 1;
         this.pendingSelect = false;
-        this.pinchLatched = false;
-        this.flickArmed = true;
-        this.flickCooldownMs = 0;
+        this.leftPinchLatched = false;
+        this.rightPinchLatched = false;
+        this.advanceCooldown = 0;
+        this.selectCooldown = 0;
+        this.selectedId = null;
         this.glow = 0;
         this.tmpLocal.copy(atTip); // touch atTip so callers can rely on it being read
+        // Adopt the eligible subset (fall back to all items) and center on its first item.
+        this.order = eligible && eligible.length ? [...eligible] : [...this.allIds];
+        this.active = 0;
         // Snap instantly to the current active tile on open (no slide from a stale offset).
         this.layoutTiles();
+        this.redrawLabel();
     }
 
     /** Dismiss the carousel with an 80ms fade. No selection is emitted here; pinch-select
@@ -347,11 +455,11 @@ export class Carousel {
     }
 
     /**
-     * Per-frame drive. `navTip` is the navigation (left) index-fingertip position in the
-     * carousel group's local space (caller transforms world→local before passing it in);
-     * `g` is the current gesture state of the navigation hand; `dt` is seconds.
+     * Per-frame drive. `navTip` is the index-fingertip position in carousel group's local space;
+     * `rightG` is right-hand gesture state (gun to toggle, pinch to advance);
+     * `leftG` is left-hand gesture state (pinch to select); `dt` is seconds.
      */
-    update(navTip: THREE.Vector3, g: GestureState, dt: number): void {
+    update(navTip: THREE.Vector3, rightG: GestureState, leftG: GestureState, dt: number): void {
         const dtMs = dt * 1000;
 
         // ---- Fade (open/close) ----
@@ -367,7 +475,11 @@ export class Carousel {
                 this.object.visible = false;
                 if (this.pendingSelect) {
                     this.pendingSelect = false;
-                    this.onSelect?.(MENU_ORDER[this.active]);
+                    // Emit the id latched at pinch time, NOT order[active] now: a pinch's
+                    // incidental horizontal drift can re-step active before this fires, which
+                    // would wrap the last tile (DESTROY) back to ADD_SHAPES.
+                    this.onSelect?.(this.selectedId ?? this.order[this.active]);
+                    this.selectedId = null;
                 }
                 return; // fully closed: nothing else to drive this frame
             }
@@ -375,36 +487,38 @@ export class Carousel {
 
         if (!this.object.visible) return;
 
+        // ---- Cooldown tick-down ----
+        if (this.advanceCooldown > 0) {
+            this.advanceCooldown = Math.max(0, this.advanceCooldown - dtMs);
+        }
+        if (this.selectCooldown > 0) {
+            this.selectCooldown = Math.max(0, this.selectCooldown - dtMs);
+        }
+
         // ---- Gesture handling (only while open and not mid-close) ----
         if (this.isOpen) {
-            // Fist → dismiss, no selection.
-            if (g.name === "fist") {
+            // Left-hand pinch (rising edge) → select centered element with cooldown.
+            const leftPinching = leftG.pinch > PINCH_SELECT;
+            if (leftPinching && !this.leftPinchLatched && this.selectCooldown === 0) {
+                this.leftPinchLatched = true;
+                this.selectCooldown = 250;  // 250ms cooldown
+                this.pendingSelect = true;
+                this.selectedId = this.order[this.active]; // latch the centered element NOW
                 this.close();
-            } else {
-                // Pinch (rising edge) → select centered tool, then close with select pending.
-                const pinching = g.name === "pinch" || g.pinch > 0.7;
-                if (pinching && !this.pinchLatched) {
-                    this.pinchLatched = true;
-                    this.pendingSelect = true;
-                    this.close();
-                } else if (!pinching) {
-                    this.pinchLatched = false;
-                }
+            } else if (!leftPinching) {
+                this.leftPinchLatched = false;
+            }
 
-                // Index swipe → one tool per swipe (re-armed once the finger slows). Feed is
-                // un-mirrored: g.vx > 0 is rightward. Swiping LEFT (vx < 0) drags the strip
-                // left so the tool on the right slides to center → step +1; rightward → -1.
-                // A step also opens a hard cooldown: even if the velocity dips below re-arm and
-                // spikes again within the same physical swipe, no second step fires until the
-                // window lapses — so one swipe is exactly one step.
-                if (this.flickCooldownMs > 0) this.flickCooldownMs -= dtMs;
-                const speed = Math.abs(g.vx);
-                if (this.flickArmed && this.flickCooldownMs <= 0 && speed >= FLICK_VX) {
-                    this.step(g.vx > 0 ? -1 : 1);
-                    this.flickArmed = false;
-                    this.flickCooldownMs = FLICK_COOLDOWN_MS;
-                } else if (speed < FLICK_REARM_VX) {
-                    this.flickArmed = true;
+            // Right-hand pinch (rising edge) → advance one element to the right with cooldown.
+            // Skip while a selection is committing: a pinch's drift must not re-step after latching.
+            if (!this.pendingSelect) {
+                const rightPinching = rightG.pinch > PINCH_SELECT;
+                if (rightPinching && !this.rightPinchLatched && this.advanceCooldown === 0) {
+                    this.rightPinchLatched = true;
+                    this.advanceCooldown = 250;  // 250ms cooldown
+                    this.step(1);  // advance by 1 to the right
+                } else if (!rightPinching) {
+                    this.rightPinchLatched = false;
                 }
             }
         }
@@ -430,19 +544,25 @@ export class Carousel {
         this.pulseMs = (this.pulseMs + dtMs) % PULSE_PERIOD_MS;
         const pulse = Math.sin((this.pulseMs / PULSE_PERIOD_MS) * Math.PI * 2);
 
-        // ---- Per-item opacity + brightness + depth fade ----
-        const n = this.items.length;
-        for (let i = 0; i < n; i++) {
-            const item = this.items[i];
-            // Shortest signed distance to the active tile around the 6-item wheel, so the
-            // wrap neighbors (e.g. tile 6 when tile 1 is active) read as adjacent rather than
-            // far away. wo ∈ [-n/2, n/2]; the diametric tile (|wo| = 3) is always hidden.
-            let wo = ((i - this.active) % n + n) % n;
+        // ---- Per-item opacity + brightness + depth fade (over the navigable subset) ----
+        // Hide every tile first; the loop below re-shows only the tools in `order`, so a tool
+        // that is not eligible for the current selection count never appears.
+        for (const item of this.items) {
+            item.mesh.visible = false;
+            item.material.opacity = 0;
+        }
+
+        const n = this.order.length;
+        for (let oi = 0; oi < n; oi++) {
+            const item = this.itemById.get(this.order[oi])!;
+            // Shortest signed distance to the active tile around the subset ring, so wrap
+            // neighbors read as adjacent. wo ∈ [-n/2, n/2]; tiles past VISIBLE_RADIUS hide.
+            let wo = ((oi - this.active) % n + n) % n;
             if (wo > n / 2) wo -= n;
             const dist = Math.abs(wo);
 
-            // Re-slot wrap neighbors to their near side. Anchored to the active tile's base x
-            // (active*spacing) so the snap, which targets -active*spacing, still centers it.
+            // Anchored to the active tile's base x (active*spacing) so the snap, which targets
+            // -active*spacing, still centers it.
             item.mesh.position.x = (this.active + wo) * ITEM_SPACING;
 
             const visible = dist <= VISIBLE_RADIUS;
@@ -463,22 +583,24 @@ export class Carousel {
                 this.tmpColor.multiplyScalar(0.7 * breathe);
             }
             item.material.color.copy(this.tmpColor);
-            item.material.opacity = DIST_OPACITY[dist] * this.fade;
+            const di = Math.min(dist, DIST_OPACITY.length - 1);
+            item.material.opacity = DIST_OPACITY[di] * this.fade;
 
             // Shrink with distance for a depth-faded strip; the active tile takes the glow lift.
-            const scale = DIST_SCALE[dist] + (dist === 0 ? this.glow * 0.06 : 0);
+            const scale = DIST_SCALE[di] + (dist === 0 ? this.glow * 0.06 : 0);
             item.mesh.scale.setScalar(scale);
         }
 
         // ---- Centered-tool glow ring: tint to the active accent, then breathe + lift with
         //      the same proximity glow that brightens the active tile so the strip reads as a
         //      strip with one unmistakable focus. Color/opacity reuse scratch — no alloc.
-        this.ringMat.color.copy(this.items[this.active].baseColor);
+        this.ringMat.color.copy(this.itemById.get(this.order[this.active])!.baseColor);
         const ringBreathe = 1 + pulse * (PULSE_DEPTH * 0.5);
         this.ringMat.opacity = (RING_BASE + this.glow * RING_GLOW) * ringBreathe * this.fade;
         this.ring.scale.setScalar((1 + this.glow * 0.08) * ringBreathe);
 
-        // ---- Label opacity tracks the fade ----
+        // ---- Background panel + label opacity track the fade ----
+        this.bgMat.opacity = 0.82 * this.fade;
         this.labelMat.opacity = this.fade;
     }
 
@@ -496,5 +618,7 @@ export class Carousel {
         this.ringTex.dispose();
         this.ringMat.dispose();
         this.ring.geometry.dispose();
+        this.bgMat.dispose();
+        this.bgPanel.geometry.dispose();
     }
 }

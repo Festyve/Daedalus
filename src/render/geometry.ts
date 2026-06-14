@@ -3,7 +3,7 @@
 // Produces the single sculptable primitive Daedalus deforms: a high-resolution
 // indexed icosphere with position/normal/color attributes, ready for
 // `geometry.computeBoundsTree()` (three-mesh-bvh) and incremental dirty-region
-// refit. The donut morph target is built by warping the icosphere's OWN vertices
+// refit. The torus morph target is built by warping the icosphere's OWN vertices
 // onto a torus — so the morph attribute shares vertex count AND ordering with the
 // base by construction (§7.1), which is what `morphTargetInfluences[0]` requires.
 import * as THREE from "three";
@@ -22,9 +22,9 @@ import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 const DEFAULT_DETAIL = 44;
 const DEFAULT_RADIUS = 1.0;
 
-// Donut morph defaults (SPEC §7.1).
-const DONUT_R = 1.0;   // major radius (ring center → tube center)
-const DONUT_r = 0.42;  // minor radius (tube)
+// Torus morph defaults (SPEC §7.1).
+const TORUS_MAJOR_R = 1.0;   // major radius (ring center → tube center)
+const TORUS_MINOR_R = 0.42;  // minor radius (tube)
 
 /**
  * High-res indexed icosphere with position/normal/color attributes (§6.1).
@@ -53,7 +53,7 @@ export function makeIcosphere(radius: number = DEFAULT_RADIUS, detail: number = 
 }
 
 /**
- * Build the authored donut (torus) morph target by warping the icosphere's own
+ * Build the authored torus morph target by warping the icosphere's own
  * vertices (§7.1). The result is stored at `geo.morphAttributes.position[0]` and
  * shares vertex count + ordering with the base — required for a clean blend.
  *
@@ -69,7 +69,7 @@ export function makeIcosphere(radius: number = DEFAULT_RADIUS, detail: number = 
  * Morph normals are computed from a throwaway geometry sharing the base index so
  * the blended surface shades correctly mid-morph.
  */
-export function buildDonutMorph(geo: THREE.BufferGeometry, R: number = DONUT_R, r: number = DONUT_r): void {
+export function buildTorusMorph(geo: THREE.BufferGeometry, R: number = TORUS_MAJOR_R, r: number = TORUS_MINOR_R): void {
     const base = geo.attributes.position as THREE.BufferAttribute;
     const n = base.count;
     const torus = new Float32Array(n * 3);
@@ -111,7 +111,7 @@ export function buildDonutMorph(geo: THREE.BufferGeometry, R: number = DONUT_R, 
  * geometry with normals and a white color attribute, matching the icosphere's
  * attribute layout so any spawned shape is immediately sculptable / BVH-ready.
  */
-export function makeShape(kind: "cube" | "sphere" | "tetra"): THREE.BufferGeometry {
+export function makeShape(kind: "cube" | "sphere" | "tetra" | "cylinder"): THREE.BufferGeometry {
     let raw: THREE.BufferGeometry;
     switch (kind) {
         case "cube":
@@ -121,7 +121,16 @@ export function makeShape(kind: "cube" | "sphere" | "tetra"): THREE.BufferGeomet
             raw = new THREE.IcosahedronGeometry(DEFAULT_RADIUS, DEFAULT_DETAIL);
             break;
         case "tetra":
-            raw = new THREE.TetrahedronGeometry(1.2, 5);
+            // detail MUST be 0: three's TetrahedronGeometry/PolyhedronGeometry subdivides each
+            // face AND projects the new vertices onto the sphere of the given radius, so any
+            // detail > 0 rounds the tetra into a geodesic SPHERE (the bug). detail 0 keeps the
+            // four flat triangular faces — an actual tetrahedron.
+            raw = new THREE.TetrahedronGeometry(1.2, 0);
+            break;
+        case "cylinder":
+            // radiusTop, radiusBottom, height, radialSegments, heightSegments — dense enough to
+            // sculpt and to match the cube/sphere scale.
+            raw = new THREE.CylinderGeometry(0.7, 0.7, 1.5, 48, 24);
             break;
     }
 
