@@ -29,7 +29,7 @@ import { PoseStore } from "./core/store";
 import { startLoop } from "./core/loop";
 import { Director } from "./core/director";
 
-import { makeContext } from "./render/scene";
+import { makeContext, setTorusMorph } from "./render/scene";
 import { LAYER } from "./render/layers";
 import { makeComposer, SCENE_BLOOM_STRENGTH } from "./render/post";
 import { drawSkeletons } from "./render/overlay";
@@ -458,10 +458,8 @@ addEventListener("pointerdown", () => sfx.resume(), { once: true });
 // ---- window.DAEDALUS debug API (drives every beat headlessly) --------------
 function setMorphT(t: number): void {
     const v = Math.min(1, Math.max(0, t));
-    ctx.morphT = v;
-    if (ctx.mesh && ctx.mesh.morphTargetInfluences && ctx.mesh.morphTargetInfluences.length > 0) {
-        ctx.mesh.morphTargetInfluences[0] = v;
-    }
+    // Routes through the shared morph path so the seamless-torus swap fires headlessly too (§7.2).
+    setTorusMorph(ctx, v, v);
     director.onMorph(v);
 }
 

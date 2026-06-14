@@ -26,6 +26,7 @@ import { BrushVerb, MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { classify } from "../gesture/detect";
 import { fingertipToWorld } from "../math/coords";
+import { setTorusMorph } from "../render/scene";
 import { SculptEngine } from "../sculpt/engine";
 import { Panel } from "./panel";
 import { sfx } from "../audio/sfx";
@@ -120,7 +121,9 @@ class MorphMenu implements MenuModule {
 
         if (left && right && this.bothGrab(left, right)) {
             this.driveMotion(ctx, left, right, dt);
-            this.driveBrush(ctx, left, right);
+            // Once the morph has swapped to the seamless real torus, the additive brush has no
+            // morph base to sculpt (its engine is built on the icosphere) — so park it there.
+            if (ctx.mesh.userData.shape !== "torus") this.driveBrush(ctx, left, right);
         } else {
             // Lost the grab: drop the motion anchor so the next grab resumes from the
             // current t rather than counting the gap accrued while released as travel.
@@ -183,10 +186,9 @@ class MorphMenu implements MenuModule {
     // t > 0.95 has been sustained for > 500 ms. smoothstep shapes the influence; the raw
     // t (and its travel) stay linear (SPEC §5.5).
     private applyMorph(ctx: SceneContext, t: number, dt: number): void {
-        ctx.morphT = t;
-
-        const influences = ctx.mesh!.morphTargetInfluences;
-        if (influences && influences.length > 0) influences[0] = smoothstep(t);
+        // setTorusMorph stores t on ctx, applies the eased vertex blend below the swap point,
+        // and swaps to the seamless real torus once t crosses the completion threshold (§7.2).
+        setTorusMorph(ctx, t, smoothstep(t));
 
         if (t > TORUS_T) {
             this.dwellMs += dt;

@@ -57,14 +57,21 @@ export function makeIcosphere(radius: number = DEFAULT_RADIUS, detail: number = 
  * vertices (§7.1). The result is stored at `geo.morphAttributes.position[0]` and
  * shares vertex count + ordering with the base — required for a clean blend.
  *
- * Per-vertex sphere→torus map (hole axis = Y):
- *   ring angle  θ = atan2(z, x)          — longitude around the hole
+ * Per-vertex sphere→torus map. The hole axis is Z, so the ring lies in the XY
+ * plane and the donut faces the fixed camera (which looks down −Z) — otherwise
+ * the hole points at the sky and you only ever see the torus edge-on.
+ *   ring angle  θ = atan2(z, x)          — longitude, placed around the XY ring
  *   tube angle  φ = π·(1 − y/|p|)        — latitude → wraps the tube once
  *       (north pole y=+1 → φ=0 outer equator of tube; south pole → φ=2π)
  *   target:  x = (R + r·cos φ)·cos θ
- *            y =        r·sin φ
- *            z = (R + r·cos φ)·sin θ
+ *            y = (R + r·cos φ)·sin θ
+ *            z =        r·sin φ          — tube offset along the hole axis
  * Degenerate poles (x=z=0) fall back to θ=0 so atan2 is well-defined.
+ *
+ * Mapping x,z→ring + y→tube would reverse surface orientation (the warp's
+ * Jacobian flips winding); routing the ring into XY and the tube into Z is a
+ * reflection of that, which keeps the shared sphere index winding OUTWARD-facing
+ * so the solid torus renders right-side-out under normal front-face culling.
  *
  * Morph normals are computed from a throwaway geometry sharing the base index so
  * the blended surface shades correctly mid-morph.
@@ -80,16 +87,16 @@ export function buildTorusMorph(geo: THREE.BufferGeometry, R: number = TORUS_MAJ
         const z = base.getZ(i);
 
         const len = Math.hypot(x, y, z) || 1;
-        // Longitude around the Y hole axis. Poles collapse to θ=0.
+        // Longitude → ring angle (placed around the XY ring). Poles collapse to θ=0.
         const theta = (x === 0 && z === 0) ? 0 : Math.atan2(z, x);
         // Latitude → tube angle: north pole maps to outer tube edge, sweeping
         // once around the tube down to the south pole.
         const phi = Math.PI * (1 - y / len);
 
         const ring = R + r * Math.cos(phi);
-        torus[i * 3]     = ring * Math.cos(theta);
-        torus[i * 3 + 1] = r * Math.sin(phi);
-        torus[i * 3 + 2] = ring * Math.sin(theta);
+        torus[i * 3]     = ring * Math.cos(theta);   // ring in the XY plane…
+        torus[i * 3 + 1] = ring * Math.sin(theta);   // …so the hole faces the camera
+        torus[i * 3 + 2] = r * Math.sin(phi);        // tube offset along Z = hole axis
     }
 
     const torus_attr = new THREE.BufferAttribute(torus, 3);
@@ -130,6 +137,32 @@ export function makeShape(kind: "cube" | "sphere" | "cylinder"): THREE.BufferGeo
     const geo = mergeVertices(raw);
     raw.dispose();
 
+    geo.computeVertexNormals();
+
+    const vertex_count = geo.attributes.position.count;
+    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(vertex_count * 3).fill(1), 3));
+
+    geo.computeBoundingSphere();
+    geo.computeBoundingBox();
+    return geo;
+}
+
+/**
+ * A genuine, seamless torus for the COMPLETED morph (§7.2). The sphere→torus blend is a
+ * vertex warp of the icosphere, but an icosphere is genus-0 and CANNOT be wrapped into a
+ * genus-1 hole without tearing a seam along the outer rim — so the blend can only ever
+ * fake a torus. Once the morph finishes we therefore swap the mesh onto this real
+ * TorusGeometry (scene.ts setTorusMorph) for a clean, see-through donut with no seam.
+ *
+ * THREE builds the torus in the XY plane with the hole along Z, which is exactly the
+ * camera-facing orientation the icosphere morph also targets — so the swap keeps the
+ * donut pointing at the fixed camera. White per-vertex color matches the matcap
+ * material's attribute layout; bounds are computed so it is selection / BVH ready.
+ */
+export function makeTorusGeometry(R: number = TORUS_MAJOR_R, r: number = TORUS_MINOR_R): THREE.BufferGeometry {
+    // radialSegments around the tube, tubularSegments around the ring — dense enough that
+    // the surface reads perfectly smooth (no facets) at any zoom.
+    const geo = new THREE.TorusGeometry(R, r, 48, 128);
     geo.computeVertexNormals();
 
     const vertex_count = geo.attributes.position.count;
