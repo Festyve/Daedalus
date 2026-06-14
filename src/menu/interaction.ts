@@ -106,21 +106,40 @@ export function createInteractMenu(): MenuModule {
     function computeResult(): THREE.BufferGeometry | null {
         if (operands.length < 2) return null;
         const op = OPS[opIndex].key;
+        const opLabel = OPS[opIndex].label;
 
-        // Fold the operands primary-first under the chosen op: UNION fuses, SUBTRACT does
-        // primary-minus-the-rest, INTERSECT keeps the shared overlap.
-        // Use fresh Evaluator for each operation to avoid state corruption (especially for INTERSECT).
-        let acc: Brush = brushOf(operands[0]);
-        for (let i = 1; i < operands.length; i++) {
-            const other = brushOf(operands[i]);
-            const evalForOp = new Evaluator();
-            evalForOp.useGroups = false;
-            evalForOp.attributes = ["position", "normal"];
-            acc = evalForOp.evaluate(acc, other, op);
+        let acc: Brush;
+        try {
+            // Fold the operands primary-first under the chosen op: UNION fuses, SUBTRACT does
+            // primary-minus-the-rest, INTERSECT keeps the shared overlap.
+            acc = brushOf(operands[0]);
+            for (let i = 1; i < operands.length; i++) {
+                const other = brushOf(operands[i]);
+                const evalForOp = new Evaluator();
+                evalForOp.useGroups = false;
+                evalForOp.attributes = ["position", "normal"];
+                acc = evalForOp.evaluate(acc, other, op);
+                if (!acc.geometry.attributes.position) {
+                    console.warn(`[${opLabel}] No position attribute after evaluate step ${i}`);
+                    return null;
+                }
+                const posCount = (acc.geometry.attributes.position as THREE.BufferAttribute).count;
+                console.log(`[${opLabel}] After step ${i}: position count = ${posCount}`);
+                if (posCount === 0) {
+                    console.warn(`[${opLabel}] Empty geometry after step ${i}`);
+                    return null;
+                }
+            }
+        } catch (err) {
+            console.error(`[${opLabel}] Exception in CSG operation:`, err);
+            return null;
         }
 
         const rp = acc.geometry.attributes.position as THREE.BufferAttribute | undefined;
-        if (!rp || rp.count === 0) return null;
+        if (!rp || rp.count === 0) {
+            console.warn(`[${opLabel}] Final result is empty`);
+            return null;
+        }
 
         // three-bvh-csg builds the result with ITS OWN three instance (Vite may not dedupe), so its
         // geometry lacks the prototype-patched computeBoundsTree the rest of the pipeline relies on.
