@@ -34,13 +34,12 @@ html, body {
 }
 
 /* the WebGL canvas is appended by the renderer with id="webgl". Sits ABOVE #camera (z-index 1
-   > 0). The 3D scene is the bright cyan "hologram" wireframe on a BLACK clear; `mix-blend-mode:
-   screen` blends it over the camera layer so black areas drop out (the live feed shows through,
-   untouched by the three.js post-processing) while the glowing edges composite on top. In scene
-   mode the clear is #000814 and the camera is hidden, so screen-over-#000 is a no-op — the scene
-   view is unchanged. The EffectComposer does not preserve a transparent alpha, so we rely on the
-   blend (not canvas alpha) to reveal the feed. */
-canvas#webgl { position: fixed; inset: 0; z-index: 1; display: block; mix-blend-mode: screen; }
+   > 0). The 3D scene renders SOLID lit geometry; in AR mode the canvas is cleared TRANSPARENT
+   (alpha 0, viewMode.ts) so the empty areas reveal the #camera feed behind it while the solid
+   shapes composite opaquely on top via normal alpha blending. In scene mode the clear is opaque
+   #000814 and the camera is hidden. The composer preserves the alpha channel (bloom — which
+   would force alpha to 1 — is disabled in AR), so plain alpha compositing reveals the feed. */
+canvas#webgl { position: fixed; inset: 0; z-index: 1; display: block; }
 
 /* full-screen transparent green hand-skeleton overlay, above the webgl canvas */
 #overlay { position: fixed; inset: 0; z-index: 2; display: block; pointer-events: none; }

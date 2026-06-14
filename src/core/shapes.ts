@@ -24,10 +24,11 @@ import { T } from "../render/tokens";
 const UNSELECTED_OPACITY = 0.26;
 const SELECTED_OPACITY = 1.0;
 
-// Wireframe tints by selection tier. WIRE_BASE matches makeMatcapMaterial's colour; decoration
-// (per-vertex colour) still multiplies through, so a decorated shape keeps its look — it is just
-// lifted (primary), full (selected) or dimmed (unselected). No extra render passes, so the tier
-// shows identically in the main AR view and the corner preview.
+// Albedo tints by selection tier (multiplied by the scene lights). WIRE_BASE matches
+// makeMatcapMaterial's colour; decoration (per-vertex colour) still multiplies through, so a
+// decorated shape keeps its look — it is just lifted (primary), full (selected) or dimmed
+// (unselected). No extra render passes, so the tier shows identically in the main AR view and
+// the corner preview.
 const WIRE_BASE = new THREE.Color(T.cyan).lerp(new THREE.Color(T.white), 0.15);
 const WIRE_DIM = WIRE_BASE.clone().multiplyScalar(0.45);
 const WIRE_PRIMARY = WIRE_BASE.clone().lerp(new THREE.Color(T.white), 0.55);
@@ -165,10 +166,12 @@ export function selectionCenter(ctx: SceneContext, out: THREE.Vector3): THREE.Ve
  */
 export function refreshHighlight(ctx: SceneContext): void {
     for (const m of allShapes(ctx)) {
-        const mat = m.material as THREE.MeshBasicMaterial;
+        const mat = m.material as THREE.MeshStandardMaterial;
         const selected = ctx.selected.indexOf(m) >= 0;
         const primary = m === ctx.mesh;
-        mat.transparent = true;
+        // Selected shapes are fully SOLID (transparent off, depth written); only the unselected
+        // ghosts are drawn translucent so the selection still reads at a glance.
+        mat.transparent = !selected;
         mat.opacity = selected ? SELECTED_OPACITY : UNSELECTED_OPACITY;
         mat.depthWrite = selected;
         mat.color.copy(primary ? WIRE_PRIMARY : selected ? WIRE_BASE : WIRE_DIM);
