@@ -19,16 +19,32 @@
 // this tool is a no-op and shows a placeholder readout.
 import { Box3, Box3Helper, Color, Vector3 } from "three";
 import type { Mesh } from "three";
-import type { HandPose, MenuModule, SceneContext } from "../types";
+import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
 import { asMenuLayer } from "../render/layers";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
-import { isFist } from "../gesture/predicates";
+import { fingerExtended } from "../gesture/predicates";
 import { selectedShapes, selectedCount, selectionCenter } from "../core/shapes";
 
 // MediaPipe wrist landmark index (image space, mirrored [0,1]).
 const WRIST = 0;
+
+// Finger tip/PIP pairs (index→pinky) for the closed-hand test. A hand counts as "closed"
+// when all four of these fingers are curled (tip nearer the wrist than its PIP). We
+// deliberately ignore the thumb: predicates.isFist() also requires the thumb to stick out
+// (gap > 0.6·S), but a natural clench tucks the thumb over the fingers, so isFist never
+// fires for the fist the user actually makes. Curled-fingers-only is robust to thumb pose.
+const FIST_TIPS = [8, 12, 16, 20];
+const FIST_PIPS = [6, 10, 14, 18];
+
+// True when all four fingers are curled — i.e. the hand is squeezed shut (thumb-agnostic).
+function handClosed(world: Vec3[]): boolean {
+    for (let i = 0; i < FIST_TIPS.length; i++) {
+        if (fingerExtended(world, FIST_TIPS[i], FIST_PIPS[i])) return false;
+    }
+    return true;
+}
 
 // Fist clutch: BOTH hands must close into a fist to drive scaling; opening either hand
 // latches the current scale. This makes the gesture a ratchet — close both fists and bring
@@ -188,12 +204,11 @@ export function createDilateMenu(): MenuModule {
             const both = exec !== null && nav !== null;
 
             if (both) {
-                // Fist clutch: both hands must be fists to grab, opening either hand releases.
-                // Debounce each transition over COMMIT_FRAMES so a single stray classification
-                // can't chatter the clutch (§12). Fist detection uses world landmarks + hand
-                // scale so it is size- and distance-invariant (§3.5), matching TRANSLATE.
-                const both_fist = isFist(exec!.world, exec!.handScale) &&
-                    isFist(nav!.world, nav!.handScale);
+                // Fist clutch: both hands must be closed (fingers curled) to grab; opening
+                // either hand releases. Debounce each transition over COMMIT_FRAMES so a single
+                // stray classification can't chatter the clutch (§12). Uses world landmarks so
+                // the curl test is size- and distance-invariant (§3.5).
+                const both_fist = handClosed(exec!.world) && handClosed(nav!.world);
                 fist_frames = both_fist ? fist_frames + 1 : 0;
                 open_frames = both_fist ? 0 : open_frames + 1;
 

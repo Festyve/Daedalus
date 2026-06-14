@@ -47,7 +47,7 @@ const VISIBLE_RADIUS = 2;      // how many neighbors each side are rendered (2 =
 // ---- Depth fade (§4.1) — opacity + scale by wheel-distance from the active tile, indexed
 //      0 / 1 / 2. Tiles read as a depth-faded strip: smaller and dimmer the further out;
 //      anything past VISIBLE_RADIUS is hidden. Opacity here is multiplied by the open fade.
-const DIST_OPACITY = [1.0, 0.82, 0.52];  // centered / one out / two out — neighbours read clearer
+const DIST_OPACITY = [1.0, 0.92, 0.74];  // centered / one out / two out — neighbours read clearer
 const DIST_SCALE = [1.15, 0.85, 0.62];   // centered / one out / two out
 
 // ---- Motion (§14.4) ----
@@ -69,6 +69,9 @@ const PROXIMITY_RANGE = 0.6;   // navTip distance (group-local) over which glow 
 // a slow fist release.
 const PINCH_ON = 0.6;
 const PINCH_OFF = 0.35;
+// Consecutive frames pinch must stay above PINCH_ON before the action fires.
+// Filters single-frame noise bounces; at 60fps, 2 frames ≈ 33ms (imperceptible).
+const PINCH_ARM_FRAMES = 2;
 
 // ---- Texture resolution for the per-tool icon tiles + the label strip ----
 const TILE_PX = 256;
@@ -133,7 +136,7 @@ function makeTileTexture(icon: string): THREE.CanvasTexture {
     g.arcTo(x0, y0, x0 + w, y0, r);
     g.closePath();
     // Dark fill — stays dark regardless of material tint, giving contrast over any bg.
-    g.fillStyle = "rgba(0,8,20,0.85)";
+    g.fillStyle = "rgba(0,8,20,0.96)";
     g.fill();
     // Wide soft glow pass then tight bright pass builds a luminous border.
     g.shadowColor = "rgba(255,255,255,0.60)";
@@ -221,7 +224,7 @@ function drawLabel(canvas: HTMLCanvasElement, icon: string, label: string, accen
     g.arcTo(px0, py0 + ph, px0, py0, pr);
     g.arcTo(px0, py0, px0 + pw, py0, pr);
     g.closePath();
-    g.fillStyle = "rgba(0,8,20,0.88)";
+    g.fillStyle = "rgba(0,8,20,0.96)";
     g.fill();
     g.globalAlpha = 0.40;
     g.strokeStyle = accent;
@@ -277,6 +280,8 @@ export class Carousel {
     private leftPinchLatched = false;            // left-pinch edge tracking for select
     private prevLeftPinch = 0;                   // previous-frame pinch for 2-frame disarm debounce
     private prevRightPinch = 0;
+    private leftArmFrames = 0;                   // consecutive frames left pinch has been above PINCH_ON
+    private rightArmFrames = 0;
 
     private fade = 0;                            // 0 hidden .. 1 fully shown
     private fadeDir: 0 | 1 | -1 = 0;             // 0 idle, +1 opening, -1 closing
@@ -442,10 +447,11 @@ export class Carousel {
         this.rightPinchLatched = true;
         this.advanceCooldown = 0;
         this.selectCooldown = 0;
-        // Seed prev-pinch high so the 2-frame debounce can't disarm on the very first frame —
-        // any carried-over pinch must pass through two frames below PINCH_OFF to disarm.
+        // Seed prev-pinch high so the 2-frame disarm debounce can't disarm on the very first frame.
         this.prevLeftPinch = 1.0;
         this.prevRightPinch = 1.0;
+        this.leftArmFrames = 0;
+        this.rightArmFrames = 0;
         this.selectedId = null;
         this.glow = 0;
         this.tmpLocal.copy(atTip); // touch atTip so callers can rely on it being read
@@ -511,28 +517,41 @@ export class Carousel {
             // Left-hand pinch (rising edge with hysteresis) → select centered element.
             // Arm above PINCH_ON; disarm only below PINCH_OFF so a slow fist release
             // doesn't dip-and-spike through the threshold and re-trigger.
+            // Left-hand pinch → select. PINCH_ARM_FRAMES consecutive frames above PINCH_ON
+            // required before firing: a single-frame noise bounce can never trigger an action.
+            // Disarm requires two consecutive frames below PINCH_OFF so a brief dip during
+            // fist opening can't re-arm and then re-fire on the bounce.
             if (leftG.pinch > PINCH_ON && !this.leftPinchLatched && this.selectCooldown === 0) {
-                this.leftPinchLatched = true;
-                this.selectCooldown = 250;
-                this.pendingSelect = true;
-                this.selectedId = this.order[this.active];
-                this.close();
-            } else if (leftG.pinch < PINCH_OFF && this.prevLeftPinch < PINCH_OFF && this.selectCooldown === 0) {
-                // Require TWO consecutive frames below PINCH_OFF before disarming: a single-frame
-                // noise dip during fist opening can't reset the latch (prev frame was still high),
-                // preventing the bounce pattern 0.8→0.34(dip)→0.7(bounce→spurious fire).
-                this.leftPinchLatched = false;
+                if (++this.leftArmFrames >= PINCH_ARM_FRAMES) {
+                    this.leftArmFrames = 0;
+                    this.leftPinchLatched = true;
+                    this.selectCooldown = 250;
+                    this.pendingSelect = true;
+                    this.selectedId = this.order[this.active];
+                    this.close();
+                }
+            } else {
+                this.leftArmFrames = 0;
+                if (leftG.pinch < PINCH_OFF && this.prevLeftPinch < PINCH_OFF && this.selectCooldown === 0) {
+                    this.leftPinchLatched = false;
+                }
             }
 
-            // Right-hand pinch (rising edge with hysteresis) → advance one element.
+            // Right-hand pinch → advance. Same arm-debounce + disarm-debounce pattern.
             // Skip while a selection is committing.
             if (!this.pendingSelect) {
                 if (rightG.pinch > PINCH_ON && !this.rightPinchLatched && this.advanceCooldown === 0) {
-                    this.rightPinchLatched = true;
-                    this.advanceCooldown = 250;
-                    this.step(1);
-                } else if (rightG.pinch < PINCH_OFF && this.prevRightPinch < PINCH_OFF && this.advanceCooldown === 0) {
-                    this.rightPinchLatched = false;
+                    if (++this.rightArmFrames >= PINCH_ARM_FRAMES) {
+                        this.rightArmFrames = 0;
+                        this.rightPinchLatched = true;
+                        this.advanceCooldown = 250;
+                        this.step(1);
+                    }
+                } else {
+                    this.rightArmFrames = 0;
+                    if (rightG.pinch < PINCH_OFF && this.prevRightPinch < PINCH_OFF && this.advanceCooldown === 0) {
+                        this.rightPinchLatched = false;
+                    }
                 }
             }
         }
@@ -614,7 +633,7 @@ export class Carousel {
         this.ring.scale.setScalar((1 + this.glow * 0.08) * ringBreathe);
 
         // ---- Background panel + label opacity track the fade ----
-        this.bgMat.opacity = 0.82 * this.fade;
+        this.bgMat.opacity = 0.95 * this.fade;
         this.labelMat.opacity = this.fade;
 
         this.prevLeftPinch = leftG.pinch;

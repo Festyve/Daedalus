@@ -11,11 +11,12 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
-// Bloom tuning: high threshold so only the bright wireframe edges / affordance pixels
-// (luminance > BLOOM_THRESHOLD) glow, and a restrained strength so the hologram reads as a
-// crisp glow rather than a wash. (The webcam feed is no longer in this pipeline — it is a
-// DOM layer — so bloom only touches the 3D geometry now.)
-const BLOOM_STRENGTH = 0.55;
+// Bloom tuning: high threshold so only the bright affordance/UI pixels (luminance >
+// BLOOM_THRESHOLD) glow, and a restrained strength so they read as a crisp glow rather than a
+// wash. SCENE_BLOOM_STRENGTH is the value the app dials in for SCENE mode (opaque background);
+// in AR mode the caller sets bloom to 0, because UnrealBloomPass's blur forces the alpha
+// channel to 1 and would otherwise veil the transparent (camera-feed-revealing) areas.
+export const SCENE_BLOOM_STRENGTH = 0.55;
 const BLOOM_RADIUS = 0.4;
 const BLOOM_THRESHOLD = 0.9;
 
@@ -76,9 +77,11 @@ export function makeComposer(
     gtao_pass.updateGtaoMaterial({ radius: GTAO_RADIUS });
     composer.addPass(gtao_pass);
 
+    // Start at 0 (the app's default view is AR, which needs a clean alpha channel); the caller
+    // dials it up to SCENE_BLOOM_STRENGTH whenever the view is in opaque SCENE mode.
     const bloom_pass = new UnrealBloomPass(
         new THREE.Vector2(width, height),
-        BLOOM_STRENGTH,
+        0,
         BLOOM_RADIUS,
         BLOOM_THRESHOLD,
     );
