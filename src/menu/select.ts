@@ -10,11 +10,12 @@
 // Each hand's fist is debounced (gesture/detect.GestureDebouncer, 5 frames) and fires on the rising
 // edge, so one fist-close = one cursor step / one toggle.
 import * as THREE from "three";
-import type { HandPose, MenuModule, SceneContext } from "../types";
+import type { HandPose, MenuModule, SceneContext, Vec3 } from "../types";
 import { MenuId } from "../types";
 import { MENU_META } from "../render/tokens";
 import { Panel } from "./panel";
-import { classify, GestureDebouncer } from "../gesture/detect";
+import { GestureDebouncer } from "../gesture/detect";
+import { fingerExtended } from "../gesture/predicates";
 import {
     allShapes,
     shapeCount,
@@ -28,6 +29,25 @@ import {
 
 // Focus-cursor pulse colour (the shape the left fist would toggle shimmers toward white).
 const WHITE = new THREE.Color(0xffffff);
+
+// Finger tip/PIP pairs (index→pinky) for the closed-hand test. A hand counts as a "fist"
+// when all four of these fingers are curled (tip nearer the wrist than its PIP). We
+// deliberately IGNORE the thumb — same as DILATE: predicates.isFist() (and so
+// classify().name === "fist") also requires the thumb to stick out (gap > 0.6·S), but a
+// natural clench tucks the thumb over the fingers, so isFist never fires for the fist the
+// user actually makes — and a tucked thumb often reads as a PINCH (thumb–index < 0.45·S),
+// which classify() resolves before fist ever. Curled-fingers-only is robust to thumb pose,
+// which is why SELECT's fist felt dead while the other fist tools (DILATE) felt crisp.
+const FIST_TIPS = [8, 12, 16, 20];
+const FIST_PIPS = [6, 10, 14, 18];
+
+// True when all four fingers are curled — i.e. the hand is squeezed shut (thumb-agnostic).
+function handClosed(lm: Vec3[]): boolean {
+    for (let i = 0; i < FIST_TIPS.length; i++) {
+        if (fingerExtended(lm, FIST_TIPS[i], FIST_PIPS[i])) return false;
+    }
+    return true;
+}
 
 export function createSelectMenu(): MenuModule {
     const accent = MENU_META[MenuId.SELECT].accent;
@@ -119,7 +139,7 @@ export function createSelectMenu(): MenuModule {
             // Right (exec) fist (rising edge) → move the focus cursor to the next shape. Each hand's
             // pose feeds the shared 5-frame debouncer — "none" when the hand is gone, so a stale fist
             // never lingers across a tracking gap — and one fist-close = one step.
-            const execFist = execGate.push(exec ? classify(exec.landmarks, exec.world, null).name : "none") === "fist";
+            const execFist = execGate.push(exec && handClosed(exec.world) ? "fist" : "none") === "fist";
             if (execFist && !execWasFist) {
                 moveFocus(ctx, 1);
                 paint(ctx);
@@ -127,7 +147,7 @@ export function createSelectMenu(): MenuModule {
             execWasFist = execFist;
 
             // Left (nav) hand FIST (rising edge) → toggle the focused shape in/out of the selection.
-            const navFist = navGate.push(nav ? classify(nav.landmarks, nav.world, null).name : "none") === "fist";
+            const navFist = navGate.push(nav && handClosed(nav.world) ? "fist" : "none") === "fist";
             if (navFist && !navWasFist) {
                 const f = focusedShape(ctx);
                 if (f) {
